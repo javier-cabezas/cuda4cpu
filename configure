@@ -1,0 +1,53 @@
+#!/bin/bash
+
+CMAKE=cmake
+CMAKE_HOME=`dirname $0`
+SCRIPT_NAME=`basename $0`
+
+BUILD_TYPE="Release"
+
+for i in $@
+do
+    echo $i
+    case $i in
+    --enable-debug)
+        BUILD_TYPE="Debug"
+        ;;
+    --enable-static)
+        CMAKE_ARGS="${CMAKE_ARGS} -DMAKE_STATIC=ON"
+        ;;
+    --enable-tests)
+        CMAKE_ARGS="${CMAKE_ARGS} -DMAKE_TESTS=ON"
+        ;;
+    --enable-installer)
+        CMAKE_ARGS="${CMAKE_ARGS} -DMAKE_INSTALLER=ON"
+        ;;
+    --with-installer=*)
+        installer=`echo $i | sed 's/[-a-zA-Z0-9]*=//'`
+        CMAKE_ARGS="${CMAKE_ARGS} -DMAKE_INSTALLER=ON -DINSTALLER=${installer}"
+        ;;
+    --enable-doc)
+        CMAKE_ARGS="${CMAKE_ARGS} -DMAKE_DOC=ON"
+        ;;
+    --with-gcc=*)
+        compiler=`echo $i | sed 's/[-a-zA-Z0-9]*=//'`
+        echo "Setting compiler: ${compiler}"
+        CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_CXX_COMPILER=${compiler} -DCMAKE_C_COMPILER=${compiler/\+\+/cc}"
+        ;;
+    --enable-clang)
+        CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang"
+        ;;
+    --prefix=*)
+        prefix=`echo $i | sed 's/[-a-zA-Z0-9]*=//'`
+        CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_INSTALL_PREFIX=${prefix}"
+        ;;
+    esac
+done
+
+GENERATOR=""
+
+CMAKE_ARGS="${CMAKE_ARGS} ${GENERATOR} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+COMMAND="${CMAKE} ${CMAKE_ARGS} ${CMAKE_HOME}"
+echo "$0 $*" > ${SCRIPT_NAME}.log
+echo ${COMMAND} >> ${SCRIPT_NAME}.log
+${COMMAND}
