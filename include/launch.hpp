@@ -24,9 +24,12 @@
 #include <chrono>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <vector>
 
 #include <omp.h>
+#include <numa.h>
+
 #include <setjmp.h>
 #include <ucontext.h>
 
@@ -67,24 +70,24 @@ public:
     inline static const system &
     get_system()
     {
-        return sys;
+        return sys_;
     }
 
     inline int
     get_num_procs() const
     {
-        return procs;
+        return cpus_;
     }
 
 private:
-    system()
-    {
-        procs = omp_get_num_procs();
-        omp_set_num_threads(procs);
-    }
+    system();
 
-    static system sys;
-    int procs;
+    static system sys_;
+    int cpus_;
+    int nodes_;
+
+    std::map<int, int> cpu2node_;
+    std::map<int, std::vector<int>> node2cpus_;
 };
 
 //!
@@ -163,53 +166,65 @@ public:
         elapsed += end - start;
         // std::cout << "CUDA-style init: " << elapsed.count() << "s\n";
 
-        Current = this;
+        Current_ = this;
         switch_fiber(caller_, callees_[0]);
-        Current = nullptr;
+        Current_ = nullptr;
         // std::cout << "CUDA-style init: " << elapsed.count() << "s\n";
     }
 
-    //! Implementation of the __syncthreads intrinsic
+    //! Implementation of the __syncthreads intrinsic.
+    //! Switches to a different thread until all threads in the block have reached this barrier.
     static void syncthreads()
     {
-        size_t old_id = Current->thread_id_barrier_;
+        size_t old_id = Current_->thread_id_barrier_;
         size_t new_id;
-        if (old_id == Current->nthreads_ - 1) {
+        if (old_id == Current_->nthreads_ - 1) {
             new_id = 0;
         } else {
             new_id = old_id + 1;
         }
-        Current->thread_id_barrier_ = new_id;
-        // std::cout << "S: " << old_id << "->" << new_id << "(" << Current->ids[new_id].x << "," << Current->ids[new_id].y << ")\n";
-        switch_fiber(Current->callees_[old_id],
-                     Current->callees_[new_id]);
+        Current_->thread_id_barrier_ = new_id;
+        // std::cout << "S: " << old_id << "->" << new_id << "(" << Current_->ids[new_id].x << "," << Current_->ids[new_id].y << ")\n";
+        switch_fiber(Current_->callees_[old_id],
+                     Current_->callees_[new_id]);
     }
 
+    //! Implementation of the threadIdx special variable.
+    //! Returns a dim3 object with the identifier of the calling thread within the thread block.
     static inline const dim3 &
     get_thread()
     {
-        return Current->ids[Current->thread_id_barrier_];
+        return Current_->ids[Current_->thread_id_barrier_];
     }
 
+    //! Implementation of the blockIdx special variable.
+    //! Returns a dim3 object with the identifier of the calling thread block within the grid.
     static inline const dim3 &
     get_block()
     {
-        return Current->block_id_;
+        return Current_->block_id_;
     }
 
+    //! Implementation of the blockDim special variable.
+    //! Returns a dim3 object with the number of threads in each dimension of the thread block.
     static inline const dim3 &
     get_block_dim()
     {
-        return Current->conf_.block;
+        return Current_->conf_.block;
     }
 
+    //! Implementation of the gridDim special variable....
+    //! Returns a dim3 object with the number of blocks in each dimension of the computation grid.
     static inline const dim3 &
     get_grid_dim()
     {
-        return Current->conf_.grid;
+        return Current_->conf_.grid;
     }
 
 private:
+    //! Starts execution of a fiber on the CPU.
+    //! @param ptr_high Holds the high 32 bits of the address of the context of the fiber to be used.
+    //! @param ptr_low Holds the low 32 bits of the address of the context of the fiber to be used.
     static void start_fiber(uint32_t ptr_high, uint32_t ptr_low)
     {
         fiber_ctx_t* ctx = reinterpret_cast<fiber_ctx_t *>(
@@ -236,25 +251,30 @@ private:
         swapcontext(&tmp, &ctx.fib);
     }
 
+    //! Switches execution between fibers.
+    //! @param from Handler of the fiber being preempted.
+    //! @param to Handler of the next fiber to be resumed.
     static inline void
-    switch_fiber(fiber_t &old, fiber_t &next)
+    switch_fiber(fiber_t &from, fiber_t &to)
     {
-        if (_setjmp(old.jmp) == 0)
-            _longjmp(next.jmp, 1);
+        if (_setjmp(from.jmp) == 0)
+            _longjmp(to.jmp, 1);
     }
 
+    //! Starts execution of a thread within the thread block.
+    //! @param tid Identifier of the thread to be executed.
     static void thread_block_call(unsigned tid)
     {
-        Current->func_();
-        if (tid == Current->nthreads_ - 1) {
+        Current_->func_();
+        if (tid == Current_->nthreads_ - 1) {
             //std::cout << "F: " << tid << "->Caller\n";
-            switch_fiber(Current->callees_[tid],
-                         Current->caller_);
+            switch_fiber(Current_->callees_[tid],
+                         Current_->caller_);
         } else {
             //std::cout << "F: " << tid << "->" << tid + 1 << "(" << Current->ids[tid + 1].x << "," << Current->ids[tid + 1].y << ")\n";
-            Current->thread_id_barrier_ += 1;
-            switch_fiber(Current->callees_[tid],
-                         Current->callees_[tid + 1]);
+            Current_->thread_id_barrier_ += 1;
+            switch_fiber(Current_->callees_[tid],
+                         Current_->callees_[tid + 1]);
         }
     }
 
@@ -270,7 +290,7 @@ private:
     std::vector<unsigned char *> stacks_;
     std::vector<dim3> ids;
 
-    static thread_local thread_block *Current;
+    static thread_local thread_block *Current_;
 };
 
 template <typename... Args>
