@@ -25,8 +25,33 @@
 namespace cuda4cpu {
 
 // static variables
-system system::sys;
+system system::sys_;
 thread_local thread_block *
-thread_block::Current = nullptr;
+thread_block::Current_ = nullptr;
+
+system::system()
+{
+    cpus_ = omp_get_num_procs();
+    omp_set_num_threads(cpus_);
+
+    int ret = numa_available();
+    nodes_ = numa_num_configured_nodes();
+
+    for (int i = 0; i < nodes_; ++i) {
+        bitmask *mask = numa_allocate_cpumask();
+
+        numa_node_to_cpus(i, mask);
+        std::vector<int> node2cpus;
+        for (int j = 0; j < cpus_; ++j) {
+            if (numa_bitmask_isbitset(mask, j)) {
+                cpu2node_[j] = i;
+                node2cpus.push_back(j);
+            }
+        }
+        node2cpus_[i] = node2cpus;
+
+        numa_free_cpumask(mask);
+    }
+}
 
 }
