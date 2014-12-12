@@ -18,6 +18,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#undef _FORTIFY_SOURCE
+
 #include <iostream>
 #include <chrono>
 #include <cstring>
