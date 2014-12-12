@@ -33,6 +33,10 @@
 #include <setjmp.h>
 #include <ucontext.h>
 
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+#include <valgrind/valgrind.h>
+#endif
+
 #include "types.hpp"
 
 namespace cuda4cpu {
@@ -123,8 +127,14 @@ public:
         callees_{nthreads_},
         callees_base_{nthreads_},
         stacks_{nthreads_}
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+        , valgrind_stacks_{}
+#endif
     {
         ids.reserve(nthreads_);
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+        valgrind_stacks_.reserve(nthreads_);
+#endif
 
         // Fill initial contexts with current context
         for (size_t i = 0; i < nthreads_; ++i) {
@@ -141,6 +151,10 @@ public:
             stacks_[i] = stack;
             ids[i]     = id;
 
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+            unsigned valgrind_stack_id = VALGRIND_STACK_REGISTER(stack, stack + SIGSTKSZ);
+            valgrind_stacks_[i] = valgrind_stack_id;
+#endif
             create_fiber(callees_base_[i], stacks_[i], i);
         }
     }
@@ -148,6 +162,9 @@ public:
     ~thread_block()
     {
         for (auto stack : stacks_) delete []stack;
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+        for (auto stack_id : valgrind_stacks_) VALGRIND_STACK_DEREGISTER(stack_id);
+#endif
     }
 
     //! Execute an instance of the thread block for the given id
@@ -157,19 +174,18 @@ public:
         block_id_ = block_id;
         thread_id_barrier_ = 0;
 
-        std::chrono::time_point<std::chrono::system_clock> start, end;
-        static std::chrono::duration<double> elapsed;
+        // std::chrono::time_point<std::chrono::system_clock> start, end;
+        // static std::chrono::duration<double> elapsed;
 
-        start = std::chrono::system_clock::now();
+        // start = std::chrono::system_clock::now();
         std::copy(callees_base_.begin(), callees_base_.end(), callees_.begin());
-        end = std::chrono::system_clock::now();
-        elapsed += end - start;
+        // end = std::chrono::system_clock::now();
+        // elapsed += end - start;
         // std::cout << "CUDA-style init: " << elapsed.count() << "s\n";
 
         Current_ = this;
         switch_fiber(caller_, callees_[0]);
         Current_ = nullptr;
-        // std::cout << "CUDA-style init: " << elapsed.count() << "s\n";
     }
 
     //! Implementation of the __syncthreads intrinsic.
@@ -267,11 +283,11 @@ private:
     {
         Current_->func_();
         if (tid == Current_->nthreads_ - 1) {
-            //std::cout << "F: " << tid << "->Caller\n";
+            // std::cout << "F: " << tid << "->Caller\n";
             switch_fiber(Current_->callees_[tid],
                          Current_->caller_);
         } else {
-            //std::cout << "F: " << tid << "->" << tid + 1 << "(" << Current->ids[tid + 1].x << "," << Current->ids[tid + 1].y << ")\n";
+            // std::cout << "F: " << tid << "->" << tid + 1 << "(" << Current_->ids[tid + 1].x << "," << Current_->ids[tid + 1].y << ")\n";
             Current_->thread_id_barrier_ += 1;
             switch_fiber(Current_->callees_[tid],
                          Current_->callees_[tid + 1]);
@@ -288,6 +304,9 @@ private:
     std::vector<fiber_t> callees_;
     std::vector<fiber_t> callees_base_;
     std::vector<unsigned char *> stacks_;
+#ifdef CUDA4CPU_HANDLE_VALGRIND
+    std::vector<unsigned> valgrind_stacks_;
+#endif
     std::vector<dim3> ids;
 
     static thread_local thread_block *Current_;
@@ -326,12 +345,7 @@ struct grid_launcher {
                 id.y = (i / conf_.grid.x) % conf_.grid.y;
                 id.z = i / (conf_.grid.x * conf_.grid.y);
 
-#if 1
                 block.execute(id);
-#else
-                blocks.push_back({closure, conf_block, id});
-                blocks[i]();
-#endif
             }
         }
     }
@@ -352,7 +366,5 @@ launch(void (&func)(Args...), dim3 grid, dim3 block)
 }
 
 } // namespace cuda4cpu
-
-
 
 #endif // CUDA4CPU_LAUNCH_HPP_
