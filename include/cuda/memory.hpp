@@ -20,41 +20,61 @@
 
 #pragma once
 
-#include <cstddef>
-#include <cstdlib>
 #include <cstring>
 
-//
-// CUDA keyword overrides
-//
-#ifdef __global__
-#undef __global__
-#endif
+#include "types.hpp"
 
-#ifdef __device__
-#undef __device__
-#endif
+namespace cuda4cpu {
 
-#ifdef __host__
-#undef __host__
-#endif
+enum cudaMemcpyKind {
+    cudaMemcpyHostToDevice,
+    cudaMemcpyDeviceToHost,
+    cudaMemcpyDeviceToDevice,
+    cudaMemcpyDefault
+};
 
-#ifdef __shared__
-#undef __shared__
-#endif
+static inline
+cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind)
+{
+    std::memcpy(dst, src, count);
 
-#ifdef __constant__
-#undef __constant__
-#endif
+    return 0;
+}
 
-#define __global__
-#define __shared__ static thread_local
-#define __syncthreads cuda4cpu::thread_block::syncthreads
+static inline
+cudaError_t cudaMallocHost(void **ptr, size_t count)
+{
+    void *tmp = std::malloc(count);
+    if (tmp != nullptr)
+        *ptr = tmp;
 
-#define threadIdx cuda4cpu::thread_block::get_thread()
-#define blockIdx  cuda4cpu::thread_block::get_block()
+    return 0;
+}
 
-#define blockDim cuda4cpu::thread_block::get_block_dim()
-#define gridDim  cuda4cpu::thread_block::get_grid_dim()
+static inline
+cudaError_t cudaHostAlloc(void **ptr, size_t count, unsigned int /*flags*/)
+{
+    return cudaMallocHost(ptr, count);
+}
 
+static inline
+cudaError_t cudaMalloc(void **ptr, size_t count)
+{
+    return cudaMallocHost(ptr, count);
+}
 
+static inline
+cudaError_t cudaFreeHost(void *ptr)
+{
+    std::free(ptr);
+
+    return 0;
+}
+
+static inline
+cudaError_t cudaFree(void *ptr)
+{
+    return cudaFreeHost(ptr);
+}
+
+}

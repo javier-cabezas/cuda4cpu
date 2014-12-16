@@ -18,10 +18,13 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef CUDA4CPU_TYPES_HPP_
-#define CUDA4CPU_TYPES_HPP_
+#pragma once
+
+#include <chrono>
 
 namespace cuda4cpu {
+
+using cudaError_t = int;
 
 struct dim3 {
     unsigned x, y ,z;
@@ -67,6 +70,21 @@ VECTOR_TYPE(ulonglong, unsigned long long)
 VECTOR_TYPE(float, float)
 VECTOR_TYPE(double, double)
 
-}
+struct cudaStream__ {
+    int flags;
+    int priority;
+};
 
-#endif // CUDA4CPU_TYPES_HPP_
+using cudaStream_t = cudaStream__ *;
+
+struct cudaEvent__ {
+    std::chrono::time_point<std::chrono::system_clock> tstamp;
+    cudaStream_t stream;
+};
+
+using cudaEvent_t = cudaEvent__ *;
+
+using cudaStreamCallback_t = void(*)(cudaStream_t stream, cudaError_t status, void *userData);
+
+
+}

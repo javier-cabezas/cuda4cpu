@@ -18,11 +18,9 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef CUDA4CPU_CUDA4CPU_HPP_
-#define CUDA4CPU_CUDA4CPU_HPP_
+#pragma once
 
-#include "types.hpp"
+#include "cuda/mycuda.hpp"
+
 #include "launch.hpp"
 #include "defines.hpp"
-
-#endif // CUDA4CPU_CUDA4CPU_HPP_
