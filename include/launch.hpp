@@ -18,8 +18,7 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef CUDA4CPU_LAUNCH_HPP_
-#define CUDA4CPU_LAUNCH_HPP_
+#pragma once
 
 #include <chrono>
 #include <functional>
@@ -37,7 +36,7 @@
 #include <valgrind/valgrind.h>
 #endif
 
-#include "types.hpp"
+#include "cuda/mycuda.hpp"
 
 namespace cuda4cpu {
 
@@ -366,5 +365,3 @@ launch(void (&func)(Args...), dim3 grid, dim3 block)
 }
 
 } // namespace cuda4cpu
-
-#endif // CUDA4CPU_LAUNCH_HPP_

@@ -20,7 +20,7 @@
 
 #pragma once
 
-#include "cuda/mycuda.hpp"
-
-#include "launch.hpp"
-#include "defines.hpp"
+#include "types.hpp"
+#include "memory.hpp"
+#include "streams.hpp"
+#include "events.hpp"

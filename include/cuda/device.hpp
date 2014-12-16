@@ -20,7 +20,14 @@
 
 #pragma once
 
-#include "cuda/mycuda.hpp"
+#include "types.hpp"
 
-#include "launch.hpp"
-#include "defines.hpp"
+namespace cuda4cpu {
+
+static inline
+cudaError_t cudaDeviceSynchronize()
+{
+    return 0;
+}
+
+}

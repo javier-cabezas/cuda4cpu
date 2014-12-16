@@ -18,8 +18,7 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef CUDA4CPU_DEFINES_HPP_
-#define CUDA4CPU_DEFINES_HPP_
+#pragma once
 
 #include <cstddef>
 #include <cstdlib>
@@ -58,57 +57,4 @@
 #define blockDim cuda4cpu::thread_block::get_block_dim()
 #define gridDim  cuda4cpu::thread_block::get_grid_dim()
 
-namespace cuda4cpu {
-using cudaError_t = int;
 
-enum cudaMemcpyKind {
-    cudaMemcpyHostToDevice,
-    cudaMemcpyDeviceToHost,
-    cudaMemcpyDeviceToDevice,
-    cudaMemcpyDefault
-};
-
-static inline
-cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind)
-{
-    std::memcpy(dst, src, count);
-
-    return 0;
-}
-
-template <typename T>
-static inline
-cudaError_t cudaMallocHost(T **ptr, size_t count)
-{
-    T *tmp = (T *) std::malloc(count);
-    if (tmp != nullptr)
-        *ptr = tmp;
-
-    return 0;
-}
-
-template <typename T>
-static inline
-cudaError_t cudaMalloc(T **ptr, size_t count)
-{
-    return cudaMallocHost(ptr, count);
-}
-
-template <typename T>
-static inline
-cudaError_t cudaFreeHost(T *ptr)
-{
-    std::free(ptr);
-
-    return 0;
-}
-
-template <typename T>
-static inline
-cudaError_t cudaFree(T *ptr)
-{
-    return cudaFreeHost(ptr);
-}
-}
-
-#endif // CUDA4CPU_DEFINES_HPP_
