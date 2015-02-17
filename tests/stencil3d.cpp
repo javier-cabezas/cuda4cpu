@@ -28,6 +28,10 @@
 
 using namespace cuda4cpu;
 
+__constant__ float K_X = 3.f;
+__constant__ float K_Y = 2.f;
+__constant__ float K_Z = 1.f;
+
 template <unsigned Halo>
 __global__
 void
@@ -109,9 +113,9 @@ stencil3D(float *B,
 
         float c = val;
         for (int s = 1; s <= Halo; ++s) {
-            c += 3.f * (tile[sy][sx - s] + tile[sy][sx + s]) +
-                 2.f * (tile[sy - s][sx] + tile[sy + s][sx]) +
-                 1.f * (pre[Halo - s] + post[s - 1]);
+            c += K_X * (tile[sy][sx - s] + tile[sy][sx + s]) +
+                 K_Y * (tile[sy - s][sx] + tile[sy + s][sx]) +
+                 K_Z * (pre[Halo - s] + post[s - 1]);
         }
 
         B[idx] = c;
@@ -134,9 +138,9 @@ void stencil3D_host(float *B, const float *A, unsigned DimX, unsigned DimY, unsi
             for (unsigned k = Halo; k < DimX + Halo; ++k) {
                 float val = A[i * TotalDimXY + j * TotalDimX + k];
                 for (unsigned l = 1; l <= Halo; ++l) {
-                    val += 3.f * (A[i * TotalDimXY + j * TotalDimX + (k - l)] + A[i * TotalDimXY + j * TotalDimX + (k + l)]) +
-                           2.f * (A[i * TotalDimXY + (j - l) * TotalDimX + k] + A[i * TotalDimXY + (j + l) * TotalDimX + k]) +
-                           1.f * (A[(i - l) * TotalDimXY + j * TotalDimX + k] + A[(i + l) * TotalDimXY + j * TotalDimX + k]);
+                    val += K_X * (A[i * TotalDimXY + j * TotalDimX + (k - l)] + A[i * TotalDimXY + j * TotalDimX + (k + l)]) +
+                           K_Y * (A[i * TotalDimXY + (j - l) * TotalDimX + k] + A[i * TotalDimXY + (j + l) * TotalDimX + k]) +
+                           K_Z * (A[(i - l) * TotalDimXY + j * TotalDimX + k] + A[(i + l) * TotalDimXY + j * TotalDimX + k]);
                 }
                 B[i * TotalDimXY + j * TotalDimX + k] = val;
             }
