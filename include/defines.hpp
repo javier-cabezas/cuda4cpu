@@ -48,7 +48,11 @@
 #endif
 
 #define __global__
+#define __device__
+#define __host__
 #define __shared__ static thread_local
+#define __constant__
+
 #define __syncthreads cuda4cpu::thread_block::syncthreads
 
 #define threadIdx cuda4cpu::thread_block::get_thread()
