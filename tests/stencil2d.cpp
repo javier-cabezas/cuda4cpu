@@ -28,6 +28,9 @@
 
 using namespace cuda4cpu;
 
+__constant__ float K_X = 3.f;
+__constant__ float K_Y = 2.f;
+
 template <unsigned Halo>
 __global__
 void
@@ -74,8 +77,8 @@ stencil2D_cuda(float *B,
     __syncthreads();
 
     for (int k = 1; k <= Halo; ++k) {
-        val += 3.f * (tile[sy][sx - k] + tile[sy][sx + k]) +
-               2.f * (tile[sy - k][sx] + tile[sy + k][sx]);
+        val += K_X * (tile[sy][sx - k] + tile[sy][sx + k]) +
+               K_Y * (tile[sy - k][sx] + tile[sy + k][sx]);
     }
 
     B[off] = val;
@@ -92,8 +95,8 @@ void stencil2D_host(float *B, const float *A, unsigned DimX, unsigned DimY)
         for (unsigned j = Halo; j < DimX + Halo; ++j) {
             float val = A[i * TotalDimX + j];
             for (unsigned k = 1; k <= Halo; ++k) {
-                val += 3.f * (A[i *TotalDimX + j - k] + A[i * TotalDimX + j + k]) +
-                       2.f * (A[(i - k) * TotalDimX + j] + A[(i + k) * TotalDimX + j]);
+                val += K_X * (A[i *TotalDimX + j - k] + A[i * TotalDimX + j + k]) +
+                       K_Y * (A[(i - k) * TotalDimX + j] + A[(i + k) * TotalDimX + j]);
             }
             B[i * TotalDimX + j] = val;
         }
