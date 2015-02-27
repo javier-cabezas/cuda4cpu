@@ -1,5 +1,4 @@
-cuda4cpu
-========
+![two-level clustering](https://raw.githubusercontent.com/wiki/javier-cabezas/cuda4cpu/images/cuda4cpu_logo_300x75.png)
 
 Library and headers to make CUDA codes run seamlessly on CPUs.
 
