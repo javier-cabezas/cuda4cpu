@@ -50,7 +50,7 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
 static inline
 cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end)
 {
-    *ms = std::chrono::duration_cast<std::chrono::microseconds>(end->tstamp - start->tstamp).count();
+    *ms = std::chrono::duration<float, std::milli>(end->tstamp - start->tstamp).count();
 
     return 0;
 }
