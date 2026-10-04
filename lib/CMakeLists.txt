@@ -30,10 +30,15 @@ target_link_libraries(cuda4cpu PUBLIC OpenMP::OpenMP_CXX)
 
 target_compile_options(cuda4cpu PRIVATE -Wall)
 
+# Let the compiler inline the scheduler's helpers into each other; otherwise
+# every call between them goes through the PLT of the shared library
+target_compile_options(cuda4cpu PRIVATE -fno-semantic-interposition)
+
 # Fibers switch stacks with _setjmp/_longjmp, which glibc's fortified longjmp
 # rejects ("longjmp causes uninitialized stack frame"). Some toolchains (e.g.
-# Ubuntu's GCC) enable _FORTIFY_SOURCE by default, so turn it off for consumers.
-target_compile_options(cuda4cpu PUBLIC -U_FORTIFY_SOURCE)
+# Ubuntu's GCC) enable _FORTIFY_SOURCE by default. All the fiber code lives in
+# the library, so this does not affect consumers.
+target_compile_options(cuda4cpu PRIVATE -U_FORTIFY_SOURCE)
 
 if(CUDA4CPU_ENABLE_NUMA)
     find_path(NUMA_INCLUDE_DIR numa.h)
@@ -54,9 +59,8 @@ if(CUDA4CPU_ENABLE_VALGRIND)
     find_path(VALGRIND_INCLUDE_DIR valgrind/valgrind.h REQUIRED)
     mark_as_advanced(VALGRIND_INCLUDE_DIR)
 
-    # The fiber code lives in the headers, so every consumer must agree on this
-    target_compile_definitions(cuda4cpu PUBLIC CUDA4CPU_HANDLE_VALGRIND)
-    target_include_directories(cuda4cpu PUBLIC $<BUILD_INTERFACE:${VALGRIND_INCLUDE_DIR}>)
+    target_compile_definitions(cuda4cpu PRIVATE CUDA4CPU_HANDLE_VALGRIND)
+    target_include_directories(cuda4cpu PRIVATE ${VALGRIND_INCLUDE_DIR})
 endif()
 
 if(CUDA4CPU_ENABLE_NATIVE)

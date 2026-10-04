@@ -20,13 +20,52 @@
 
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+
 #include "types.hpp"
 
 namespace cuda4cpu {
 
+enum cudaLimit {
+    cudaLimitStackSize      = 0x00,
+    cudaLimitPrintfFifoSize = 0x01,
+    cudaLimitMallocHeapSize = 0x02
+};
+
+namespace detail {
+
+//! Smallest stack given to each CUDA thread. CPU code (libc calls, the
+//! launcher) needs much more stack than GPU code, so smaller requests are
+//! rounded up to this size.
+inline constexpr size_t min_stack_size = 64 * 1024;
+
+//! Stack size of each CUDA thread for subsequent launches
+inline std::atomic<size_t> stack_size{min_stack_size};
+
+}
+
 static inline
 cudaError_t cudaDeviceSynchronize()
 {
+    return 0;
+}
+
+static inline
+cudaError_t cudaDeviceSetLimit(cudaLimit limit, size_t value)
+{
+    if (limit == cudaLimitStackSize)
+        detail::stack_size = std::max(value, detail::min_stack_size);
+
+    return 0;
+}
+
+static inline
+cudaError_t cudaDeviceGetLimit(size_t *value, cudaLimit limit)
+{
+    *value = (limit == cudaLimitStackSize) ? detail::stack_size.load() : 0;
+
     return 0;
 }
 
