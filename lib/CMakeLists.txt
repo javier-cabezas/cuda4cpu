@@ -1,17 +1,64 @@
-aux_source_directory(. LIB_SRC)
-aux_source_directory(${CMAKE_SOURCE_DIR}/include LIB_INCLUDE)
+add_library(cuda4cpu cuda4cpu.cpp)
+add_library(cuda4cpu::cuda4cpu ALIAS cuda4cpu)
 
-include_directories(${CMAKE_SOURCE_DIR}/include)
+set(CUDA4CPU_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 
-set(CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG} -fopenmp")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fopenmp")
+target_sources(cuda4cpu
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS ${CUDA4CPU_INCLUDE_DIR}
+        FILES
+            ${CUDA4CPU_INCLUDE_DIR}/cuda4cpu.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/launch.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/device.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/events.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/memory.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/mycuda.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/streams.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/types.hpp)
 
-add_library(${CMAKE_IMPORT_LIBRARY_PREFIX}cuda4cpu SHARED ${LIB_SRC} ${LIB_INCLUDE})
+target_compile_features(cuda4cpu PUBLIC cxx_std_23)
 
-set(CUDA4CPU_LIB ${CMAKE_IMPORT_LIBRARY_PREFIX}cuda4cpu${CMAKE_IMPORT_LIBRARY_SUFFIX} CACHE INTERNAL "")
+set_target_properties(cuda4cpu PROPERTIES
+    CXX_EXTENSIONS OFF
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
 
-target_link_libraries(${CMAKE_IMPORT_LIBRARY_PREFIX}cuda4cpu${CMAKE_IMPORT_LIBRARY_SUFFIX} ${CUDA_LIBRARIES} numa)
+# Kernels are launched from header code that uses OpenMP, so consumers need it too
+target_link_libraries(cuda4cpu PUBLIC OpenMP::OpenMP_CXX)
 
-install(TARGETS ${CMAKE_IMPORT_LIBRARY_PREFIX}cuda4cpu${CMAKE_IMPORT_LIBRARY_SUFFIX}
-        LIBRARY DESTINATION lib
-        COMPONENT libraries)
+target_compile_options(cuda4cpu PRIVATE -Wall)
+
+# Fibers switch stacks with _setjmp/_longjmp, which glibc's fortified longjmp
+# rejects ("longjmp causes uninitialized stack frame"). Some toolchains (e.g.
+# Ubuntu's GCC) enable _FORTIFY_SOURCE by default, so turn it off for consumers.
+target_compile_options(cuda4cpu PUBLIC -U_FORTIFY_SOURCE)
+
+if(CUDA4CPU_ENABLE_NUMA)
+    find_path(NUMA_INCLUDE_DIR numa.h)
+    find_library(NUMA_LIBRARY numa)
+    mark_as_advanced(NUMA_INCLUDE_DIR NUMA_LIBRARY)
+
+    if(NUMA_INCLUDE_DIR AND NUMA_LIBRARY)
+        message(STATUS "cuda4cpu: using libnuma (${NUMA_LIBRARY})")
+        target_compile_definitions(cuda4cpu PRIVATE CUDA4CPU_HAVE_NUMA)
+        target_include_directories(cuda4cpu PRIVATE ${NUMA_INCLUDE_DIR})
+        target_link_libraries(cuda4cpu PRIVATE ${NUMA_LIBRARY})
+    else()
+        message(STATUS "cuda4cpu: libnuma not found, assuming a single NUMA node")
+    endif()
+endif()
+
+if(CUDA4CPU_ENABLE_VALGRIND)
+    find_path(VALGRIND_INCLUDE_DIR valgrind/valgrind.h REQUIRED)
+    mark_as_advanced(VALGRIND_INCLUDE_DIR)
+
+    # The fiber code lives in the headers, so every consumer must agree on this
+    target_compile_definitions(cuda4cpu PUBLIC CUDA4CPU_HANDLE_VALGRIND)
+    target_include_directories(cuda4cpu PUBLIC $<BUILD_INTERFACE:${VALGRIND_INCLUDE_DIR}>)
+endif()
+
+if(CUDA4CPU_ENABLE_NATIVE)
+    target_compile_options(cuda4cpu PUBLIC $<BUILD_INTERFACE:-march=native>)
+endif()

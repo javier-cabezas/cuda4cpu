@@ -1,33 +1,56 @@
-project(cuda4cpu)
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.25)
 
-include(FindPackageHandleStandardArgs)
+project(cuda4cpu
+    VERSION 0.1.0
+    DESCRIPTION "Library and headers to make CUDA codes run seamlessly on CPUs"
+    HOMEPAGE_URL "https://github.com/javier-cabezas/cuda4cpu"
+    LANGUAGES CXX)
 
-find_path(VALGRIND_INCLUDE_DIR memcheck.h
-    /usr/include /usr/include/valgrind /usr/local/include /usr/local/include/valgrind
-    ${VALGRIND_PREFIX}/include ${VALGRIND_PREFIX}/include/valgrind)
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
-find_program(VALGRIND_PROGRAM NAMES valgrind PATH /usr/bin /usr/local/bin ${VALGRIND_PREFIX}/bin)
+option(BUILD_SHARED_LIBS "Build cuda4cpu as a shared library" ON)
+option(CUDA4CPU_BUILD_TESTS "Build the cuda4cpu tests" ${PROJECT_IS_TOP_LEVEL})
+option(CUDA4CPU_ENABLE_NUMA "Use libnuma (if found) to discover the NUMA topology" ON)
+option(CUDA4CPU_ENABLE_VALGRIND "Register fiber stacks with Valgrind" OFF)
+option(CUDA4CPU_ENABLE_NATIVE "Compile in-tree targets with -march=native" OFF)
 
-find_package_handle_standard_args(VALGRIND DEFAULT_MSG
-                                  VALGRIND_INCLUDE_DIR
-                                  VALGRIND_PROGRAM)
+find_package(OpenMP REQUIRED COMPONENTS CXX)
 
-mark_as_advanced(VALGRIND_INCLUDE_DIR VALGRIND_PROGRAM)
-
-set(DEBUG_FLAGS "")
-
-if(${VALGRIND_FOUND})
-    set(DEBUG_FLAGS "-DCUDA4CPU_HANDLE_VALGRIND ${DEBUG_FLAGS}")
-endif(${VALGRIND_FOUND})
-
-set(COMMON_CXX_FLAGS "-std=c++11 -g")
-
-set(CMAKE_CXX_FLAGS_DEBUG   "${COMMON_CXX_FLAGS} ${DEBUG_FLAGS} -O0")
-set(CMAKE_CXX_FLAGS_RELEASE "${COMMON_CXX_FLAGS} -O3 -march=native")
-
-set(CUDART_LIB "" CACHE INTERNAL "")
-
-add_subdirectory(include)
 add_subdirectory(lib)
-add_subdirectory(tests)
+
+if(CUDA4CPU_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+#
+# Installation and package config
+#
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+set(CUDA4CPU_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/cuda4cpu)
+
+install(TARGETS cuda4cpu
+        EXPORT cuda4cpu-targets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        FILE_SET HEADERS DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cuda4cpu)
+
+install(EXPORT cuda4cpu-targets
+        NAMESPACE cuda4cpu::
+        DESTINATION ${CUDA4CPU_CMAKE_DIR})
+
+configure_package_config_file(cmake/cuda4cpu-config.cmake.in
+                              ${PROJECT_BINARY_DIR}/cuda4cpu-config.cmake
+                              INSTALL_DESTINATION ${CUDA4CPU_CMAKE_DIR})
+
+write_basic_package_version_file(${PROJECT_BINARY_DIR}/cuda4cpu-config-version.cmake
+                                 COMPATIBILITY SameMinorVersion)
+
+install(FILES ${PROJECT_BINARY_DIR}/cuda4cpu-config.cmake
+              ${PROJECT_BINARY_DIR}/cuda4cpu-config-version.cmake
+        DESTINATION ${CUDA4CPU_CMAKE_DIR})

@@ -19,3 +19,9 @@
 *.exe
 *.out
 *.app
+
+# Build trees and tooling
+build/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
