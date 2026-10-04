@@ -3,25 +3,26 @@
  *
  * Copyright (C) 2014 Javier Cabezas <javier.cabezas@gmail.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * SPDX-License-Identifier: Apache-2.0
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #undef _FORTIFY_SOURCE
 
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "cuda4cpu.hpp"
@@ -109,6 +110,8 @@ static const unsigned DimY = 2048;
 static const unsigned TotalDimX = DimX + 2 * Halo;
 static const unsigned TotalDimY = DimY + 2 * Halo;
 
+static const unsigned MaxReportedErrors = 10;
+
 using array_type = float[TotalDimY][TotalDimX];
 using array_type_ptr = array_type *;
 using array_type_ref = array_type &;
@@ -147,9 +150,10 @@ int main()
     elapsed = end - start;
     std::cout << "CPU-style: " << elapsed.count() << "s\n";
 
+    unsigned errors = 0;
     for (unsigned i = Halo; i < DimY + Halo; ++i) {
         for (unsigned j = Halo; j < DimX + Halo; ++j) {
-            if (B[i][j] != B_gold[i][j]) {
+            if (B[i][j] != B_gold[i][j] && errors++ < MaxReportedErrors) {
                 std::cout << i << "," << j << "\n";
                 std::cout << B[i][j] << " vs " << B_gold[i][j] << "\n";
             }
@@ -160,5 +164,10 @@ int main()
     delete [](float *)B;
     delete [](float *)B_gold;
 
-    return 0;
+    if (errors > 0) {
+        std::cout << errors << " mismatches\n";
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }
