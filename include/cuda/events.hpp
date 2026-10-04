@@ -24,7 +24,7 @@
 
 namespace cuda4cpu {
 
-static
+static inline
 cudaError_t cudaEventCreate(cudaEvent_t *event)
 {
     *event = new cudaEvent__;
@@ -39,7 +39,7 @@ cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int /*flags*/)
     return cudaEventCreate(event);
 }
 
-static
+static inline
 cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
     delete event;
@@ -47,6 +47,7 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
     return 0;
 }
 
+static inline
 cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end)
 {
     *ms = std::chrono::duration_cast<std::chrono::microseconds>(end->tstamp - start->tstamp).count();

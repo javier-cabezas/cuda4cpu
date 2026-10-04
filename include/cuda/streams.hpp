@@ -30,7 +30,7 @@ cudaError_t cudaStreamAddCallback(cudaStream_t stream, cudaStreamCallback_t call
     return 0;
 }
 
-static
+static inline
 cudaError_t cudaStreamCreateWithPriority(cudaStream_t *stream, unsigned int flags, int priority)
 {
     *stream = new cudaStream__;

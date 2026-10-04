@@ -22,6 +22,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "cuda4cpu.hpp"
@@ -109,6 +110,8 @@ static const unsigned DimY = 2048;
 static const unsigned TotalDimX = DimX + 2 * Halo;
 static const unsigned TotalDimY = DimY + 2 * Halo;
 
+static const unsigned MaxReportedErrors = 10;
+
 using array_type = float[TotalDimY][TotalDimX];
 using array_type_ptr = array_type *;
 using array_type_ref = array_type &;
@@ -147,9 +150,10 @@ int main()
     elapsed = end - start;
     std::cout << "CPU-style: " << elapsed.count() << "s\n";
 
+    unsigned errors = 0;
     for (unsigned i = Halo; i < DimY + Halo; ++i) {
         for (unsigned j = Halo; j < DimX + Halo; ++j) {
-            if (B[i][j] != B_gold[i][j]) {
+            if (B[i][j] != B_gold[i][j] && errors++ < MaxReportedErrors) {
                 std::cout << i << "," << j << "\n";
                 std::cout << B[i][j] << " vs " << B_gold[i][j] << "\n";
             }
@@ -160,5 +164,10 @@ int main()
     delete [](float *)B;
     delete [](float *)B_gold;
 
-    return 0;
+    if (errors > 0) {
+        std::cout << errors << " mismatches\n";
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }

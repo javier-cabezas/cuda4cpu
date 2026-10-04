@@ -22,6 +22,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "cuda4cpu.hpp"
@@ -53,9 +54,9 @@ stencil3D(float *B,
     int k = tx + bx * blockDim.x + Halo;
     int j = ty + by * blockDim.y + Halo;
 
-    register float val;
-    register float pre[Halo];
-    register float post[Halo];
+    float val;
+    float pre[Halo];
+    float post[Halo];
 
     __shared__ float tile[4 + 2 * Halo][32 + 2 * Halo];
 
@@ -158,6 +159,8 @@ static const unsigned TotalDimZ = DimZ + 2 * Halo;
 
 static const unsigned TotalDimXYZ = TotalDimX * TotalDimY * TotalDimZ;
 
+static const unsigned MaxReportedErrors = 10;
+
 using array_type = float[TotalDimZ][TotalDimY][TotalDimX];
 using array_type_ptr = array_type *;
 using array_type_ref = array_type &;
@@ -198,10 +201,11 @@ int main()
     elapsed = end - start;
     std::cout << "CPU-style: " << elapsed.count() << "s\n";
 
+    unsigned errors = 0;
     for (unsigned i = Halo; i < DimZ + Halo; ++i) {
         for (unsigned j = Halo; j < DimY + Halo; ++j) {
             for (unsigned k = Halo; k < DimX + Halo; ++k) {
-                if (B[i][j][k] != B_gold[i][j][k]) {
+                if (B[i][j][k] != B_gold[i][j][k] && errors++ < MaxReportedErrors) {
                     std::cout << i << "," << j << "," << k << "\n";
                 }
             }
@@ -212,5 +216,10 @@ int main()
     delete [](float *)B;
     delete [](float *)B_gold;
 
-    return 0;
+    if (errors > 0) {
+        std::cout << errors << " mismatches\n";
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }

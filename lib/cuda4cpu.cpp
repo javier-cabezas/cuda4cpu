@@ -20,6 +20,10 @@
 
 #include <cstdlib>
 
+#ifdef CUDA4CPU_HAVE_NUMA
+#include <numa.h>
+#endif
+
 #include "cuda4cpu.hpp"
 
 namespace cuda4cpu {
@@ -34,7 +38,12 @@ system::system()
     cpus_ = omp_get_num_procs();
     omp_set_num_threads(cpus_);
 
-    int ret = numa_available();
+#ifdef CUDA4CPU_HAVE_NUMA
+    if (numa_available() < 0) {
+        init_single_node();
+        return;
+    }
+
     nodes_ = numa_num_configured_nodes();
 
     for (int i = 0; i < nodes_; ++i) {
@@ -52,6 +61,21 @@ system::system()
 
         numa_free_cpumask(mask);
     }
+#else
+    init_single_node();
+#endif
+}
+
+void system::init_single_node()
+{
+    nodes_ = 1;
+
+    std::vector<int> node2cpus;
+    for (int j = 0; j < cpus_; ++j) {
+        cpu2node_[j] = 0;
+        node2cpus.push_back(j);
+    }
+    node2cpus_[0] = node2cpus;
 }
 
 }

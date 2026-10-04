@@ -20,14 +20,16 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <csignal>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <vector>
 
 #include <omp.h>
-#include <numa.h>
 
 #include <setjmp.h>
 #include <ucontext.h>
@@ -85,6 +87,9 @@ public:
 private:
     system();
 
+    //! Fallback topology used when libnuma is unavailable: all CPUs in node 0
+    void init_single_node();
+
     static system sys_;
     int cpus_;
     int nodes_;
@@ -130,9 +135,9 @@ public:
         , valgrind_stacks_{}
 #endif
     {
-        ids.reserve(nthreads_);
+        ids.resize(nthreads_);
 #ifdef CUDA4CPU_HANDLE_VALGRIND
-        valgrind_stacks_.reserve(nthreads_);
+        valgrind_stacks_.resize(nthreads_);
 #endif
 
         // Fill initial contexts with current context

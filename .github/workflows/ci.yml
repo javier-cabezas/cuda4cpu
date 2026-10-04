@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.compiler.name }} / ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, release]
+        compiler:
+          - { name: gcc-14, cxx: g++-14, packages: g++-14 }
+          - { name: clang-18, cxx: clang++-18, packages: clang-18 libomp-18-dev }
+    env:
+      CXX: ${{ matrix.compiler.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev ${{ matrix.compiler.packages }}
+
+      - name: Configure, build and test
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+      - name: Install
+        run: cmake --install build/${{ matrix.preset }} --prefix "${{ runner.temp }}/cuda4cpu"

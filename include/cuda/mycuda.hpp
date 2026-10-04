@@ -21,6 +21,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "device.hpp"
 #include "memory.hpp"
 #include "streams.hpp"
 #include "events.hpp"
