@@ -81,5 +81,5 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `lib/CMakeLists.txt`, or they won't be installed.
 - Add a CTest test (in `tests/CMakeLists.txt`) for each new CUDA feature, and
   check results against a host reference.
-- Changes to `master` go through pull requests. CI (`.github/workflows/ci.yml`)
+- Changes to `main` go through pull requests. CI (`.github/workflows/ci.yml`)
   builds and tests with GCC and Clang in Debug and Release.
