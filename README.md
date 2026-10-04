@@ -8,9 +8,8 @@ CUDA kernels on CPUs with a regular C++ compiler. There's no GPU, no `nvcc` and
 no source-to-source translation. You include one header and replace the
 `<<<...>>>` launch syntax with a function call.
 
-It's useful for debugging kernels with ordinary CPU tools (gdb, Valgrind,
-sanitizers), for running CUDA code on machines without a GPU, and for
-prototyping.
+It's useful for debugging kernels with ordinary CPU tools (gdb, Valgrind),
+for running CUDA code on machines without a GPU, and for prototyping.
 
 ## Contents
 
@@ -134,13 +133,13 @@ target_link_libraries(my_app PRIVATE cuda4cpu::cuda4cpu)
 Or vendor it as a subdirectory, with `add_subdirectory(cuda4cpu)` or
 `FetchContent`, and link against the same `cuda4cpu::cuda4cpu` target.
 
-The target brings in everything your code needs: the include path, C++23,
-OpenMP and `-U_FORTIFY_SOURCE` (see [Limitations](#limitations)).
+The target brings in everything your code needs: the include path, C++23
+and OpenMP.
 
 ### Without CMake
 
 ```sh
-g++ -std=c++23 -fopenmp -U_FORTIFY_SOURCE -I/usr/local/include/cuda4cpu -c main.cpp
+g++ -std=c++23 -fopenmp -I/usr/local/include/cuda4cpu -c main.cpp
 g++ -fopenmp -o my_app main.o -lcuda4cpu
 ```
 
@@ -191,7 +190,7 @@ memory, `__constant__` memory and `__syncthreads()`.
 
 | Area | Functions |
 |---|---|
-| Device | `cudaDeviceSynchronize` |
+| Device | `cudaDeviceSynchronize`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only) |
 | Memory | `cudaMalloc`, `cudaFree`, `cudaMallocHost`, `cudaHostAlloc`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyToSymbol` |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
@@ -203,10 +202,17 @@ memory, `__constant__` memory and `__syncthreads()`.
   OpenMP parallel loop.
 - **Block → fibers.** Within a block, each CUDA thread is a user-level fiber
   with its own stack. Fibers are created with `makecontext` and switched with
-  `_setjmp`/`_longjmp`, which is much cheaper than switching OS threads.
-- **`__syncthreads()` → cooperative switch.** Each CUDA thread runs until it
-  reaches a barrier and then yields to the next fiber. Once every fiber has
-  reached the barrier, execution continues past it.
+  `_setjmp`/`_longjmp`, which is much cheaper than switching OS threads. Each
+  OS thread creates fibers only once per block size, and reuses them for
+  every block and every later launch.
+- **No barriers, no switching.** A block starts by running its CUDA threads
+  back to back as plain function calls. Kernels that never call
+  `__syncthreads()` never switch fibers.
+- **`__syncthreads()` → cooperative switch.** When a CUDA thread first reaches
+  a barrier, the block switches to fiber mode. From then on, each CUDA thread
+  runs until it reaches a barrier and then yields to the next one. Once every
+  live thread has reached the barrier, execution continues past it. As on
+  GPUs, threads that return early don't hold back the barrier.
 - **`__shared__` → `static thread_local`.** A block always runs to completion
   on a single OS thread, so a thread-local variable behaves as per-block shared
   memory.
@@ -217,12 +223,14 @@ memory, `__constant__` memory and `__syncthreads()`.
 
 - **Linux/glibc on 64-bit only.** The fiber implementation relies on
   `ucontext` and passes pointers through `makecontext` as two 32-bit halves.
-- **`_FORTIFY_SOURCE` must be off** in files that launch kernels. glibc's
-  fortified `longjmp` aborts with *"longjmp causes uninitialized stack frame"*
-  when fibers switch stacks. The CMake target passes `-U_FORTIFY_SOURCE` for
-  you; otherwise add it yourself (Ubuntu's GCC enables fortify by default).
-- **Small fiber stacks.** Each CUDA thread gets a `SIGSTKSZ`-sized stack. Deep
-  recursion or large local arrays in kernels can overflow it.
+- **Fixed-size stacks.** Each CUDA thread gets a 64 KiB stack with a guard
+  page below it, so an overflow crashes with `SIGSEGV` instead of corrupting
+  memory. Kernels with deep recursion or large local arrays can request more
+  with `cudaDeviceSetLimit(cudaLimitStackSize, bytes)` before launching.
+  Smaller requests are rounded up to 64 KiB.
+- **No AddressSanitizer or ThreadSanitizer for kernels with barriers.** The
+  sanitizers don't know about the fiber stack switches and report false
+  errors. Valgrind works with `CUDA4CPU_ENABLE_VALGRIND=ON`.
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only.
 - **Not implemented yet:** atomics, warp-level intrinsics (`__shfl*`,
