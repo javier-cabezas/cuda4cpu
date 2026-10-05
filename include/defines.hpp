@@ -48,6 +48,8 @@
 #endif
 
 #define __global__
+#define __forceinline__ inline __attribute__((always_inline))
+#define __launch_bounds__(...)
 #define __device__
 #define __host__
 #define __shared__ static thread_local

@@ -23,9 +23,12 @@
 #include <bit>
 #include <cerrno>
 #include <cstdint>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <new>
+#include <string>
 
 #include <setjmp.h>
 #include <sys/mman.h>
@@ -704,6 +707,100 @@ void thread_block::deadlock() const
                  "threads are still waiting at barriers. Please report this.\n",
                  block_id_.x, block_id_.y, block_id_.z);
     std::abort();
+}
+
+void *detail::allocate_aligned(size_t size)
+{
+    // Rounding up to the alignment must not wrap around to a small size
+    if (size > SIZE_MAX - allocation_alignment)
+        return nullptr;
+
+    return std::aligned_alloc(allocation_alignment,
+                              (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment);
+}
+
+void detail::get_device_properties(cudaDeviceProp &prop)
+{
+    // Computed once: none of this changes while the process runs
+    static const cudaDeviceProp props = [] {
+        cudaDeviceProp p{};
+
+        // The first CPU's model name and current clock, from /proc/cpuinfo
+        std::string name = "cuda4cpu";
+        double mhz = 0.0;
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        for (std::string line; std::getline(cpuinfo, line) && line.find_first_not_of(" \t") != std::string::npos; ) {
+            size_t colon = line.find(':');
+            if (colon == std::string::npos)
+                continue;
+            size_t start = line.find_first_not_of(" \t", colon + 1);
+            std::string value = start == std::string::npos ? "" : line.substr(start);
+            if (line.rfind("model name", 0) == 0 && !value.empty())
+                name += ": " + value;
+            else if (line.rfind("cpu MHz", 0) == 0)
+                mhz = std::atof(value.c_str());
+        }
+        std::snprintf(p.name, sizeof(p.name), "%s", name.c_str());
+
+        long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+        p.totalGlobalMem = pages > 0 && page > 0 ? size_t(pages) * size_t(page) : 0;
+
+        // Maximum clock in kHz, or the current one if cpufreq is not available
+        long khz = 0;
+        std::ifstream freq("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+        freq >> khz;
+        p.clockRate = khz > 0 ? int(khz) : int(mhz * 1000.0);
+
+        long l2 = sysconf(_SC_LEVEL2_CACHE_SIZE);
+        p.l2CacheSize = l2 > 0 ? int(l2) : 0;
+
+        // CUDA's limits for threads, blocks and grids
+        p.warpSize           = 32;
+        p.maxThreadsPerBlock = 1024;
+        p.maxThreadsDim[0]   = 1024;
+        p.maxThreadsDim[1]   = 1024;
+        p.maxThreadsDim[2]   = 64;
+        p.maxGridSize[0]     = INT_MAX;
+        p.maxGridSize[1]     = 65535;
+        p.maxGridSize[2]     = 65535;
+        p.sharedMemPerBlock          = 48 * 1024;
+        p.sharedMemPerBlockOptin     = 48 * 1024;
+        p.sharedMemPerMultiprocessor = 48 * 1024;
+        p.totalConstMem         = 64 * 1024;
+        p.regsPerBlock          = 65536;
+        p.regsPerMultiprocessor = 65536;
+        p.memPitch              = INT_MAX;
+        p.textureAlignment      = 512;
+        p.texturePitchAlignment = 32;
+
+        // The newest compute capability whose features cuda4cpu implements
+        // (no tensor cores), so that code that checks it picks supported paths
+        p.major = 6;
+        p.minor = 0;
+
+        // Each OS thread is a multiprocessor that runs one block at a time
+        p.multiProcessorCount         = system::get_system().get_num_procs();
+        p.maxThreadsPerMultiProcessor = 1024;
+        p.maxBlocksPerMultiProcessor  = 1;
+
+        // Device memory is host memory
+        p.integrated                        = 1;
+        p.canMapHostMemory                  = 1;
+        p.unifiedAddressing                 = 1;
+        p.managedMemory                     = 1;
+        p.concurrentManagedAccess           = 1;
+        p.pageableMemoryAccess              = 1;
+        p.directManagedMemAccessFromHost    = 1;
+        p.hostNativeAtomicSupported         = 1;
+        p.canUseHostPointerForRegisteredMem = 1;
+        p.globalL1CacheSupported            = 1;
+        p.localL1CacheSupported             = 1;
+        p.singleToDoublePrecisionPerfRatio  = 2;
+
+        return p;
+    }();
+
+    prop = props;
 }
 
 system::system()

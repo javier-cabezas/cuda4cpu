@@ -360,9 +360,15 @@ struct grid_launcher {
     template <typename... Args2>
     void call(Args2 &&...args)
     {
-        const size_t nblocks = conf_.nblocks();
-        if (nblocks == 0 || conf_.nthreads() == 0)
+        // CUDA's limits: launches outside them fail on a GPU, so they fail here too
+        const dim3 &b = conf_.block, &g = conf_.grid;
+        if (b.x == 0 || b.y == 0 || b.z == 0 || b.x > 1024 || b.y > 1024 || b.z > 64 ||
+            conf_.nthreads() > 1024 ||
+            g.x == 0 || g.y == 0 || g.z == 0 || g.x > 2147483647u || g.y > 65535 || g.z > 65535) {
+            detail::record_error(cudaErrorInvalidConfiguration);
             return;
+        }
+        const size_t nblocks = conf_.nblocks();
 
         const detail::kernel_call<Args...> kernel(&func_, std::forward<Args2>(args)...);
         const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);

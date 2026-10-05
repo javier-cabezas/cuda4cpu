@@ -18,13 +18,18 @@
  * limitations under the License.
  */
 
+//
+// Drop-in replacement for the CUDA runtime header. It makes the CUDA API
+// (cudaMalloc, dim3, atomicAdd, __shfl_sync, ...) visible in the global
+// namespace, like the real header, without the rest of cuda4cpu: kernels are
+// still launched with cuda4cpu::launch(kernel, grid, block).call(args...).
+//
+// nvcc includes this header implicitly in .cu files. To compile them
+// unchanged, pass -include cuda_runtime.h to the compiler.
+//
+
 #pragma once
 
-#include "types.hpp"
-#include "error.hpp"
-#include "device.hpp"
-#include "memory.hpp"
-#include "streams.hpp"
-#include "events.hpp"
-#include "atomics.hpp"
-#include "math.hpp"
+#include "cuda4cpu.hpp"
+
+using namespace cuda4cpu::cuda_api;
