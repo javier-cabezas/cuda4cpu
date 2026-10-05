@@ -164,27 +164,52 @@ g++ -fopenmp -o my_app main.o -lcuda4cpu
    ```
 
    Template kernels work the same way: `launch(stencil<4>, grid, block).call(...)`.
+   The optional third and fourth launch parameters (dynamic shared memory size
+   and stream) go after the block: `launch(kernel, grid, block, shared_bytes)`.
 
-3. Pass the address of `__constant__` variables to `cudaMemcpyToSymbol`:
+3. Replace `extern __shared__` arrays (dynamic shared memory) with a pointer.
+   C++ has no way to express an array whose size is set at launch time:
+
+   ```cpp
+   // CUDA
+   extern __shared__ float sdata[];
+
+   // cuda4cpu
+   float *sdata = dynamic_shared<float>();
+   ```
+
+4. Pass the address of `__constant__` variables to `cudaMemcpyToSymbol`:
 
    ```cpp
    cudaMemcpyToSymbol(&coeffs, host_coeffs, sizeof(coeffs));
    ```
 
-4. Rename `.cu` files to `.cpp` (or tell your build system to compile them as
-   C++) and build with your regular compiler.
+5. Rename `.cu` files to `.cpp` (or tell your build system to compile them as
+   C++) and build with your regular compiler. GCC warns about `#pragma unroll`
+   with `-Wall`; add `-Wno-unknown-pragmas` if your kernels use it.
 
-The `tests/` directory has complete 2D and 3D stencil examples that use shared
-memory, `__constant__` memory and `__syncthreads()`.
+`tests/samples/` has ports of five CUDA samples (reduction, matrix
+multiplication, histogram, prefix scan and n-body), each checked against a host
+reference. They show every porting step above, and use shared memory, atomics,
+warp shuffles and dynamic shared memory.
 
 ## Supported CUDA features
 
 **Kernel language**
 
 - `__global__`, `__device__`, `__host__`, `__shared__`, `__constant__`
-- `threadIdx`, `blockIdx`, `blockDim`, `gridDim`
-- `__syncthreads()`
-- `dim3` and the built-in vector types (`float4`, `int2`, `uchar3`, ...)
+- `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize`
+- `__syncthreads()`, and dynamic shared memory through `dynamic_shared<T>()`
+- Warp functions: `__shfl_sync`, `__shfl_up_sync`, `__shfl_down_sync`,
+  `__shfl_xor_sync` (any type of up to 8 bytes, with `width`),
+  `__ballot_sync`, `__any_sync`, `__all_sync`, `__activemask`, `__syncwarp`
+- Atomics: `atomicAdd`, `atomicSub`, `atomicExch`, `atomicMin`, `atomicMax`,
+  `atomicInc`, `atomicDec`, `atomicCAS`, `atomicAnd`, `atomicOr`, `atomicXor`
+  for the same types as CUDA, and `__threadfence`, `__threadfence_block`,
+  `__threadfence_system`
+- `dim3`, the built-in vector types (`float4`, `int2`, `uchar3`, ...) and their
+  `make_<type>` functions
+- Math: the C++ standard library, plus `rsqrtf` and `rsqrt`
 
 **Runtime API**
 
@@ -213,6 +238,13 @@ memory, `__constant__` memory and `__syncthreads()`.
   runs until it reaches a barrier and then yields to the next one. Once every
   live thread has reached the barrier, execution continues past it. As on
   GPUs, threads that return early don't hold back the barrier.
+- **Warp functions → warp barriers.** A shuffle or vote is a barrier among the
+  lanes of one warp. Each lane publishes its value and yields. When the last
+  participating lane arrives, the results are computed for all of them and
+  they continue.
+- **Atomics → `std::atomic_ref`.** Thread blocks run in parallel on different
+  cores, so atomics on global memory are real atomic operations. They are
+  relaxed, as in CUDA.
 - **`__shared__` → `static thread_local`.** A block always runs to completion
   on a single OS thread, so a thread-local variable behaves as per-block shared
   memory.
@@ -233,9 +265,16 @@ memory, `__constant__` memory and `__syncthreads()`.
   errors. Valgrind works with `CUDA4CPU_ENABLE_VALGRIND=ON`.
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only.
-- **Not implemented yet:** atomics, warp-level intrinsics (`__shfl*`,
-  `__ballot`, ...), dynamic shared memory, textures/surfaces, unified memory
-  and error-reporting APIs. Every function returns `0` (success).
+- **Warp functions approximate convergence.** cuda4cpu can't see which lanes
+  are in the same branch. A warp function waits for every lane in its mask
+  that hasn't returned and isn't waiting at `__syncthreads()`. So
+  `__activemask()` returns those lanes, and lanes in different branches that
+  run warp functions at the same time must use disjoint masks, as CUDA
+  requires.
+- **Not implemented yet:** textures and surfaces, unified memory, cooperative
+  groups, `__match_*_sync` and `__reduce_*_sync`, 16-bit and scoped atomics
+  (`atomicAdd_block`, ...), most CUDA-specific math functions, and the
+  error-reporting APIs. Every function returns `0` (success).
 
 ## License
 
