@@ -1,7 +1,7 @@
 /*
  * CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
  *
- * Copyright (C) 2014 Javier Cabezas <javier.cabezas@gmail.com>
+ * Copyright (C) 2014 Javier Cabezas
  *
  * SPDX-License-Identifier: Apache-2.0
  *
