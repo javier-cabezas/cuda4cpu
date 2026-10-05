@@ -41,6 +41,18 @@ __global__ void write_ids(unsigned *out, unsigned *count)
     count[id] += 1;
 }
 
+// Each block reverses its slice through dynamic shared memory
+__global__ void reverse(int *data)
+{
+    int *s = dynamic_shared<int>();
+    unsigned t = threadIdx.x, n = blockDim.x;
+    size_t offset = size_t(blockIdx.x) * n;
+
+    s[t] = data[offset + t];
+    __syncthreads();
+    data[offset + t] = s[n - 1 - t];
+}
+
 static unsigned errors = 0;
 
 static void run(dim3 grid, dim3 block)
@@ -71,6 +83,24 @@ int main()
             run(dim3(1), block);            // fewer blocks than cores
             run(dim3(37), block);
             run(dim3(5, 3, 2), block);
+        }
+    }
+
+    // Dynamic shared memory, growing between launches on the same block shape
+    for (unsigned threads : {32u, 1000u}) {
+        const unsigned blocks = 50;
+        std::vector<int> data(blocks * threads);
+        for (size_t i = 0; i < data.size(); ++i) data[i] = int(i);
+        launch(reverse, blocks, threads, threads * sizeof(int)).call(data.data());
+        for (unsigned b = 0; b < blocks; ++b) {
+            for (unsigned t = 0; t < threads; ++t) {
+                if (data[b * threads + t] != int(b * threads + threads - 1 - t)) {
+                    std::cout << "dynamic shared memory: block " << b << " thread " << t << "\n";
+                    ++errors;
+                    b = blocks;
+                    break;
+                }
+            }
         }
     }
 
