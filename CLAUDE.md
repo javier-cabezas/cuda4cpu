@@ -24,7 +24,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 
 ## Layout
 
-- `include/cuda4cpu.hpp`: umbrella header that users include
+- `include/cuda4cpu.hpp`: umbrella header
+- `include/cuda_runtime.h`: drop-in for CUDA's header. It includes
+  `cuda4cpu.hpp` and does `using namespace cuda4cpu::cuda_api`.
 - `include/defines.hpp`: macro overrides for `__global__`, `__shared__`,
   `threadIdx`, `__syncthreads`, and similar. It's included **last** on purpose,
   because these macros would otherwise break the library's own headers.
@@ -34,9 +36,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   built-in variable getters.
 - `include/warp.hpp`: `warpSize`, shuffles, votes and `__syncwarp`, built on
   `thread_block::warp_shuffle`/`warp_ballot`/`syncwarp`.
-- `include/cuda/*.hpp`: CUDA runtime API shims (memory, streams, events,
-  device, types), plus device-side `atomics.hpp` (on `std::atomic_ref`) and
-  `math.hpp`. All are header-only inline functions in namespace `cuda4cpu`.
+- `include/cuda/*.hpp`: the CUDA runtime API (types, errors, device, memory,
+  streams, events), plus device-side `atomics.hpp` (on `std::atomic_ref`) and
+  `math.hpp`. All CUDA names live in the **inline namespace
+  `cuda4cpu::cuda_api`**. `cuda_runtime.h` exports exactly that namespace to
+  global scope, so helpers go in `cuda4cpu::detail`, never in `cuda_api`.
+  Most functions are header-only. Device properties and aligned allocation
+  are in the library.
 - `lib/cuda4cpu.cpp`: the only compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -51,11 +57,20 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()`
   - `atomics`: every atomic function, racing across blocks
+  - `runtime`: error codes and the last error, launch limits, allocation,
+    copies, memset, symbols, events, device queries and intrinsics, through
+    `cuda_runtime.h` only
+  - `symbol_address_rejected`: a compile-only test. Passing `&symbol` to
+    `cudaMemcpyToSymbol` must fail with the static_assert message.
   - `events`: event timing
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
-  - `samples/`: ports of CUDA samples (reduction, matmul, histogram, scan,
-    nbody), checked against a host reference. They also print timings.
+  - `samples/`: ports of CUDA programs, checked against a host reference.
+    Five use kernel features (reduction, matmul, histogram, scan, nbody, which
+    also print timings). Five use the runtime API like real code (vector_add,
+    async_api, device_query, managed_add, softmax), changing only the launch
+    line from the original. `managed_add` includes no header and is built with
+    `-include cuda_runtime.h`, like nvcc.
 
 ## How execution works (read before touching `launch.hpp`)
 
@@ -147,6 +162,21 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   causes duplicate symbols when `libcuda4cpu` is linked statically.
 - Never include `<numa.h>` from public headers. libnuma is an optional,
   PRIVATE dependency, guarded by `CUDA4CPU_HAVE_NUMA`.
+
+- glibc's `<math.h>` declares `__expf`, `__sinf`, `__powf`, ... without
+  exporting them, so they don't link. `math.hpp` defines them as
+  `extern "C" inline` at global scope, which completes those declarations.
+  Defining them in a namespace instead would make unqualified calls ambiguous.
+  The same applies to `rsqrtf` with glibc 2.41+.
+- Allocations go through `detail::allocate_aligned` in the library. When
+  inline, GCC may elide an allocation whose result is never dereferenced,
+  and treat it as successful.
+- Runtime calls that fail must return the error through
+  `detail::record_error(err)`, which also makes it the thread's last error.
+  `grid_launcher::call` rejects configurations outside CUDA's limits with
+  `cudaErrorInvalidConfiguration`.
+- Don't define `__noinline__` as a macro: libstdc++ uses
+  `__attribute__((__noinline__))`.
 
 ## Conventions
 

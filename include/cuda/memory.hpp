@@ -20,70 +20,234 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <type_traits>
 
+#include "error.hpp"
 #include "types.hpp"
 
 namespace cuda4cpu {
 
+//
+// Device memory is host memory: every allocation is ordinary memory that both
+// host code and kernels can access, and copies are memcpy. Asynchronous
+// operations complete before they return.
+//
+
+inline namespace cuda_api {
+
 enum cudaMemcpyKind {
-    cudaMemcpyHostToDevice,
-    cudaMemcpyDeviceToHost,
-    cudaMemcpyDeviceToDevice,
-    cudaMemcpyDefault
+    cudaMemcpyHostToHost     = 0,
+    cudaMemcpyHostToDevice   = 1,
+    cudaMemcpyDeviceToHost   = 2,
+    cudaMemcpyDeviceToDevice = 3,
+    cudaMemcpyDefault        = 4
 };
 
-static inline
-cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind)
-{
-    std::memcpy(dst, src, count);
+enum : unsigned int {
+    cudaHostAllocDefault       = 0x00,
+    cudaHostAllocPortable      = 0x01,
+    cudaHostAllocMapped        = 0x02,
+    cudaHostAllocWriteCombined = 0x04,
+    cudaMemAttachGlobal        = 0x01,
+    cudaMemAttachHost          = 0x02
+};
 
-    return 0;
+}
+
+namespace detail {
+
+//! Alignment of every allocation, as guaranteed by cudaMalloc
+inline constexpr size_t allocation_alignment = 256;
+
+//! Allocates size bytes aligned to allocation_alignment. Defined in the
+//! library, where the compiler can't elide the allocation: it may assume that
+//! an inline allocation whose result is never dereferenced succeeds.
+void *allocate_aligned(size_t size);
+
+inline cudaError_t allocate(void **ptr, size_t size)
+{
+    if (ptr == nullptr)
+        return record_error(cudaErrorInvalidValue);
+    if (size == 0) {
+        *ptr = nullptr;
+        return cudaSuccess;
+    }
+
+    void *p = allocate_aligned(size);
+    if (p == nullptr)
+        return record_error(cudaErrorMemoryAllocation);
+
+    *ptr = p;
+    return cudaSuccess;
+}
+
+inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
+{
+    if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault)
+        return record_error(cudaErrorInvalidMemcpyDirection);
+    if (count > 0 && (dst == nullptr || src == nullptr))
+        return record_error(cudaErrorInvalidValue);
+
+    std::memmove(dst, src, count);
+    return cudaSuccess;
+}
+
+}
+
+inline namespace cuda_api {
+
+static inline
+cudaError_t cudaMalloc(void **devPtr, size_t size)
+{
+    return detail::allocate(devPtr, size);
 }
 
 static inline
-cudaError_t cudaMemcpyToSymbol(void *dst, const void *src, size_t count, size_t offset = 0, cudaMemcpyKind /* kind */ = cudaMemcpyHostToDevice)
+cudaError_t cudaMallocHost(void **ptr, size_t size)
 {
-    std::memcpy(static_cast<char *>(dst) + offset, src, count);
-
-    return 0;
-}
-
-
-static inline
-cudaError_t cudaMallocHost(void **ptr, size_t count)
-{
-    void *tmp = std::malloc(count);
-    if (tmp != nullptr)
-        *ptr = tmp;
-
-    return 0;
+    return detail::allocate(ptr, size);
 }
 
 static inline
-cudaError_t cudaHostAlloc(void **ptr, size_t count, unsigned int /*flags*/)
+cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int /* flags */)
 {
-    return cudaMallocHost(ptr, count);
+    return detail::allocate(pHost, size);
 }
 
 static inline
-cudaError_t cudaMalloc(void **ptr, size_t count)
+cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int /* flags */ = cudaMemAttachGlobal)
 {
-    return cudaMallocHost(ptr, count);
+    return detail::allocate(devPtr, size);
+}
+
+// Typed overloads, so that cudaMalloc(&ptr, size) works without a cast, as in CUDA
+
+template <typename T>
+static inline
+cudaError_t cudaMalloc(T **devPtr, size_t size)
+{
+    return detail::allocate(reinterpret_cast<void **>(devPtr), size);
+}
+
+template <typename T>
+static inline
+cudaError_t cudaMallocHost(T **ptr, size_t size, unsigned int /* flags */ = 0)
+{
+    return detail::allocate(reinterpret_cast<void **>(ptr), size);
+}
+
+template <typename T>
+static inline
+cudaError_t cudaHostAlloc(T **pHost, size_t size, unsigned int /* flags */)
+{
+    return detail::allocate(reinterpret_cast<void **>(pHost), size);
+}
+
+template <typename T>
+static inline
+cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int /* flags */ = cudaMemAttachGlobal)
+{
+    return detail::allocate(reinterpret_cast<void **>(devPtr), size);
+}
+
+static inline
+cudaError_t cudaFree(void *devPtr)
+{
+    std::free(devPtr);
+    return cudaSuccess;
 }
 
 static inline
 cudaError_t cudaFreeHost(void *ptr)
 {
     std::free(ptr);
-
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
-cudaError_t cudaFree(void *ptr)
+cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
 {
-    return cudaFreeHost(ptr);
+    return detail::copy(dst, src, count, kind);
+}
+
+static inline
+cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count, cudaMemcpyKind kind,
+                            cudaStream_t /* stream */ = nullptr)
+{
+    return detail::copy(dst, src, count, kind);
+}
+
+static inline
+cudaError_t cudaMemset(void *devPtr, int value, size_t count)
+{
+    if (count > 0 && devPtr == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+
+    std::memset(devPtr, value, count);
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaMemsetAsync(void *devPtr, int value, size_t count, cudaStream_t /* stream */ = nullptr)
+{
+    return cudaMemset(devPtr, value, count);
+}
+
+//
+// Symbols (__constant__ and __device__ variables) are passed by name, as in
+// CUDA: cudaMemcpyToSymbol(coeffs, host_coeffs, sizeof(coeffs)). Passing the
+// address of the symbol is rejected at compile time.
+//
+
+template <typename T>
+static inline
+cudaError_t cudaMemcpyToSymbol(T &&symbol, const void *src, size_t count, size_t offset = 0,
+                               cudaMemcpyKind kind = cudaMemcpyHostToDevice)
+{
+    static_assert(std::is_lvalue_reference_v<T>,
+                  "cudaMemcpyToSymbol takes the symbol itself, as in CUDA, not its address");
+    if (offset + count > sizeof(symbol))
+        return detail::record_error(cudaErrorInvalidValue);
+
+    return detail::copy(reinterpret_cast<char *>(std::addressof(symbol)) + offset, src, count, kind);
+}
+
+template <typename T>
+static inline
+cudaError_t cudaMemcpyFromSymbol(void *dst, T &&symbol, size_t count, size_t offset = 0,
+                                 cudaMemcpyKind kind = cudaMemcpyDeviceToHost)
+{
+    static_assert(std::is_lvalue_reference_v<T>,
+                  "cudaMemcpyFromSymbol takes the symbol itself, as in CUDA, not its address");
+    if (offset + count > sizeof(symbol))
+        return detail::record_error(cudaErrorInvalidValue);
+
+    return detail::copy(dst, reinterpret_cast<const char *>(std::addressof(symbol)) + offset, count, kind);
+}
+
+template <typename T>
+static inline
+cudaError_t cudaGetSymbolAddress(void **devPtr, T &&symbol)
+{
+    static_assert(std::is_lvalue_reference_v<T>,
+                  "cudaGetSymbolAddress takes the symbol itself, as in CUDA, not its address");
+    *devPtr = const_cast<void *>(static_cast<const void *>(std::addressof(symbol)));
+    return cudaSuccess;
+}
+
+template <typename T>
+static inline
+cudaError_t cudaGetSymbolSize(size_t *size, T &&symbol)
+{
+    static_assert(std::is_lvalue_reference_v<T>,
+                  "cudaGetSymbolSize takes the symbol itself, as in CUDA, not its address");
+    *size = sizeof(symbol);
+    return cudaSuccess;
+}
+
 }
 
 }

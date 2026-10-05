@@ -24,13 +24,15 @@
 
 namespace cuda4cpu {
 
+inline namespace cuda_api {
+
 static inline
 cudaError_t cudaEventCreate(cudaEvent_t *event)
 {
     *event = new cudaEvent__;
-    (*event)->stream = NULL;
+    (*event)->stream = nullptr;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -44,7 +46,7 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
     delete event;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -52,28 +54,30 @@ cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end)
 {
     *ms = std::chrono::duration<float, std::milli>(end->tstamp - start->tstamp).count();
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
 cudaError_t cudaEventQuery(cudaEvent_t /* event */)
 {
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
-cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
+cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = nullptr)
 {
     event->tstamp = std::chrono::system_clock::now();
     event->stream = stream;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
 cudaError_t cudaEventSynchronize(cudaEvent_t /* event */)
 {
-    return 0;
+    return cudaSuccess;
+}
+
 }
 
 }

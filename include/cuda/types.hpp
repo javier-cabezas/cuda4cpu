@@ -24,7 +24,31 @@
 
 namespace cuda4cpu {
 
-using cudaError_t = int;
+// The CUDA API lives in the inline namespace cuda_api: code that includes
+// cuda4cpu.hpp sees it as cuda4cpu::name, and cuda_runtime.h brings exactly
+// these names into the global namespace, like the real header.
+inline namespace cuda_api {
+
+//! Error codes, with the same values as CUDA's
+enum cudaError {
+    cudaSuccess                     = 0,
+    cudaErrorInvalidValue           = 1,
+    cudaErrorMemoryAllocation       = 2,
+    cudaErrorInitializationError    = 3,
+    cudaErrorInvalidConfiguration   = 9,
+    cudaErrorInvalidSymbol          = 13,
+    cudaErrorInvalidDevicePointer   = 17,
+    cudaErrorInvalidMemcpyDirection = 21,
+    cudaErrorNoDevice               = 100,
+    cudaErrorInvalidDevice          = 101,
+    cudaErrorInvalidResourceHandle  = 400,
+    cudaErrorNotReady               = 600,
+    cudaErrorLaunchFailure          = 719,
+    cudaErrorNotSupported           = 801,
+    cudaErrorUnknown                = 999
+};
+
+using cudaError_t = cudaError;
 
 struct dim3 {
     unsigned x, y ,z;
@@ -91,5 +115,6 @@ using cudaEvent_t = cudaEvent__ *;
 
 using cudaStreamCallback_t = void(*)(cudaStream_t stream, cudaError_t status, void *userData);
 
+}
 
 }

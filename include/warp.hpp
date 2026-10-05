@@ -39,7 +39,11 @@ namespace cuda4cpu {
 // use disjoint masks (as CUDA requires); otherwise the operations are mixed.
 //
 
+inline namespace cuda_api {
+
 inline constexpr int warpSize = 32;
+
+}
 
 namespace detail {
 
@@ -71,6 +75,8 @@ shuffle(unsigned mask, T var, unsigned src_lane)
 }
 
 }
+
+inline namespace cuda_api {
 
 inline void __syncwarp(unsigned mask = 0xffffffff)
 {
@@ -141,6 +147,8 @@ inline int __all_sync(unsigned mask, int predicate)
 {
     uint64_t result = thread_block::warp_ballot(mask, predicate != 0);
     return unsigned(result) == unsigned(result >> 32);
+}
+
 }
 
 }

@@ -20,14 +20,18 @@
 
 #pragma once
 
+#include "types.hpp"
+
 namespace cuda4cpu {
+
+inline namespace cuda_api {
 
 static inline
 cudaError_t cudaStreamAddCallback(cudaStream_t stream, cudaStreamCallback_t callback, void *userData, unsigned int /*flags*/)
 {
-    callback(stream, 0, userData);
+    callback(stream, cudaSuccess, userData);
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -37,7 +41,7 @@ cudaError_t cudaStreamCreateWithPriority(cudaStream_t *stream, unsigned int flag
     (*stream)->flags    = flags;
     (*stream)->priority = priority;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -57,7 +61,7 @@ cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
     delete stream;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -65,7 +69,7 @@ cudaError_t cudaStreamGetFlags(cudaStream_t stream, unsigned int *flags)
 {
     *flags = stream->flags;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
@@ -73,26 +77,27 @@ cudaError_t cudaStreamGetPriority(cudaStream_t stream, int *priority)
 {
     *priority = stream->priority;
 
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
 cudaError_t cudaStreamQuery(cudaStream_t /* stream */)
 {
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
 cudaError_t cudaStreamSynchronize(cudaStream_t /* stream */)
 {
-    return 0;
+    return cudaSuccess;
 }
 
 static inline
-cudaError_t cudaStreamWaitEvent(cudaStream_t /* stream */, cudaEvent_t /* event */, unsigned int /* flags */)
+cudaError_t cudaStreamWaitEvent(cudaStream_t /* stream */, cudaEvent_t /* event */, unsigned int /* flags */ = 0)
 {
-    return 0;
+    return cudaSuccess;
 }
 
+}
 
 }
