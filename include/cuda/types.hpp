@@ -29,7 +29,7 @@ using cudaError_t = int;
 struct dim3 {
     unsigned x, y ,z;
 
-    dim3(unsigned x_ = 1, unsigned y_ = 1, unsigned z_ = 1) :
+    constexpr dim3(unsigned x_ = 1, unsigned y_ = 1, unsigned z_ = 1) :
         x(x_), y(y_), z(z_)
     {}
 };

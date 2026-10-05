@@ -66,6 +66,10 @@ if(CUDA4CPU_ENABLE_VALGRIND)
     target_include_directories(cuda4cpu PRIVATE ${VALGRIND_INCLUDE_DIR})
 endif()
 
+if(CUDA4CPU_PORTABLE_CONTEXT)
+    target_compile_definitions(cuda4cpu PRIVATE CUDA4CPU_PORTABLE_CONTEXT)
+endif()
+
 if(CUDA4CPU_ENABLE_NATIVE)
     target_compile_options(cuda4cpu PUBLIC $<BUILD_INTERFACE:-march=native>)
 endif()
