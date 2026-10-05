@@ -25,9 +25,7 @@ for running CUDA code on machines without a GPU, and for prototyping.
 ## Quick example
 
 ```cpp
-#include <cuda4cpu.hpp>
-
-using namespace cuda4cpu;
+#include <cuda_runtime.h>
 
 __global__
 void vecadd(float *C, const float *A, const float *B, size_t elems)
@@ -43,15 +41,17 @@ int main()
     constexpr size_t N = 4096;
 
     float *A, *B, *C;
-    cudaMalloc((void **)&A, N * sizeof(float));
-    cudaMalloc((void **)&B, N * sizeof(float));
-    cudaMalloc((void **)&C, N * sizeof(float));
+    cudaMalloc(&A, N * sizeof(float));
+    cudaMalloc(&B, N * sizeof(float));
+    cudaMalloc(&C, N * sizeof(float));
 
     // Initialize input data
     // ...
 
     // Equivalent to: vecadd<<<N / 512, 512>>>(C, A, B, N);
-    launch(vecadd, N / 512, 512).call(C, A, B, N);
+    cuda4cpu::launch(vecadd, N / 512, 512).call(C, A, B, N);
+    if (cudaGetLastError() != cudaSuccess)
+        return 1;
     cudaDeviceSynchronize();
 
     // Use output data
@@ -138,6 +138,14 @@ Or vendor it as a subdirectory, with `add_subdirectory(cuda4cpu)` or
 The target brings in everything your code needs: the include path, C++23
 and OpenMP.
 
+To compile `.cu` files as they are, have CMake treat them as C++, and include
+`cuda_runtime.h` implicitly as nvcc does:
+
+```cmake
+set_source_files_properties(kernels.cu PROPERTIES LANGUAGE CXX)
+target_compile_options(my_app PRIVATE -include cuda_runtime.h)
+```
+
 ### Without CMake
 
 ```sh
@@ -145,29 +153,31 @@ g++ -std=c++23 -fopenmp -I/usr/local/include/cuda4cpu -c main.cpp
 g++ -fopenmp -o my_app main.o -lcuda4cpu
 ```
 
+For a `.cu` file, add `-x c++ -include cuda_runtime.h`.
+
 ## Porting a CUDA program
 
-1. Include `cuda4cpu.hpp` in every source file that contains CUDA code, and
-   bring the CUDA runtime names into scope:
+1. Use cuda4cpu's `cuda_runtime.h`. It provides the CUDA API in the global
+   namespace, like the real header. Files that include it keep compiling
+   unchanged. For files that rely on nvcc including it implicitly, pass
+   `-include cuda_runtime.h` (see [Using cuda4cpu in your
+   project](#using-cuda4cpu-in-your-project)).
 
-   ```cpp
-   #include <cuda4cpu.hpp>
-   using namespace cuda4cpu;
-   ```
-
-2. Replace each kernel launch with `launch(kernel, grid, block).call(args...)`:
+2. Replace each kernel launch with `cuda4cpu::launch(kernel, grid, block).call(args...)`:
 
    ```cpp
    // CUDA
    stencil<<<dim3(64, 512), dim3(32, 4)>>>(B, A, cols);
 
    // cuda4cpu
-   launch(stencil, dim3(64, 512), dim3(32, 4)).call(B, A, cols);
+   cuda4cpu::launch(stencil, dim3(64, 512), dim3(32, 4)).call(B, A, cols);
    ```
 
    Template kernels work the same way: `launch(stencil<4>, grid, block).call(...)`.
    The optional third and fourth launch parameters (dynamic shared memory size
    and stream) go after the block: `launch(kernel, grid, block, shared_bytes)`.
+   Code that includes `cuda4cpu.hpp` and uses `using namespace cuda4cpu` can
+   write `launch` without the namespace.
 
 3. Replace `extern __shared__` arrays (dynamic shared memory) with a pointer.
    C++ has no way to express an array whose size is set at launch time:
@@ -180,26 +190,24 @@ g++ -fopenmp -o my_app main.o -lcuda4cpu
    float *sdata = dynamic_shared<float>();
    ```
 
-4. Pass the address of `__constant__` variables to `cudaMemcpyToSymbol`:
+4. Compile `.cu` files as C++ with your regular compiler. GCC warns about
+   `#pragma unroll` with `-Wall`; add `-Wno-unknown-pragmas` if your kernels
+   use it.
 
-   ```cpp
-   cudaMemcpyToSymbol(&coeffs, host_coeffs, sizeof(coeffs));
-   ```
-
-5. Rename `.cu` files to `.cpp` (or tell your build system to compile them as
-   C++) and build with your regular compiler. GCC warns about `#pragma unroll`
-   with `-Wall`; add `-Wno-unknown-pragmas` if your kernels use it.
-
-`tests/samples/` has ports of five CUDA samples (reduction, matrix
-multiplication, histogram, prefix scan and n-body), each checked against a host
-reference. They show every porting step above, and use shared memory, atomics,
-warp shuffles and dynamic shared memory.
+`tests/samples/` has ports of ten CUDA programs, each checked against a host
+reference. Five are CUDA samples using kernel-language features: reduction,
+matrix multiplication, histogram, prefix scan and n-body. The other five use
+the runtime API as real applications do: vectorAdd, asyncAPI, deviceQuery, the
+unified-memory program from NVIDIA's introduction to CUDA, and a softmax kernel.
+Apart from dynamic shared memory, the only change from the CUDA originals is
+the kernel launch.
 
 ## Supported CUDA features
 
 **Kernel language**
 
-- `__global__`, `__device__`, `__host__`, `__shared__`, `__constant__`
+- `__global__`, `__device__`, `__host__`, `__shared__`, `__constant__`,
+  `__forceinline__`, `__launch_bounds__`
 - `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize`
 - `__syncthreads()`, and dynamic shared memory through `dynamic_shared<T>()`
 - Warp functions: `__shfl_sync`, `__shfl_up_sync`, `__shfl_down_sync`,
@@ -211,14 +219,20 @@ warp shuffles and dynamic shared memory.
   `__threadfence_system`
 - `dim3`, the built-in vector types (`float4`, `int2`, `uchar3`, ...) and their
   `make_<type>` functions
-- Math: the C++ standard library, plus `rsqrtf` and `rsqrt`
+- Math: the C++ standard library, plus `rsqrtf`, `rsqrt` and the fast
+  intrinsics `__expf`, `__exp10f`, `__logf`, `__log2f`, `__log10f`, `__sinf`,
+  `__cosf`, `__tanf`, `__sincosf`, `__powf`, `__fdividef` and `__saturatef`.
+  They are computed at full precision.
+- Integer intrinsics: `__popc`, `__popcll`, `__clz`, `__clzll`, `__ffs`,
+  `__ffsll`, `__brev`, `__brevll`, and `__ldg`
 
 **Runtime API**
 
 | Area | Functions |
 |---|---|
-| Device | `cudaDeviceSynchronize`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only) |
-| Memory | `cudaMalloc`, `cudaFree`, `cudaMallocHost`, `cudaHostAlloc`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyToSymbol` |
+| Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes |
+| Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only) |
+| Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
 
@@ -273,17 +287,31 @@ warp shuffles and dynamic shared memory.
   sanitizers don't know about the fiber stack switches and report false
   errors. Valgrind works with `CUDA4CPU_ENABLE_VALGRIND=ON`.
 - **Kernel launches are synchronous** and always run on the host. Streams and
-  events exist for API compatibility only.
+  events exist for API compatibility only, and asynchronous copies complete
+  before they return, so `cudaErrorNotReady` never occurs.
+- **One device: the CPU.** `cudaGetDeviceProperties` reports the CPU's name,
+  memory, L2 cache and clock, one multiprocessor per OS thread, CUDA's limits
+  for blocks and grids, and compute capability 6.0. That's the newest whose
+  features cuda4cpu implements (no tensor cores), so code that checks it picks
+  supported paths.
+- **Errors follow CUDA where the CPU can detect them.** Invalid arguments,
+  failed allocations, and launches outside CUDA's limits (more than 1024
+  threads per block, zero sizes, grids too large) return or record the CUDA
+  error code, and rejected launches don't run. There are no
+  device-side errors: an out-of-bounds access in a kernel is an ordinary
+  segmentation fault.
 - **Warp functions approximate convergence.** cuda4cpu can't see which lanes
   are in the same branch. A warp function waits for every lane in its mask
   that hasn't returned and isn't waiting at `__syncthreads()`. So
   `__activemask()` returns those lanes, and lanes in different branches that
   run warp functions at the same time must use disjoint masks, as CUDA
   requires.
-- **Not implemented yet:** textures and surfaces, unified memory, cooperative
-  groups, `__match_*_sync` and `__reduce_*_sync`, 16-bit and scoped atomics
-  (`atomicAdd_block`, ...), most CUDA-specific math functions, and the
-  error-reporting APIs. Every function returns `0` (success).
+- **Not implemented yet:** textures and surfaces, cooperative groups,
+  `__match_*_sync` and `__reduce_*_sync`, 16-bit and scoped atomics
+  (`atomicAdd_block`, ...), 2D/3D copies (`cudaMemcpy2D`, `cudaMallocPitch`),
+  mapped host memory (`cudaHostGetDevicePointer`), `cudaFuncSetAttribute`, the
+  double-precision and rounding-mode intrinsics, and the driver API
+  (`cuda.h`).
 
 ## License
 

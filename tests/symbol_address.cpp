@@ -18,13 +18,16 @@
  * limitations under the License.
  */
 
-#pragma once
 
-#include "types.hpp"
-#include "error.hpp"
-#include "device.hpp"
-#include "memory.hpp"
-#include "streams.hpp"
-#include "events.hpp"
-#include "atomics.hpp"
-#include "math.hpp"
+// Must not compile: CUDA takes the symbol itself, not its address. The test
+// checks that the compiler explains why.
+
+#include <cuda_runtime.h>
+
+__constant__ float coeffs[4];
+
+int main()
+{
+    float host[4] = {1, 2, 3, 4};
+    return cudaMemcpyToSymbol(&coeffs, host, sizeof(host));
+}

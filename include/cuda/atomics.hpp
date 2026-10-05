@@ -69,6 +69,8 @@ atomic_update(T *address, F &&update)
 
 }
 
+inline namespace cuda_api {
+
 template <detail::atomic_add T>
 inline T atomicAdd(T *address, std::type_identity_t<T> val)
 {
@@ -157,6 +159,8 @@ inline void __threadfence()
 inline void __threadfence_system()
 {
     std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
 }
 
 }
