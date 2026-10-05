@@ -34,3 +34,24 @@ jobs:
 
       - name: Install
         run: cmake --install build/${{ matrix.preset }} --prefix "${{ runner.temp }}/cuda4cpu"
+
+  # The _setjmp/_longjmp fallback used on architectures without the assembly
+  # context switch
+  portable-context:
+    name: gcc-14 / debug / portable context
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14
+
+      - name: Configure, build and test
+        run: |
+          cmake --preset debug -DCUDA4CPU_PORTABLE_CONTEXT=ON
+          cmake --build --preset debug
+          ctest --preset debug
