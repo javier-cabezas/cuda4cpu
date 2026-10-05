@@ -18,8 +18,6 @@
  * limitations under the License.
  */
 
-#undef _FORTIFY_SOURCE
-
 #include <iostream>
 #include <chrono>
 #include <cstdlib>
