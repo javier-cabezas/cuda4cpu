@@ -11,8 +11,11 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda4cpu.hpp
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
             ${CUDA4CPU_INCLUDE_DIR}/launch.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/warp.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/atomics.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/device.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/events.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/math.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/memory.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/mycuda.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/streams.hpp

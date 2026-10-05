@@ -23,4 +23,5 @@
 #include "cuda/mycuda.hpp"
 
 #include "launch.hpp"
+#include "warp.hpp"
 #include "defines.hpp"

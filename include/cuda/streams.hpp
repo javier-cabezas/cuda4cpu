@@ -77,19 +77,19 @@ cudaError_t cudaStreamGetPriority(cudaStream_t stream, int *priority)
 }
 
 static inline
-cudaError_t cudaStreamQuery(cudaStream_t stream)
+cudaError_t cudaStreamQuery(cudaStream_t /* stream */)
 {
     return 0;
 }
 
 static inline
-cudaError_t cudaStreamSynchronize(cudaStream_t stream)
+cudaError_t cudaStreamSynchronize(cudaStream_t /* stream */)
 {
     return 0;
 }
 
 static inline
-cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int /* flags */)
+cudaError_t cudaStreamWaitEvent(cudaStream_t /* stream */, cudaEvent_t /* event */, unsigned int /* flags */)
 {
     return 0;
 }

@@ -55,7 +55,12 @@ struct dim3 {
         t y;             \
         t z;             \
         t w;             \
-    } n##4;
+    } n##4;              \
+                         \
+    inline n##1 make_##n##1(t x) { return {x}; }                    \
+    inline n##2 make_##n##2(t x, t y) { return {x, y}; }            \
+    inline n##3 make_##n##3(t x, t y, t z) { return {x, y, z}; }    \
+    inline n##4 make_##n##4(t x, t y, t z, t w) { return {x, y, z, w}; }
 
 VECTOR_TYPE(char, char)
 VECTOR_TYPE(uchar, unsigned char)

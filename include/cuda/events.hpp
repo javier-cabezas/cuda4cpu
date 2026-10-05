@@ -56,7 +56,7 @@ cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end)
 }
 
 static inline
-cudaError_t cudaEventQuery(cudaEvent_t event)
+cudaError_t cudaEventQuery(cudaEvent_t /* event */)
 {
     return 0;
 }
@@ -71,7 +71,7 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
 }
 
 static inline
-cudaError_t cudaEventSynchronize(cudaEvent_t event)
+cudaError_t cudaEventSynchronize(cudaEvent_t /* event */)
 {
     return 0;
 }
