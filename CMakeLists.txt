@@ -12,9 +12,11 @@ endif()
 
 option(BUILD_SHARED_LIBS "Build cuda4cpu as a shared library" ON)
 option(CUDA4CPU_BUILD_TESTS "Build the cuda4cpu tests" ${PROJECT_IS_TOP_LEVEL})
+option(CUDA4CPU_BUILD_BENCHMARKS "Build the cuda4cpu micro-benchmarks" ${PROJECT_IS_TOP_LEVEL})
 option(CUDA4CPU_ENABLE_NUMA "Use libnuma (if found) to discover the NUMA topology" ON)
 option(CUDA4CPU_ENABLE_VALGRIND "Register fiber stacks with Valgrind" OFF)
 option(CUDA4CPU_ENABLE_NATIVE "Compile in-tree targets with -march=native" OFF)
+option(CUDA4CPU_PORTABLE_CONTEXT "Switch fibers with _setjmp/_longjmp instead of the x86-64 assembly" OFF)
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 
@@ -23,6 +25,10 @@ add_subdirectory(lib)
 if(CUDA4CPU_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(CUDA4CPU_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 #

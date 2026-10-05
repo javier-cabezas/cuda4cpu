@@ -72,7 +72,7 @@ int main()
 | C++23 compiler | GCC 14+ or Clang 18+ |
 | CMake 3.25+ | Ninja is recommended (the presets use it) |
 | OpenMP | Bundled with GCC; Clang needs `libomp` |
-| Linux / glibc | Fibers use `ucontext` and `_setjmp`/`_longjmp` |
+| Linux / glibc, 64-bit | Fibers use an assembly context switch on x86-64, and `ucontext` with `_setjmp`/`_longjmp` elsewhere |
 | libnuma (optional) | Used for NUMA topology discovery |
 | Valgrind (optional) | Headers needed for `CUDA4CPU_ENABLE_VALGRIND` |
 
@@ -113,6 +113,8 @@ cmake --install build/release --prefix /usr/local
 | `CUDA4CPU_ENABLE_NUMA` | `ON` | Use libnuma if found; otherwise assume a single NUMA node |
 | `CUDA4CPU_ENABLE_VALGRIND` | `OFF` | Register fiber stacks with Valgrind so it doesn't report false errors |
 | `CUDA4CPU_ENABLE_NATIVE` | `OFF` | Compile in-tree targets with `-march=native` |
+| `CUDA4CPU_BUILD_BENCHMARKS` | `ON` when top-level | Build `benchmarks/microbench`, which measures launch, barrier, shuffle and scheduling costs |
+| `CUDA4CPU_PORTABLE_CONTEXT` | `OFF` | Use the `_setjmp`/`_longjmp` fallback instead of the x86-64 assembly context switch |
 
 Pass options at configure time, for example
 `cmake --preset debug -DCUDA4CPU_ENABLE_VALGRIND=ON`.
@@ -223,16 +225,19 @@ warp shuffles and dynamic shared memory.
 ## How it works
 
 - **Grid → OpenMP threads.** `launch(...).call(...)` splits the grid's thread
-  blocks into contiguous chunks and runs one chunk per CPU core inside an
-  OpenMP parallel loop.
+  blocks into contiguous chunks, about 8 per CPU core, and hands them out to
+  the cores dynamically, so blocks of uneven cost balance out.
 - **Block → fibers.** Within a block, each CUDA thread is a user-level fiber
-  with its own stack. Fibers are created with `makecontext` and switched with
-  `_setjmp`/`_longjmp`, which is much cheaper than switching OS threads. Each
-  OS thread creates fibers only once per block size, and reuses them for
-  every block and every later launch.
+  with its own stack. On x86-64, switching fibers takes a dozen instructions
+  that save and restore the callee-saved registers. That's about 12–20 ns per
+  switch on a single core, including scheduling. Each OS thread creates
+  fibers only once per block size, and reuses them for every block and every
+  later launch.
 - **No barriers, no switching.** A block starts by running its CUDA threads
-  back to back as plain function calls. Kernels that never call
-  `__syncthreads()` never switch fibers.
+  back to back, each one a direct call to the kernel. Kernels that never call
+  `__syncthreads()` never switch fibers. `threadIdx`, `blockIdx`, `blockDim`
+  and `gridDim` are thread-local values that the scheduler keeps up to date,
+  so reading one is a single memory load.
 - **`__syncthreads()` → cooperative switch.** When a CUDA thread first reaches
   a barrier, the block switches to fiber mode. From then on, each CUDA thread
   runs until it reaches a barrier and then yields to the next one. Once every
@@ -253,8 +258,12 @@ warp shuffles and dynamic shared memory.
 
 ## Limitations
 
-- **Linux/glibc on 64-bit only.** The fiber implementation relies on
-  `ucontext` and passes pointers through `makecontext` as two 32-bit halves.
+- **Linux/glibc on 64-bit only.** The context switch is written for x86-64.
+  Other architectures use the `ucontext` and `_setjmp`/`_longjmp` fallback,
+  which passes pointers through `makecontext` as two 32-bit halves.
+- **`threadIdx` and the other built-in variables are values**, not
+  variables you can take the address of. Reading their fields and copying
+  them work as in CUDA.
 - **Fixed-size stacks.** Each CUDA thread gets a 64 KiB stack with a guard
   page below it, so an overflow crashes with `SIGSEGV` instead of corrupting
   memory. Kernels with deep recursion or large local arrays can request more

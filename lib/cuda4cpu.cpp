@@ -42,12 +42,80 @@
 
 #include "cuda4cpu.hpp"
 
+// Fibers switch with a hand-written context switch on x86-64, and with
+// _setjmp/_longjmp elsewhere (or when CUDA4CPU_PORTABLE_CONTEXT is defined)
+#if defined(__x86_64__) && !defined(CUDA4CPU_PORTABLE_CONTEXT)
+#define CUDA4CPU_ASM_CONTEXT 1
+#else
+#define CUDA4CPU_ASM_CONTEXT 0
+#endif
+
+#if CUDA4CPU_ASM_CONTEXT
+extern "C" {
+
+//! Pushes the callee-saved registers of the System V x86-64 ABI on the
+//! current stack, stores the stack pointer in *save, switches to the stack
+//! load and pops the registers saved there. The x87 control word and MXCSR
+//! are not switched: CUDA has no per-thread floating-point environment, so
+//! all the fibers of a block share the OS thread's.
+void cuda4cpu_switch_context(void **save, void *load);
+
+//! First code run on a fresh fiber stack: aligns the stack, marks the end of
+//! the call stack for debuggers, and calls cuda4cpu_fiber_start
+void cuda4cpu_fiber_trampoline();
+
+[[gnu::visibility("hidden")]] void cuda4cpu_fiber_start();
+
+}
+
+asm(R"(
+    .text
+    .p2align 4
+    .globl  cuda4cpu_switch_context
+    .hidden cuda4cpu_switch_context
+    .type   cuda4cpu_switch_context, @function
+cuda4cpu_switch_context:
+    pushq   %rbp
+    pushq   %rbx
+    pushq   %r12
+    pushq   %r13
+    pushq   %r14
+    pushq   %r15
+    movq    %rsp, (%rdi)
+    movq    %rsi, %rsp
+    popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %rbx
+    popq    %rbp
+    ret
+    .size   cuda4cpu_switch_context, .-cuda4cpu_switch_context
+
+    .p2align 4
+    .globl  cuda4cpu_fiber_trampoline
+    .hidden cuda4cpu_fiber_trampoline
+    .type   cuda4cpu_fiber_trampoline, @function
+cuda4cpu_fiber_trampoline:
+    .cfi_startproc
+    .cfi_undefined rip
+    xorl    %ebp, %ebp
+    andq    $-16, %rsp
+    call    cuda4cpu_fiber_start@PLT
+    ud2
+    .cfi_endproc
+    .size   cuda4cpu_fiber_trampoline, .-cuda4cpu_fiber_trampoline
+)");
+#endif
+
 namespace cuda4cpu {
 
 // static variables
 system system::sys_;
-[[gnu::tls_model("initial-exec")]] thread_local thread_block *
+[[gnu::tls_model("initial-exec")]] __thread thread_block *
 thread_block::Current_ = nullptr;
+[[gnu::tls_model("initial-exec")]] __thread thread_block::builtin_vars
+thread_block::Vars_;
 
 namespace {
 
@@ -100,9 +168,16 @@ constexpr size_t stack_offset(size_t i)
     return (i % stack_offset_lines) * cache_line;
 }
 
-struct jump_buffer {
+#if CUDA4CPU_ASM_CONTEXT
+//! A suspended fiber: its registers are saved on its own stack
+struct context {
+    void *sp;
+};
+#else
+struct context {
     jmp_buf buf;
 };
+#endif
 
 }
 
@@ -126,8 +201,10 @@ struct thread_block::fibers {
         stack_size{(stack_size + page - 1) / page * page},
         stride{this->stack_size + page},
         map_size{n * stride},
-        start(n),
         ctx(n),
+#if !CUDA4CPU_ASM_CONTEXT
+        start(n),
+#endif
         live((n + warp_size - 1) / warp_size),
         started(live.size()),
         block_wait(live.size()),
@@ -175,9 +252,38 @@ struct thread_block::fibers {
     const size_t map_size;
     unsigned char *base;
 
-    std::vector<jump_buffer> start;   //!< Entry point of each fiber, captured once at creation
-    std::vector<jump_buffer> ctx;     //!< Where each started fiber resumes
-    jump_buffer caller;               //!< Where execute() resumes when the block completes
+    std::vector<context> ctx;         //!< Where each started fiber resumes
+#if !CUDA4CPU_ASM_CONTEXT
+    std::vector<context> start;       //!< Entry point of each fiber, captured once at creation
+#endif
+    context caller;                   //!< Where execute() resumes when the block completes
+    context discarded;                //!< Saved context of fibers that never resume
+
+    //! Saves the running context in save and resumes load
+    void switch_to(context &save, context &load)
+    {
+#if CUDA4CPU_ASM_CONTEXT
+        cuda4cpu_switch_context(&save.sp, load.sp);
+#else
+        if (_setjmp(save.buf) == 0)
+            _longjmp(load.buf, 1);
+#endif
+    }
+
+    //! Saves the running context in save and starts fiber i from its entry point
+    void start_fiber(context &save, size_t i)
+    {
+#if CUDA4CPU_ASM_CONTEXT
+        // The frame that cuda4cpu_switch_context pops: r15, r14, r13, r12, rbx,
+        // rbp, and the return address
+        void **sp = reinterpret_cast<void **>(stack(i) + stack_size - stack_offset(i)) - 7;
+        std::fill(sp, sp + 6, nullptr);
+        sp[6] = reinterpret_cast<void *>(cuda4cpu_fiber_trampoline);
+        cuda4cpu_switch_context(&save.sp, sp);
+#else
+        switch_to(save, start[i]);
+#endif
+    }
 
     // Scheduling state in fiber mode, as one bit per lane and one word per
     // warp. A thread can run when it is live and not waiting.
@@ -210,16 +316,18 @@ struct thread_block::fibers {
 
 namespace {
 
+#if !CUDA4CPU_ASM_CONTEXT
 struct fiber_init {
-    jump_buffer *start;
-    ucontext_t  *creator;
+    context    *start;
+    ucontext_t *creator;
 };
+#endif
 
 }
 
 thread_block::thread_block(dim3 block, size_t stack_size) :
     conf_{dim3(), block},
-    func_{nullptr},
+    kernel_{nullptr},
     nthreads_{conf_.nthreads()},
     stack_size_{stack_size},
     cur_{0},
@@ -234,6 +342,7 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
                        unsigned((i / block.x) % block.y),
                        unsigned(i / (size_t(block.x) * size_t(block.y))));
 
+#if !CUDA4CPU_ASM_CONTEXT
         // Enter the fiber once so that it captures its entry point in start[i]
         ucontext_t fiber, creator;
         getcontext(&fiber);
@@ -246,6 +355,7 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
         makecontext(&fiber, reinterpret_cast<void (*)()>(fiber_entry), 2,
                     unsigned(ptr >> 32), unsigned(ptr & 0xffffffffu));
         swapcontext(&creator, &fiber);
+#endif
     }
 }
 
@@ -295,20 +405,36 @@ void thread_block::reserve_shared(size_t bytes)
     shared_mem_ = ptr;
 }
 
-void thread_block::execute(const std::function<void ()> &func, dim3 block_id)
+void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
 {
-    func_     = &func;
+    kernel_   = &kernel;
     block_id_ = block_id;
-    cur_      = 0;
     direct_   = true;
 
     thread_block *prev = Current_;
+    builtin_vars prev_vars = Vars_;
     Current_ = this;
-    if (_setjmp(fibers_->caller.buf) == 0)
-        _longjmp(fibers_->start[0].buf, 1);
+    Vars_.block_idx.set(block_id);
+    Vars_.block_dim.set(conf_.block);
+    Vars_.grid_dim.set(conf_.grid);
+    set_current_thread(0);
+    fibers_->start_fiber(fibers_->caller, 0);
     Current_ = prev;
+    Vars_    = prev_vars;
 }
 
+#if CUDA4CPU_ASM_CONTEXT
+namespace detail {
+
+struct fiber_access {
+    [[noreturn]] static void start()
+    {
+        thread_block::Current_->fiber_main();
+    }
+};
+
+}
+#else
 //! Entry point of every fiber.
 //! @param ptr_high Holds the high 32 bits of the address of the fiber_init object.
 //! @param ptr_low Holds the low 32 bits of the address of the fiber_init object.
@@ -324,19 +450,20 @@ void thread_block::fiber_entry(unsigned ptr_high, unsigned ptr_low)
 
     Current_->fiber_main();
 }
+#endif
 
 void thread_block::fiber_main()
 {
-    for (;;) {
-        (*func_)();
-
-        if (!direct_)
-            finish_current();
-
-        // Direct mode: the CUDA thread returned without reaching a barrier
-        if (++cur_ == nthreads_)
-            _longjmp(fibers_->caller.buf, 1);
+    if (direct_) {
+        // Fiber 0 at the start of a block. Returns when every CUDA thread has
+        // returned without reaching a barrier.
+        kernel_->run_direct(*kernel_);
+        fibers_->switch_to(fibers_->discarded, fibers_->caller);
+    } else {
+        kernel_->run_one(*kernel_);
+        finish_current();
     }
+    __builtin_unreachable();
 }
 
 //! Switches the block to fiber mode when the current CUDA thread reaches the
@@ -492,8 +619,7 @@ void thread_block::switch_from_current()
     if (next == self)
         return;
 
-    if (_setjmp(fibers_->ctx[self].buf) == 0)
-        jump_to(next);
+    switch_to_thread(self, next);
 }
 
 void thread_block::finish_current()
@@ -502,8 +628,10 @@ void thread_block::finish_current()
     const size_t self = cur_;
     const size_t w    = self / warp_size;
     f.live[w] &= ~lane_bit(self);
-    if (--f.live_count == 0)
-        _longjmp(f.caller.buf, 1);
+    if (--f.live_count == 0) {
+        f.switch_to(f.discarded, f.caller);
+        __builtin_unreachable();
+    }
 
     // Threads that return early leave the barriers that wait for them
     if (f.block_arrived > 0 && f.block_arrived == f.live_count)
@@ -511,7 +639,8 @@ void thread_block::finish_current()
 
     try_release_warp_waiters(w);
 
-    jump_to(next_runnable(self + 1));
+    switch_to_thread(no_thread, next_runnable(self + 1));
+    __builtin_unreachable();
 }
 
 //! Completes the warp-synchronous operations of warp w that no longer wait for
@@ -526,17 +655,22 @@ void thread_block::try_release_warp_waiters(size_t w)
     }
 }
 
-void thread_block::jump_to(size_t tid)
+//! Suspends thread from (unless it is no_thread, which never resumes) and runs
+//! thread to, from the beginning of the kernel if it has not started yet.
+//! Returns when from is resumed.
+void thread_block::switch_to_thread(size_t from, size_t to)
 {
     auto &f = *fibers_;
-    cur_ = tid;
+    context &save = from == no_thread ? f.discarded : f.ctx[from];
+    set_current_thread(to);
 
-    uint32_t &started = f.started[tid / warp_size];
-    if ((started & lane_bit(tid)) == 0) {
-        started |= lane_bit(tid);
-        _longjmp(f.start[tid].buf, 1);
+    uint32_t &started = f.started[to / warp_size];
+    if ((started & lane_bit(to)) == 0) {
+        started |= lane_bit(to);
+        f.start_fiber(save, to);
+    } else {
+        f.switch_to(save, f.ctx[to]);
     }
-    _longjmp(f.ctx[tid].buf, 1);
 }
 
 //! Returns the first thread at or after from, wrapping around, that can run.
@@ -618,3 +752,10 @@ void system::init_single_node()
 }
 
 }
+
+#if CUDA4CPU_ASM_CONTEXT
+void cuda4cpu_fiber_start()
+{
+    cuda4cpu::detail::fiber_access::start();
+}
+#endif

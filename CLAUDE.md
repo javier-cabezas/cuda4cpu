@@ -16,6 +16,7 @@ cmake --workflow --preset debug     # configure + build + test (Debug)
 cmake --workflow --preset release   # same, Release
 ctest --preset debug -R stencil2d   # run a single test
 cmake --preset debug -DCUDA4CPU_ENABLE_VALGRIND=ON   # opt-in options, see CMakeLists.txt
+build/release/benchmarks/microbench   # launch, barrier, shuffle and scheduling costs
 ```
 
 Build trees live in `build/<preset>/` (git-ignored). The presets export
@@ -37,9 +38,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   device, types), plus device-side `atomics.hpp` (on `std::atomic_ref`) and
   `math.hpp`. All are header-only inline functions in namespace `cuda4cpu`.
 - `lib/cuda4cpu.cpp`: the only compiled source. It holds all the fiber code
-  (guarded stacks, `makecontext`, `_setjmp`/`_longjmp`, the barrier scheduler,
-  the per-OS-thread fiber cache) and `system` (topology via OpenMP plus
-  optional libnuma).
+  (guarded stacks, the x86-64 assembly context switch and its
+  `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
+  fiber cache) and `system` (topology via OpenMP plus optional libnuma).
+- `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
+  performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
   - `barriers`: early exits and divergent-block barrier semantics
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
@@ -56,17 +59,27 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 
 ## How execution works (read before touching `launch.hpp`)
 
-- `grid_launcher::call` binds the arguments into a `std::function`, then runs
-  the blocks in an `omp for schedule(static)` loop (one contiguous chunk per
-  OS thread).
+- `grid_launcher::call` stores the kernel pointer and its arguments (a
+  `std::tuple`) in a `detail::kernel_call<Args...>`. That type also provides
+  the two thread loops instantiated for the kernel's signature: `run_direct`
+  and `run_one`. The blocks run in an `omp for schedule(dynamic, chunk)`
+  loop, with about 8 contiguous chunks per OS thread.
 - An OS thread that gets blocks calls `thread_block::acquire`, which returns a
   `thread_block` from a small `thread_local` cache keyed by block shape and
-  stack size. Its fibers are created once: each one is entered with
-  `makecontext`, records its entry point in `start[i]` with `_setjmp`, and
-  returns to the constructor.
+  stack size. Creating one maps its stacks.
+- Contexts (`fibers::context`). On x86-64 a context is just a stack pointer:
+  `cuda4cpu_switch_context` pushes rbp, rbx and r12–r15, swaps the stack
+  pointer, and pops. `start_fiber` writes a fresh frame at the top of the
+  stack: six zeroed registers plus `cuda4cpu_fiber_trampoline` as the return
+  address. The trampoline aligns the stack, marks the call stack's end
+  (`.cfi_undefined rip`) and calls `fiber_access::start()` →
+  `fiber_main()`. With `CUDA4CPU_PORTABLE_CONTEXT`, or on other
+  architectures, a context is a `jmp_buf`, and each fiber's entry point is
+  captured once at creation through `makecontext`.
 - `execute` runs one block. It always starts in **direct mode**: `fiber_main`
-  runs on fiber 0's stack and calls the kernel for thread 0, 1, 2, … back to
-  back. With no barriers there are no switches at all.
+  runs on fiber 0's stack and calls `run_direct`, which loops over the
+  threads calling the kernel directly. `next_direct_thread()` moves to the
+  next thread. With no barriers there are no switches at all.
 - The first `__syncthreads()` or warp function calls `promote()`: threads
   before `cur_` are finished, and the current thread stays on fiber 0's stack
   (its own stack is unused for that block).
@@ -84,8 +97,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   when a thread returns, or starts waiting at `__syncthreads()`. That is why
   early returns don't block barriers, and why no barrier can deadlock.
   `deadlock()` is an internal consistency check.
-- `thread_block::Current_` is an `initial-exec` `thread_local`. `threadIdx` is
-  `ids_[cur_]`.
+- `threadIdx`, `blockIdx`, `blockDim`, `gridDim` and the lane are stored in
+  `thread_block::Vars_`, which `set_current_thread()` and `execute()` keep up
+  to date. The getters return `dim3` by value.
 - `__shared__` is `static thread_local`. That's correct only because a block
   always runs to completion on one OS thread.
 
@@ -96,8 +110,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   and the library is built with `-U_FORTIFY_SOURCE` PRIVATE so that consumers
   don't need it. The same goes for `CUDA4CPU_HANDLE_VALGRIND`, which must not
   affect the header layout.
-- Never call into a fiber that is `finished`. Its kernel frame has returned,
-  and resuming it would return from `fiber_entry`, which ends the process
+- `Current_` and `Vars_` are `__thread`, not `thread_local`, and `Vars_` is a
+  trivial type (`raw_dim3`). GCC makes every access to an `extern
+  thread_local` from another file call a TLS initialization check, which
+  more than doubled the cost of reading `threadIdx`. Check the kernel's
+  assembly after touching them.
+- Change `cuda4cpu_switch_context` and `start_fiber` together, because they
+  share the frame layout. Test both context implementations (CI has a
+  `portable context` job).
+- Never resume a fiber that is `finished`. Its kernel frame has returned, and
+  its context was saved into `discarded`. With the fallback, resuming it
+  would return from `fiber_entry`, which ends the process
   (`uc_link == nullptr`).
 - Stacks come from one `mmap` with a guard page below each stack, installed
   with `MADV_GUARD_INSTALL` (Linux 6.13+), or `mprotect` on older kernels.
