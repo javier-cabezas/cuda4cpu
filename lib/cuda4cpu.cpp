@@ -19,7 +19,11 @@
  */
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
+#include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 
@@ -52,6 +56,39 @@ constexpr size_t max_cached_blocks = 4;
 
 constexpr size_t no_thread = size_t(-1);
 
+constexpr size_t warp_size = 32;
+
+//! Alignment of the dynamic shared memory of a block
+constexpr size_t shared_alignment = 64;
+
+constexpr uint32_t lane_bit(size_t tid)
+{
+    return 1u << (tid % warp_size);
+}
+
+//! Makes [addr, addr + size) fault on access. Guard regions (Linux 6.13+) take
+//! the address-space lock only for reading and don't split the mapping, so
+//! OS threads can create fibers in parallel without hitting vm.max_map_count;
+//! mprotect is the fallback on older kernels.
+bool install_guard(void *addr, size_t size)
+{
+#ifdef MADV_GUARD_INSTALL
+    static std::atomic<bool> guard_regions{true};
+    if (guard_regions.load(std::memory_order_relaxed)) {
+        if (madvise(addr, size, MADV_GUARD_INSTALL) == 0)
+            return true;
+        if (errno != EINVAL)
+            return false;
+        guard_regions.store(false, std::memory_order_relaxed);
+    }
+#endif
+    return mprotect(addr, size, PROT_NONE) == 0;
+}
+
+struct free_deleter {
+    void operator()(void *ptr) const { std::free(ptr); }
+};
+
 //! Stacks are page aligned, so the hot top of every fiber's stack would map to
 //! the same L1 cache sets and evict each other on every switch. Shift each top
 //! by a different number of cache lines to spread them over all the sets.
@@ -73,10 +110,12 @@ struct jump_buffer {
 //! Fiber stacks and contexts of a thread block
 //!
 struct thread_block::fibers {
-    enum class state : unsigned char {
-        not_started,    //!< Starts from the beginning of the kernel when scheduled
-        started,        //!< Running, or suspended at a barrier
-        finished        //!< Returned from the kernel
+
+    //! Warp-synchronous operations
+    enum op : unsigned char {
+        op_sync,
+        op_shuffle,
+        op_ballot
     };
 
     //! Allocates one stack per fiber in a single mapping, each one with a
@@ -89,7 +128,15 @@ struct thread_block::fibers {
         map_size{n * stride},
         start(n),
         ctx(n),
-        states(n, state::not_started)
+        live((n + warp_size - 1) / warp_size),
+        started(live.size()),
+        block_wait(live.size()),
+        warp_wait(live.size()),
+        warp_mask(n),
+        warp_kind(n),
+        warp_src(n),
+        warp_value(n),
+        warp_result(n)
     {
         void *map = mmap(nullptr, map_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
@@ -98,7 +145,7 @@ struct thread_block::fibers {
         base = static_cast<unsigned char *>(map);
 
         for (size_t i = 0; i < n; ++i) {
-            if (mprotect(base + i * stride, page, PROT_NONE) != 0) {
+            if (!install_guard(base + i * stride, page)) {
                 munmap(base, map_size);
                 throw std::bad_alloc();
             }
@@ -130,8 +177,32 @@ struct thread_block::fibers {
 
     std::vector<jump_buffer> start;   //!< Entry point of each fiber, captured once at creation
     std::vector<jump_buffer> ctx;     //!< Where each started fiber resumes
-    std::vector<state> states;
     jump_buffer caller;               //!< Where execute() resumes when the block completes
+
+    // Scheduling state in fiber mode, as one bit per lane and one word per
+    // warp. A thread can run when it is live and not waiting.
+    std::vector<uint32_t> live;         //!< Has not returned from the kernel
+    std::vector<uint32_t> started;      //!< Has started, so it resumes from ctx
+    std::vector<uint32_t> block_wait;   //!< Waiting at __syncthreads()
+    std::vector<uint32_t> warp_wait;    //!< Waiting at a warp-synchronous operation
+
+    size_t live_count    = 0;         //!< Threads that have not returned
+    size_t block_arrived = 0;         //!< Threads waiting at __syncthreads()
+
+    uint32_t runnable(size_t w) const
+    {
+        return live[w] & ~block_wait[w] & ~warp_wait[w];
+    }
+
+    // Pending warp-synchronous operation of each thread
+    std::vector<unsigned>      warp_mask;
+    std::vector<unsigned char> warp_kind;
+    std::vector<unsigned>      warp_src;
+    std::vector<uint64_t>      warp_value;
+    std::vector<uint64_t>      warp_result;
+
+    std::unique_ptr<void, free_deleter> shared;   //!< Dynamic shared memory
+    size_t shared_capacity = 0;
 #ifdef CUDA4CPU_HANDLE_VALGRIND
     std::vector<unsigned> valgrind_ids;
 #endif
@@ -152,8 +223,8 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
     nthreads_{conf_.nthreads()},
     stack_size_{stack_size},
     cur_{0},
-    live_{0},
     direct_{true},
+    shared_mem_{nullptr},
     ids_(nthreads_),
     fibers_{std::make_unique<fibers>(nthreads_, stack_size)}
 {
@@ -203,8 +274,25 @@ thread_block::acquire(const launch_conf &conf, size_t stack_size)
     }
 
     block->conf_ = conf;
+    block->reserve_shared(conf.shared_mem);
     cache.push_back(std::move(block));
     return *cache.back();
+}
+
+void thread_block::reserve_shared(size_t bytes)
+{
+    auto &f = *fibers_;
+    if (bytes <= f.shared_capacity)
+        return;
+
+    size_t size = (bytes + shared_alignment - 1) / shared_alignment * shared_alignment;
+    void *ptr = std::aligned_alloc(shared_alignment, size);
+    if (ptr == nullptr)
+        throw std::bad_alloc();
+
+    f.shared.reset(ptr);
+    f.shared_capacity = size;
+    shared_mem_ = ptr;
 }
 
 void thread_block::execute(const std::function<void ()> &func, dim3 block_id)
@@ -252,19 +340,25 @@ void thread_block::fiber_main()
 }
 
 //! Switches the block to fiber mode when the current CUDA thread reaches the
-//! first barrier. Threads before it already returned, and threads after it
-//! have not started yet.
+//! first barrier or warp-synchronous operation. Threads before it already
+//! returned, and threads after it have not started yet.
 void thread_block::promote()
 {
-    using state = fibers::state;
+    auto &f = *fibers_;
+    for (size_t w = 0; w < f.live.size(); ++w) {
+        const size_t base = w * warp_size;
+        uint32_t exists = nthreads_ - base >= warp_size ? ~0u : (1u << (nthreads_ - base)) - 1;
+        uint32_t after  = base >= cur_ ? ~0u : (cur_ - base >= warp_size ? 0u : ~0u << (cur_ - base));
+        f.live[w]       = exists & after;
+        f.started[w]    = 0;
+        f.block_wait[w] = 0;
+        f.warp_wait[w]  = 0;
+    }
+    f.started[cur_ / warp_size] = lane_bit(cur_);
 
-    auto &states = fibers_->states;
-    std::fill(states.begin(), states.begin() + cur_, state::finished);
-    std::fill(states.begin() + cur_, states.end(), state::not_started);
-    states[cur_] = state::started;
-
-    live_   = nthreads_ - cur_;
-    direct_ = false;
+    f.live_count    = nthreads_ - cur_;
+    f.block_arrived = 0;
+    direct_         = false;
 }
 
 void thread_block::syncthreads()
@@ -273,52 +367,209 @@ void thread_block::syncthreads()
     if (block.direct_)
         block.promote();
 
-    // Threads run in index order between barriers, so when no thread after
-    // this one is still alive, every live thread has reached the barrier.
-    const size_t self = block.cur_;
-    size_t next = block.next_live(self + 1);
-    if (next == no_thread)
-        next = block.next_live(0);
+    auto &f = *block.fibers_;
+    const size_t w = block.cur_ / warp_size;
+    f.block_wait[w] |= lane_bit(block.cur_);
+    if (++f.block_arrived == f.live_count)
+        block.release_block();
+    else
+        block.try_release_warp_waiters(w);   // they no longer wait for this lane
+
+    block.switch_from_current();
+}
+
+void thread_block::syncwarp(unsigned mask)
+{
+    Current_->warp_op(fibers::op_sync, mask, 0, 0);
+}
+
+uint64_t thread_block::warp_shuffle(unsigned mask, uint64_t value, unsigned src_lane)
+{
+    return Current_->warp_op(fibers::op_shuffle, mask, value, src_lane);
+}
+
+uint64_t thread_block::warp_ballot(unsigned mask, bool predicate)
+{
+    return Current_->warp_op(fibers::op_ballot, mask, predicate ? 1 : 0, 0);
+}
+
+unsigned thread_block::warp_active_mask()
+{
+    const thread_block &block = *Current_;
+    return block.warp_live_mask(block.cur_ / warp_size * warp_size);
+}
+
+//! Publishes the calling thread's part of a warp-synchronous operation, waits
+//! until every participating lane has done the same, and returns its result.
+uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane)
+{
+    if (direct_)
+        promote();
+
+    auto &f = *fibers_;
+    const size_t self = cur_;
+
+    f.warp_mask[self]  = mask | lane_bit(self);
+    f.warp_kind[self]  = kind;
+    f.warp_src[self]   = src_lane % warp_size;
+    f.warp_value[self] = value;
+    f.warp_wait[self / warp_size] |= lane_bit(self);
+    try_release_warp(self);
+
+    switch_from_current();
+    return f.warp_result[self];
+}
+
+//! Returns the lanes of the warp starting at thread base that take part in
+//! warp-synchronous operations: those that have not returned and are not
+//! waiting at __syncthreads(), which means they are in a different branch
+unsigned thread_block::warp_live_mask(size_t base) const
+{
+    if (!direct_) {
+        const size_t w = base / warp_size;
+        return fibers_->live[w] & ~fibers_->block_wait[w];
+    }
+
+    // In direct mode, threads before the current one have returned and the
+    // rest have not started
+    const size_t end = std::min(base + warp_size, nthreads_);
+    unsigned mask = 0;
+    for (size_t t = std::max(base, cur_); t < end; ++t)
+        mask |= lane_bit(t);
+    return mask;
+}
+
+void thread_block::release_block()
+{
+    auto &f = *fibers_;
+    std::fill(f.block_wait.begin(), f.block_wait.end(), 0u);
+    f.block_arrived = 0;
+}
+
+//! Completes the warp-synchronous operation that thread tid waits at, if all
+//! the live lanes in its mask have reached it, and makes them runnable
+void thread_block::try_release_warp(size_t tid)
+{
+    auto &f = *fibers_;
+    const size_t w    = tid / warp_size;
+    const size_t base = w * warp_size;
+    const uint32_t lanes = warp_live_mask(base) & f.warp_mask[tid];
+    if ((lanes & ~f.warp_wait[w]) != 0)
+        return;
+
+    switch (f.warp_kind[tid]) {
+    case fibers::op_shuffle:
+        for (uint32_t m = lanes; m != 0; m &= m - 1) {
+            unsigned l   = unsigned(std::countr_zero(m));
+            unsigned src = f.warp_src[base + l];
+            f.warp_result[base + l] = f.warp_value[base + ((lanes >> src & 1) ? src : l)];
+        }
+        break;
+    case fibers::op_ballot: {
+        uint64_t ballot = 0;
+        for (uint32_t m = lanes; m != 0; m &= m - 1) {
+            unsigned l = unsigned(std::countr_zero(m));
+            if (f.warp_value[base + l] != 0)
+                ballot |= uint64_t(1) << l;
+        }
+        for (uint32_t m = lanes; m != 0; m &= m - 1)
+            f.warp_result[base + unsigned(std::countr_zero(m))] = ballot | uint64_t(lanes) << 32;
+        break;
+    }
+    default:
+        break;
+    }
+
+    f.warp_wait[w] &= ~lanes;
+}
+
+//! Suspends the current thread, which just started waiting or was released,
+//! and resumes the next runnable thread in round-robin order
+void thread_block::switch_from_current()
+{
+    const size_t self = cur_;
+    const size_t next = next_runnable(self + 1);
     if (next == self)
         return;
 
-    if (_setjmp(block.fibers_->ctx[self].buf) == 0)
-        block.jump_to(next);
+    if (_setjmp(fibers_->ctx[self].buf) == 0)
+        jump_to(next);
 }
 
 void thread_block::finish_current()
 {
-    fibers_->states[cur_] = fibers::state::finished;
-    if (--live_ == 0)
-        _longjmp(fibers_->caller.buf, 1);
+    auto &f = *fibers_;
+    const size_t self = cur_;
+    const size_t w    = self / warp_size;
+    f.live[w] &= ~lane_bit(self);
+    if (--f.live_count == 0)
+        _longjmp(f.caller.buf, 1);
 
-    size_t next = next_live(cur_ + 1);
-    if (next == no_thread)
-        next = next_live(0);
-    jump_to(next);
+    // Threads that return early leave the barriers that wait for them
+    if (f.block_arrived > 0 && f.block_arrived == f.live_count)
+        release_block();
+
+    try_release_warp_waiters(w);
+
+    jump_to(next_runnable(self + 1));
+}
+
+//! Completes the warp-synchronous operations of warp w that no longer wait for
+//! any lane, after one of its lanes returned or started waiting at __syncthreads()
+void thread_block::try_release_warp_waiters(size_t w)
+{
+    auto &f = *fibers_;
+    for (uint32_t pending = f.warp_wait[w]; pending != 0; ) {
+        unsigned l = unsigned(std::countr_zero(pending));
+        try_release_warp(w * warp_size + l);
+        pending &= f.warp_wait[w] & ~(1u << l);
+    }
 }
 
 void thread_block::jump_to(size_t tid)
 {
     auto &f = *fibers_;
     cur_ = tid;
-    if (f.states[tid] == fibers::state::not_started) {
-        f.states[tid] = fibers::state::started;
+
+    uint32_t &started = f.started[tid / warp_size];
+    if ((started & lane_bit(tid)) == 0) {
+        started |= lane_bit(tid);
         _longjmp(f.start[tid].buf, 1);
     }
     _longjmp(f.ctx[tid].buf, 1);
 }
 
-//! Returns the first CUDA thread at or after from that has not returned, or
-//! no_thread if there is none
-size_t thread_block::next_live(size_t from) const
+//! Returns the first thread at or after from, wrapping around, that can run.
+//! There always is one: barriers are released as soon as nothing else can
+//! arrive at them.
+size_t thread_block::next_runnable(size_t from) const
 {
-    const auto &states = fibers_->states;
-    for (size_t i = from; i < nthreads_; ++i) {
-        if (states[i] != fibers::state::finished)
-            return i;
+    const auto &f = *fibers_;
+    const size_t nwarps = f.live.size();
+    const size_t first  = from % nthreads_;
+    const size_t w0     = first / warp_size;
+    const uint32_t from_lane = ~0u << (first % warp_size);
+
+    if (uint32_t m = f.runnable(w0) & from_lane)
+        return w0 * warp_size + size_t(std::countr_zero(m));
+    for (size_t k = 1; k < nwarps; ++k) {
+        size_t w = (w0 + k) % nwarps;
+        if (uint32_t m = f.runnable(w))
+            return w * warp_size + size_t(std::countr_zero(m));
     }
-    return no_thread;
+    if (uint32_t m = f.runnable(w0) & ~from_lane)
+        return w0 * warp_size + size_t(std::countr_zero(m));
+
+    deadlock();
+}
+
+void thread_block::deadlock() const
+{
+    std::fprintf(stderr,
+                 "cuda4cpu: internal error: no runnable thread in block (%u, %u, %u), but some "
+                 "threads are still waiting at barriers. Please report this.\n",
+                 block_id_.x, block_id_.y, block_id_.z);
+    std::abort();
 }
 
 system::system()

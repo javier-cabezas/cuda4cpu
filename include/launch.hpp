@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -41,6 +42,7 @@ struct grid_launcher;
 struct launch_conf {
     dim3 grid;
     dim3 block;
+    size_t shared_mem = 0;   //!< Bytes of dynamic shared memory per block
 
     //! Returns the number of threads within a thread block
     //! \return The number of threads within a thread block
@@ -105,10 +107,11 @@ private:
 //! starts in "direct" mode, where its CUDA threads run back to back as plain
 //! calls on the stack of fiber 0. When a thread first calls __syncthreads(), the
 //! block switches to fiber mode: the threads that already returned are done,
-//! and the rest are scheduled round-robin, switching at every barrier. Threads
-//! that return early leave the barrier, like on GPUs. Fibers are created once
-//! and reused by every block and launch with the same block size on the same OS
-//! thread.
+//! and the rest are scheduled round-robin, switching whenever a thread waits
+//! at a barrier (__syncthreads) or at a warp-synchronous operation (shuffles,
+//! votes, __syncwarp). Threads that return early leave the barriers, like on
+//! GPUs. Fibers are created once and reused by every block and launch with the
+//! same block size on the same OS thread.
 //!
 class thread_block {
 public:
@@ -131,6 +134,35 @@ public:
     //! Implementation of the __syncthreads intrinsic.
     //! Switches to the next CUDA thread until all the live threads in the block have reached the barrier.
     static void syncthreads();
+
+    //! Implementation of __syncwarp: waits for the live lanes of the calling warp in mask
+    static void syncwarp(unsigned mask);
+
+    //! Exchanges a value among the live lanes of the calling warp in mask. Each
+    //! lane gets the value of lane src_lane (0-31), or its own value if that
+    //! lane does not take part.
+    static uint64_t warp_shuffle(unsigned mask, uint64_t value, unsigned src_lane);
+
+    //! Implementation of the warp votes. Returns the ballot of predicate over
+    //! the live lanes in mask (low 32 bits) and the mask of those lanes (high 32 bits).
+    static uint64_t warp_ballot(unsigned mask, bool predicate);
+
+    //! Implementation of __activemask: the lanes of the calling warp that have not returned
+    static unsigned warp_active_mask();
+
+    //! Lane of the calling CUDA thread within its warp
+    static inline unsigned
+    lane_id()
+    {
+        return unsigned(Current_->cur_ % 32);
+    }
+
+    //! Dynamic shared memory of the calling thread block
+    static inline void *
+    get_dynamic_shared()
+    {
+        return Current_->shared_mem_;
+    }
 
     //! Implementation of the threadIdx special variable.
     //! Returns a dim3 object with the identifier of the calling thread within the thread block.
@@ -174,8 +206,16 @@ private:
     [[noreturn]] void fiber_main();
     [[noreturn]] void finish_current();
     [[noreturn]] void jump_to(size_t tid);
+    [[noreturn]] void deadlock() const;
     void promote();
-    size_t next_live(size_t from) const;
+    void switch_from_current();
+    size_t next_runnable(size_t from) const;
+    void release_block();
+    void try_release_warp(size_t tid);
+    void try_release_warp_waiters(size_t w);
+    unsigned warp_live_mask(size_t base) const;
+    uint64_t warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane);
+    void reserve_shared(size_t bytes);
 
     launch_conf conf_;
     const std::function<void ()> *func_;
@@ -183,8 +223,8 @@ private:
     size_t nthreads_;
     size_t stack_size_;
     size_t cur_;    //!< CUDA thread being executed
-    size_t live_;   //!< CUDA threads that have not returned yet (fiber mode only)
     bool direct_;   //!< No CUDA thread has reached a barrier in this block yet
+    void *shared_mem_;
     std::vector<dim3> ids_;
     std::unique_ptr<fibers> fibers_;
 
@@ -192,12 +232,23 @@ private:
     [[gnu::tls_model("initial-exec")]] static thread_local thread_block *Current_;
 };
 
+//! Replacement for `extern __shared__ T name[];`, which can't be expressed
+//! in C++: returns the dynamic shared memory of the calling thread block, whose
+//! size is the shared_mem argument of launch().
+template <typename T>
+inline T *
+dynamic_shared()
+{
+    return static_cast<T *>(thread_block::get_dynamic_shared());
+}
+
 template <typename... Args>
 struct grid_launcher {
-    grid_launcher(void (&func)(Args...), dim3 conf_grid, dim3 conf_block) :
+    grid_launcher(void (&func)(Args...), dim3 conf_grid, dim3 conf_block, size_t shared_mem) :
                   func_{func},
                   conf_{conf_grid,
-                        conf_block}
+                        conf_block,
+                        shared_mem}
     {
     }
 
@@ -231,11 +282,14 @@ private:
     launch_conf conf_;
 };
 
+//! Equivalent to func<<<grid, block, shared_mem, stream>>>. Kernels always run
+//! synchronously, so the stream is ignored.
 template <typename... Args>
 grid_launcher<Args...>
-launch(void (&func)(Args...), dim3 grid, dim3 block)
+launch(void (&func)(Args...), dim3 grid, dim3 block,
+       size_t shared_mem = 0, cudaStream_t /* stream */ = nullptr)
 {
-    return grid_launcher<Args...>(func, grid, block);
+    return grid_launcher<Args...>(func, grid, block, shared_mem);
 }
 
 } // namespace cuda4cpu

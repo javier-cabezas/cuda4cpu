@@ -20,8 +20,33 @@
 
 #pragma once
 
-#include "cuda/mycuda.hpp"
+#include <cmath>
 
-#include "launch.hpp"
-#include "warp.hpp"
-#include "defines.hpp"
+// glibc 2.41 and later declare the C23 rsqrt functions in the global namespace
+#if defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 41) && __GLIBC_USE(IEC_60559_FUNCS_EXT_C23)
+#define CUDA4CPU_LIBC_HAS_RSQRT 1
+#endif
+#endif
+
+namespace cuda4cpu {
+
+//
+// CUDA math functions that have no equivalent in the C++ standard library
+//
+
+#ifndef CUDA4CPU_LIBC_HAS_RSQRT
+//! Reciprocal of the square root
+inline float rsqrtf(float x)
+{
+    return 1.0f / std::sqrt(x);
+}
+
+//! Reciprocal of the square root
+inline double rsqrt(double x)
+{
+    return 1.0 / std::sqrt(x);
+}
+#endif
+
+}

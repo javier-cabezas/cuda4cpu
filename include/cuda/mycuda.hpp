@@ -25,3 +25,5 @@
 #include "memory.hpp"
 #include "streams.hpp"
 #include "events.hpp"
+#include "atomics.hpp"
+#include "math.hpp"

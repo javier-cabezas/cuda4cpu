@@ -42,7 +42,7 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind)
 }
 
 static inline
-cudaError_t cudaMemcpyToSymbol(void *dst, const void *src, size_t count, size_t offset = 0, cudaMemcpyKind kind = cudaMemcpyHostToDevice)
+cudaError_t cudaMemcpyToSymbol(void *dst, const void *src, size_t count, size_t offset = 0, cudaMemcpyKind /* kind */ = cudaMemcpyHostToDevice)
 {
     std::memcpy(static_cast<char *>(dst) + offset, src, count);
 
