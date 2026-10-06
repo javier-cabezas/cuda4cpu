@@ -20,6 +20,7 @@ on machines without a GPU, and for prototyping.
 - [Using cuda4cpu in your project](#using-cuda4cpu-in-your-project)
 - [Porting a CUDA program](#porting-a-cuda-program)
 - [Supported CUDA features](#supported-cuda-features)
+- [Compatibility with real CUDA code](#compatibility-with-real-cuda-code)
 - [How it works](#how-it-works)
 - [Debugging](#debugging)
 - [Limitations](#limitations)
@@ -220,17 +221,66 @@ your kernels use it.
   `__cosf`, `__tanf`, `__sincosf`, `__powf`, `__fdividef` and `__saturatef`.
   They are computed at full precision.
 - Integer intrinsics: `__popc`, `__popcll`, `__clz`, `__clzll`, `__ffs`,
-  `__ffsll`, `__brev`, `__brevll`, and `__ldg`
+  `__ffsll`, `__brev`, `__brevll`, `__mul24`, `__umul24`, and `__ldg`
+- `min` and `max` for integer and floating-point arguments, as in CUDA
+- Arithmetic with explicit rounding (`__fadd_rd`, `__dmul_ru`, `__fsqrt_rz`,
+  ... for float and double), conversions with explicit rounding
+  (`__float2int_rn`, `__double2float_rd`, `__int2float_ru`, ...) and bit
+  reinterpretation (`__int_as_float`, `__double_as_longlong`, ...). Directed
+  rounding is exact: the operation runs with the FPU's rounding mode switched.
+- Scoped atomics (`atomicAdd_block`, `atomicCAS_system`, ...), which behave
+  like the device-scope ones
+- `__grid_constant__`, `__align__`, `__managed__`
 
 **Runtime API**
 
 | Area | Functions |
 |---|---|
 | Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes |
-| Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only) |
+| Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaSetDeviceFlags`, `cudaGetDeviceFlags`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only), `cudaDeviceGetStreamPriorityRange`, `cudaDeviceCanAccessPeer`, and the deprecated `cudaThreadSynchronize` and `cudaThreadExit` |
 | Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
-| Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback` |
+| More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
+| Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc` |
+| Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
+
+## Compatibility with real CUDA code
+
+`compat/` builds and runs real CUDA programs, unmodified, with `cuda4cpu-c++`:
+
+- **cuda-samples:** a curated set of NVIDIA's CUDA samples, those that use
+  only the runtime API and the kernel language. Samples that need graphics
+  interop, the driver API, NVRTC, the CUDA libraries, Thrust/CUB, MPI or
+  several GPUs are excluded. These samples check their own results.
+- **Rodinia:** the Rodinia benchmarks that generate their own inputs. Except
+  `lud`, they don't check their results, so for them "passing" means they run
+  to completion.
+
+The suites are fetched at the revisions pinned in `compat/suites.json`. CI runs
+them and fails if a program that passes in `compat/baseline.json` stops
+passing. Today:
+
+| Suite | Pass | Doesn't pass yet |
+|---|---|---|
+| cuda-samples | 19 of 61 (1 more waives itself, 1 is skipped as too slow) | 40 |
+| Rodinia | 10 of 11 | 1 (needs OpenGL) |
+
+Most of what's missing is a few features:
+
+| Programs | Missing |
+|---|---|
+| 24 | Cooperative groups (`cooperative_groups.h`) |
+| 6 | Textures and surfaces |
+| 3 | CUDA graphs |
+| 2 | Dynamic parallelism (kernels that launch kernels) |
+| 1 each | Half precision (`cuda_fp16.h`), NVTX, libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
+
+To run the programs yourself (they need git and network access):
+
+```sh
+compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --report report.md
+```
 
 ## How it works
 
@@ -372,12 +422,12 @@ errors in the context switch.
   `__activemask()` returns those lanes, and lanes in different branches that
   run warp functions at the same time must use disjoint masks, as CUDA
   requires.
-- **Not implemented yet:** textures and surfaces, cooperative groups,
-  `__match_*_sync` and `__reduce_*_sync`, 16-bit and scoped atomics
-  (`atomicAdd_block`, ...), 2D/3D copies (`cudaMemcpy2D`, `cudaMallocPitch`),
-  mapped host memory (`cudaHostGetDevicePointer`), `cudaFuncSetAttribute`, the
-  double-precision and rounding-mode intrinsics, and the driver API
-  (`cuda.h`).
+- **Not implemented yet:** cooperative groups, textures and surfaces, CUDA
+  graphs, dynamic parallelism, half precision, `__match_*_sync` and
+  `__reduce_*_sync`, 16-bit atomics, 2D/3D copies (`cudaMemcpy2D`,
+  `cudaMallocPitch`), and the driver API. [Compatibility with real CUDA
+  code](#compatibility-with-real-cuda-code) shows which programs each one
+  blocks.
 
 ## License
 

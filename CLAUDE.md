@@ -60,6 +60,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()`, used in-tree and
   installed with the package config. It finds the rewriter through the
   `CUDA4CPU_REWRITE` global property.
+- `compat/`: the compatibility suite. `suites.json` lists programs from
+  cuda-samples and Rodinia, pinned by revision, with their sources, include
+  directories, arguments and checks: `expect` and `reject` are output
+  regexes, `verified: false` marks programs that don't check their results,
+  and `skip` gives a reason not to run one. `run.py` fetches the suites,
+  builds each program with `cuda4cpu-c++` (`.c` files with the C compiler),
+  runs it, and reports. `baseline.json` holds the expected status of each
+  program: CI fails if a passing program regresses. When a change makes
+  programs pass, update the baseline in the same PR with `--update-baseline`.
+  Run it locally with
+  `compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --filter 'rodinia/*'`.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
@@ -196,6 +207,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - Never include `<numa.h>` from public headers. libnuma is an optional,
   PRIVATE dependency, guarded by `CUDA4CPU_HAVE_NUMA`.
 
+- `cuda_runtime.h` defines the include guards of CUDA's own headers
+  (`__CUDA_RUNTIME_H__`, `__DRIVER_TYPES_H__`), because code such as the CUDA
+  samples' `helper_cuda.h` tests them before using the runtime API.
+- CUDA's `min`/`max` overloads are declared as `(min)`/`(max)`, so that
+  programs that define `min`/`max` macros don't break them.
 - glibc's `<math.h>` declares `__expf`, `__sinf`, `__powf`, ... without
   exporting them, so they don't link. `math.hpp` defines them as
   `extern "C" inline` at global scope, which completes those declarations.
