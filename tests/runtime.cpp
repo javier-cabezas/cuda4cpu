@@ -24,6 +24,7 @@
 // management, symbols and intrinsics. Uses only cuda_runtime.h, like CUDA code.
 //
 
+#include <cfenv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,8 @@
 #include <cstring>
 #include <limits>
 
+#include <cuda.h>
+#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
 static unsigned errors = 0;
@@ -217,6 +220,84 @@ int main()
         float out[4] = {};
         cuda4cpu::launch(intrinsics, 1, 1).call(out);
         EXPECT(out[0] == 1.f && out[1] == 0.25f && out[2] == 1.f && out[3] == 8.f);
+    }
+
+    // Directed rounding and conversions, exact as in CUDA
+    {
+        const float one = 1.0f, tiny = 1e-8f;
+        EXPECT(__fadd_rd(one, tiny) == 1.0f && __fadd_ru(one, tiny) > 1.0f && __fadd_rn(one, tiny) == 1.0f);
+        EXPECT(__fadd_rz(-one, -tiny) == -1.0f && __fadd_rd(-one, -tiny) < -1.0f);
+        EXPECT(__fdiv_rd(1.0f, 3.0f) < __fdiv_ru(1.0f, 3.0f));
+        EXPECT(__dmul_rd(0.1, 3.0) < __dmul_ru(0.1, 3.0));
+        EXPECT(__fsqrt_rd(2.0f) < __fsqrt_ru(2.0f) && __dsqrt_rn(4.0) == 2.0);
+        EXPECT(std::fegetround() == FE_TONEAREST);
+        EXPECT(__float2int_rn(2.5f) == 2 && __float2int_rn(3.5f) == 4 && __float2int_rz(-2.7f) == -2);
+        EXPECT(__float2int_ru(2.1f) == 3 && __float2int_rd(-2.1f) == -3);
+        EXPECT(__float2int_rn(NAN) == 0 && __float2int_rn(1e20f) == std::numeric_limits<int>::max());
+        EXPECT(__float2uint_rn(-5.0f) == 0u && __double2ll_rz(-1e30) == std::numeric_limits<long long>::min());
+        EXPECT(__int2float_rd(16777217) == 16777216.0f && __int2float_ru(16777217) == 16777218.0f);
+        EXPECT(__double2float_rd(0.1) < __double2float_ru(0.1));
+        EXPECT(__int_as_float(0x3f800000) == 1.0f && __float_as_uint(-0.0f) == 0x80000000u);
+        EXPECT(__longlong_as_double(__double_as_longlong(3.25)) == 3.25);
+        EXPECT(__hiloint2double(__double2hiint(-7.5), __double2loint(-7.5)) == -7.5);
+        EXPECT(__mul24(-3, 5) == -15 && __umul24(0x1000003u, 2u) == 6u);
+        EXPECT(max(3, 7) == 7 && min(-1, 2u) == 2u && max(1.5f, 2.5) == 2.5 && min(4ll, -2ll) == -2ll);
+    }
+
+    // Scoped atomics behave like the plain ones
+    {
+        int counter = 0;
+        atomicAdd_system(&counter, 2);
+        atomicAdd_block(&counter, 3);
+        EXPECT(counter == 5 && atomicMax_system(&counter, 9) == 5 && counter == 9);
+    }
+
+    // Mapped and registered host memory, stream-ordered allocation and pools
+    {
+        EXPECT(cudaSetDeviceFlags(cudaDeviceMapHost) == cudaSuccess);
+        unsigned int flags = 0;
+        EXPECT(cudaGetDeviceFlags(&flags) == cudaSuccess && flags == cudaDeviceMapHost);
+
+        float *host = nullptr, *device = nullptr;
+        EXPECT(cudaHostAlloc(&host, 64, cudaHostAllocMapped) == cudaSuccess);
+        EXPECT(cudaHostGetDevicePointer(&device, host, 0) == cudaSuccess && device == host);
+        cudaFreeHost(host);
+
+        float local[4];
+        EXPECT(cudaHostRegister(local, sizeof(local), cudaHostRegisterMapped) == cudaSuccess);
+        EXPECT(cudaHostUnregister(local) == cudaSuccess);
+
+        cudaStream_t stream;
+        cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+        void *p = nullptr;
+        EXPECT(cudaMallocAsync(&p, 1000, stream) == cudaSuccess && p != nullptr);
+        EXPECT(cudaFreeAsync(p, stream) == cudaSuccess);
+        cudaMemPool_t pool = nullptr;
+        unsigned long long threshold = ~0ull;
+        EXPECT(cudaDeviceGetDefaultMemPool(&pool, 0) == cudaSuccess && pool != nullptr);
+        EXPECT(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold) == cudaSuccess);
+        int value = 0;
+        EXPECT(cudaDeviceGetAttribute(&value, cudaDevAttrMemoryPoolsSupported, 0) == cudaSuccess && value == 1);
+
+        bool called = false;
+        EXPECT(cudaLaunchHostFunc(stream, [](void *flag) { *static_cast<bool *>(flag) = true; }, &called) == cudaSuccess);
+        EXPECT(called);
+        cudaStreamDestroy(stream);
+    }
+
+    // Device queries and configuration that have no effect on a CPU
+    {
+        int least = -1, greatest = -1, can_access = -1, overlap = -1;
+        EXPECT(cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess && least == 0 && greatest == 0);
+        EXPECT(cudaDeviceCanAccessPeer(&can_access, 0, 0) == cudaSuccess && can_access == 0);
+        EXPECT(cudaDeviceGetAttribute(&overlap, cudaDevAttrGpuOverlap, 0) == cudaSuccess && overlap == 0);
+        EXPECT(cudaFuncSetCacheConfig(set_flag, cudaFuncCachePreferL1) == cudaSuccess);
+        EXPECT(cudaFuncSetAttribute(set_flag, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024) == cudaSuccess);
+        cudaFuncAttributes attributes;
+        EXPECT(cudaFuncGetAttributes(&attributes, set_flag) == cudaSuccess && attributes.maxThreadsPerBlock == 1024);
+        EXPECT(cudaProfilerStart() == cudaSuccess && cudaProfilerStop() == cudaSuccess);
+        EXPECT(CUDA_VERSION == CUDART_VERSION);
+        EXPECT(std::strcmp(cudaGetErrorName(cudaErrorAssert), "cudaErrorAssert") == 0);
     }
 
     if (errors == 0)

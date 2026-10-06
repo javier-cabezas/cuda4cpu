@@ -75,6 +75,7 @@ const char *cudaGetErrorName(cudaError_t error)
     case cudaErrorInvalidDevice:          return "cudaErrorInvalidDevice";
     case cudaErrorInvalidResourceHandle:  return "cudaErrorInvalidResourceHandle";
     case cudaErrorNotReady:               return "cudaErrorNotReady";
+    case cudaErrorAssert:                 return "cudaErrorAssert";
     case cudaErrorLaunchFailure:          return "cudaErrorLaunchFailure";
     case cudaErrorNotSupported:           return "cudaErrorNotSupported";
     case cudaErrorUnknown:                return "cudaErrorUnknown";
@@ -98,6 +99,7 @@ const char *cudaGetErrorString(cudaError_t error)
     case cudaErrorInvalidDevice:          return "invalid device ordinal";
     case cudaErrorInvalidResourceHandle:  return "invalid resource handle";
     case cudaErrorNotReady:               return "device not ready";
+    case cudaErrorAssert:                 return "device-side assert triggered";
     case cudaErrorLaunchFailure:          return "unspecified launch failure";
     case cudaErrorNotSupported:           return "operation not supported";
     case cudaErrorUnknown:                return "unknown error";

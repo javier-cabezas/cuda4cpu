@@ -36,11 +36,97 @@ namespace cuda4cpu {
 
 inline namespace cuda_api {
 
-enum cudaLimit {
-    cudaLimitStackSize      = 0x00,
-    cudaLimitPrintfFifoSize = 0x01,
-    cudaLimitMallocHeapSize = 0x02
+enum : unsigned int {
+    cudaDeviceScheduleAuto         = 0x00,
+    cudaDeviceScheduleSpin         = 0x01,
+    cudaDeviceScheduleYield        = 0x02,
+    cudaDeviceScheduleBlockingSync = 0x04,
+    cudaDeviceMapHost              = 0x08,
+    cudaDeviceLmemResizeToMax      = 0x10
 };
+
+enum cudaComputeMode {
+    cudaComputeModeDefault          = 0,
+    cudaComputeModeExclusive        = 1,
+    cudaComputeModeProhibited       = 2,
+    cudaComputeModeExclusiveProcess = 3
+};
+
+enum cudaLimit {
+    cudaLimitStackSize                    = 0x00,
+    cudaLimitPrintfFifoSize               = 0x01,
+    cudaLimitMallocHeapSize               = 0x02,
+    cudaLimitDevRuntimeSyncDepth          = 0x03,
+    cudaLimitDevRuntimePendingLaunchCount = 0x04,
+    cudaLimitMaxL2FetchGranularity        = 0x05,
+    cudaLimitPersistingL2CacheSize        = 0x06
+};
+
+//! Cache and shared memory configuration: hints for GPU caches, accepted and
+//! ignored
+enum cudaFuncCache {
+    cudaFuncCachePreferNone   = 0,
+    cudaFuncCachePreferShared = 1,
+    cudaFuncCachePreferL1     = 2,
+    cudaFuncCachePreferEqual  = 3
+};
+
+enum cudaSharedMemConfig {
+    cudaSharedMemBankSizeDefault   = 0,
+    cudaSharedMemBankSizeFourByte  = 1,
+    cudaSharedMemBankSizeEightByte = 2
+};
+
+enum cudaFuncAttribute {
+    cudaFuncAttributeMaxDynamicSharedMemorySize    = 8,
+    cudaFuncAttributePreferredSharedMemoryCarveout = 9
+};
+
+struct cudaFuncAttributes {
+    size_t sharedSizeBytes;
+    size_t constSizeBytes;
+    size_t localSizeBytes;
+    int maxThreadsPerBlock;
+    int numRegs;
+    int ptxVersion;
+    int binaryVersion;
+    int cacheModeCA;
+    int maxDynamicSharedSizeBytes;
+    int preferredShmemCarveout;
+};
+
+//! The L2 access policy of a stream: hints for the GPU's L2 cache, accepted
+//! and ignored
+enum cudaAccessProperty {
+    cudaAccessPropertyNormal     = 0,
+    cudaAccessPropertyStreaming  = 1,
+    cudaAccessPropertyPersisting = 2
+};
+
+struct cudaAccessPolicyWindow {
+    void *base_ptr;
+    size_t num_bytes;
+    float hitRatio;
+    cudaAccessProperty hitProp;
+    cudaAccessProperty missProp;
+};
+
+enum cudaLaunchAttributeID {
+    cudaLaunchAttributeAccessPolicyWindow   = 1,
+    cudaLaunchAttributeSynchronizationPolicy = 3,
+    cudaLaunchAttributePriority             = 8
+};
+
+union cudaLaunchAttributeValue {
+    char pad[64];
+    cudaAccessPolicyWindow accessPolicyWindow;
+    int priority;
+};
+
+using cudaStreamAttrID    = cudaLaunchAttributeID;
+using cudaStreamAttrValue = cudaLaunchAttributeValue;
+inline constexpr cudaStreamAttrID cudaStreamAttributeAccessPolicyWindow = cudaLaunchAttributeAccessPolicyWindow;
+inline constexpr cudaStreamAttrID cudaStreamAttributePriority = cudaLaunchAttributePriority;
 
 struct cudaUUID_t {
     char bytes[16];
@@ -68,6 +154,26 @@ struct cudaDeviceProp {
     int minor;
     size_t textureAlignment;
     size_t texturePitchAlignment;
+    int maxTexture1D;
+    int maxTexture1DMipmap;
+    int maxTexture1DLinear;
+    int maxTexture2D[2];
+    int maxTexture2DMipmap[2];
+    int maxTexture2DLinear[3];
+    int maxTexture2DGather[2];
+    int maxTexture3D[3];
+    int maxTexture3DAlt[3];
+    int maxTextureCubemap;
+    int maxTexture1DLayered[2];
+    int maxTexture2DLayered[3];
+    int maxTextureCubemapLayered[2];
+    int maxSurface1D;
+    int maxSurface2D[2];
+    int maxSurface3D[3];
+    int maxSurface1DLayered[2];
+    int maxSurface2DLayered[3];
+    int maxSurfaceCubemap;
+    int maxSurfaceCubemapLayered[2];
     int deviceOverlap;
     int multiProcessorCount;
     int kernelExecTimeoutEnabled;
@@ -110,6 +216,19 @@ struct cudaDeviceProp {
     int maxBlocksPerMultiProcessor;
     int accessPolicyMaxWindowSize;
     size_t reservedSharedMemPerBlock;
+    int hostRegisterSupported;
+    int sparseCudaArraySupported;
+    int hostRegisterReadOnlySupported;
+    int timelineSemaphoreInteropSupported;
+    int memoryPoolsSupported;
+    int gpuDirectRDMASupported;
+    unsigned int gpuDirectRDMAFlushWritesOptions;
+    int gpuDirectRDMAWritesOrdering;
+    unsigned int memoryPoolSupportedHandleTypes;
+    int deferredMappingCudaArraySupported;
+    int ipcEventSupported;
+    int clusterLaunch;
+    int unifiedFunctionPointers;
 };
 
 //! Device attributes, with the same values as CUDA's
@@ -124,26 +243,45 @@ enum cudaDeviceAttr {
     cudaDevAttrMaxSharedMemoryPerBlock        = 8,
     cudaDevAttrTotalConstantMemory            = 9,
     cudaDevAttrWarpSize                       = 10,
+    cudaDevAttrMaxPitch                       = 11,
     cudaDevAttrMaxRegistersPerBlock           = 12,
     cudaDevAttrClockRate                      = 13,
+    cudaDevAttrTextureAlignment               = 14,
+    cudaDevAttrGpuOverlap                     = 15,
     cudaDevAttrMultiProcessorCount            = 16,
+    cudaDevAttrKernelExecTimeout              = 17,
     cudaDevAttrIntegrated                     = 18,
     cudaDevAttrCanMapHostMemory               = 19,
     cudaDevAttrComputeMode                    = 20,
     cudaDevAttrConcurrentKernels              = 31,
     cudaDevAttrEccEnabled                     = 32,
+    cudaDevAttrPciBusId                       = 33,
+    cudaDevAttrPciDeviceId                    = 34,
+    cudaDevAttrMemoryClockRate                = 36,
+    cudaDevAttrGlobalMemoryBusWidth           = 37,
     cudaDevAttrL2CacheSize                    = 38,
     cudaDevAttrMaxThreadsPerMultiProcessor    = 39,
     cudaDevAttrAsyncEngineCount               = 40,
     cudaDevAttrUnifiedAddressing              = 41,
+    cudaDevAttrPciDomainId                    = 50,
     cudaDevAttrComputeCapabilityMajor         = 75,
     cudaDevAttrComputeCapabilityMinor         = 76,
+    cudaDevAttrStreamPrioritiesSupported      = 78,
+    cudaDevAttrGlobalL1CacheSupported         = 79,
+    cudaDevAttrLocalL1CacheSupported          = 80,
     cudaDevAttrMaxSharedMemoryPerMultiprocessor = 81,
     cudaDevAttrMaxRegistersPerMultiprocessor  = 82,
     cudaDevAttrManagedMemory                  = 83,
+    cudaDevAttrIsMultiGpuBoard                = 84,
+    cudaDevAttrHostNativeAtomicSupported      = 86,
+    cudaDevAttrPageableMemoryAccess           = 88,
     cudaDevAttrConcurrentManagedAccess        = 89,
+    cudaDevAttrCanUseHostPointerForRegisteredMem = 91,
+    cudaDevAttrCooperativeLaunch              = 95,
+    cudaDevAttrHostRegisterSupported          = 99,
     cudaDevAttrMaxSharedMemoryPerBlockOptin   = 97,
-    cudaDevAttrMaxBlocksPerMultiprocessor     = 106
+    cudaDevAttrMaxBlocksPerMultiprocessor     = 106,
+    cudaDevAttrMemoryPoolsSupported           = 115
 };
 
 }
@@ -161,6 +299,9 @@ inline std::atomic<size_t> stack_size{min_stack_size};
 //! Describes the CPU as a CUDA device (defined in the library)
 void get_device_properties(cudaDeviceProp &prop);
 
+//! Flags given to cudaSetDeviceFlags
+inline std::atomic<unsigned int> device_flags{0};
+
 }
 
 inline namespace cuda_api {
@@ -177,6 +318,19 @@ cudaError_t cudaDeviceReset()
     return cudaSuccess;
 }
 
+//! Deprecated names of cudaDeviceSynchronize and cudaDeviceReset
+static inline
+cudaError_t cudaThreadSynchronize()
+{
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaThreadExit()
+{
+    return cudaSuccess;
+}
+
 static inline
 cudaError_t cudaGetDeviceCount(int *count)
 {
@@ -188,6 +342,52 @@ static inline
 cudaError_t cudaSetDevice(int device)
 {
     return device == 0 ? cudaSuccess : detail::record_error(cudaErrorInvalidDevice);
+}
+
+static inline
+cudaError_t cudaSetDeviceFlags(unsigned int flags)
+{
+    detail::device_flags = flags;
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaGetDeviceFlags(unsigned int *flags)
+{
+    *flags = detail::device_flags;
+    return cudaSuccess;
+}
+
+//! Stream priorities have no effect: streams are synchronous. The range is
+//! [0, 0], which is how CUDA reports that priorities are not supported.
+static inline
+cudaError_t cudaDeviceGetStreamPriorityRange(int *leastPriority, int *greatestPriority)
+{
+    if (leastPriority)
+        *leastPriority = 0;
+    if (greatestPriority)
+        *greatestPriority = 0;
+    return cudaSuccess;
+}
+
+//! There is one device, so no peer to access
+static inline
+cudaError_t cudaDeviceCanAccessPeer(int *canAccessPeer, int /* device */, int /* peerDevice */)
+{
+    *canAccessPeer = 0;
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaDeviceEnablePeerAccess(int /* peerDevice */, unsigned int /* flags */)
+{
+    return detail::record_error(cudaErrorInvalidDevice);
+}
+
+static inline
+cudaError_t cudaDeviceDisablePeerAccess(int /* peerDevice */)
+{
+    return detail::record_error(cudaErrorInvalidDevice);
 }
 
 static inline
@@ -265,9 +465,109 @@ cudaError_t cudaDeviceGetAttribute(int *value, cudaDeviceAttr attr, int device)
     case cudaDevAttrConcurrentManagedAccess:      *value = p.concurrentManagedAccess; break;
     case cudaDevAttrMaxSharedMemoryPerBlockOptin: *value = int(p.sharedMemPerBlockOptin); break;
     case cudaDevAttrMaxBlocksPerMultiprocessor:   *value = p.maxBlocksPerMultiProcessor; break;
+    case cudaDevAttrMemoryPoolsSupported:         *value = p.memoryPoolsSupported; break;
+    case cudaDevAttrMaxPitch:                     *value = int(p.memPitch); break;
+    case cudaDevAttrTextureAlignment:             *value = int(p.textureAlignment); break;
+    case cudaDevAttrGpuOverlap:                   *value = p.deviceOverlap; break;
+    case cudaDevAttrKernelExecTimeout:            *value = p.kernelExecTimeoutEnabled; break;
+    case cudaDevAttrPciBusId:                     *value = p.pciBusID; break;
+    case cudaDevAttrPciDeviceId:                  *value = p.pciDeviceID; break;
+    case cudaDevAttrPciDomainId:                  *value = p.pciDomainID; break;
+    case cudaDevAttrMemoryClockRate:              *value = p.memoryClockRate; break;
+    case cudaDevAttrGlobalMemoryBusWidth:         *value = p.memoryBusWidth; break;
+    case cudaDevAttrStreamPrioritiesSupported:    *value = p.streamPrioritiesSupported; break;
+    case cudaDevAttrGlobalL1CacheSupported:       *value = p.globalL1CacheSupported; break;
+    case cudaDevAttrLocalL1CacheSupported:        *value = p.localL1CacheSupported; break;
+    case cudaDevAttrIsMultiGpuBoard:              *value = p.isMultiGpuBoard; break;
+    case cudaDevAttrHostNativeAtomicSupported:    *value = p.hostNativeAtomicSupported; break;
+    case cudaDevAttrPageableMemoryAccess:         *value = p.pageableMemoryAccess; break;
+    case cudaDevAttrCanUseHostPointerForRegisteredMem: *value = p.canUseHostPointerForRegisteredMem; break;
+    case cudaDevAttrCooperativeLaunch:            *value = p.cooperativeLaunch; break;
+    case cudaDevAttrHostRegisterSupported:        *value = p.hostRegisterSupported; break;
     default:
         return detail::record_error(cudaErrorInvalidValue);
     }
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaDeviceSetCacheConfig(cudaFuncCache /* cacheConfig */)
+{
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaDeviceGetCacheConfig(cudaFuncCache *cacheConfig)
+{
+    *cacheConfig = cudaFuncCachePreferNone;
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaDeviceSetSharedMemConfig(cudaSharedMemConfig /* config */)
+{
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaDeviceGetSharedMemConfig(cudaSharedMemConfig *config)
+{
+    *config = cudaSharedMemBankSizeFourByte;
+    return cudaSuccess;
+}
+
+template <typename T>
+static inline
+cudaError_t cudaFuncSetCacheConfig(T * /* func */, cudaFuncCache /* cacheConfig */)
+{
+    return cudaSuccess;
+}
+
+template <typename T>
+static inline
+cudaError_t cudaFuncSetSharedMemConfig(T * /* func */, cudaSharedMemConfig /* config */)
+{
+    return cudaSuccess;
+}
+
+//! Dynamic shared memory has no 48 KiB limit to raise, so these are accepted
+//! and ignored
+template <typename T>
+static inline
+cudaError_t cudaFuncSetAttribute(T * /* func */, cudaFuncAttribute /* attr */, int /* value */)
+{
+    return cudaSuccess;
+}
+
+template <typename T>
+static inline
+cudaError_t cudaFuncGetAttributes(cudaFuncAttributes *attr, T * /* func */)
+{
+    *attr = cudaFuncAttributes{};
+    attr->maxThreadsPerBlock = 1024;
+    attr->maxDynamicSharedSizeBytes = 48 * 1024;
+    attr->ptxVersion = attr->binaryVersion = 60;
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaStreamSetAttribute(cudaStream_t /* stream */, cudaStreamAttrID /* attr */,
+                                   const cudaStreamAttrValue * /* value */)
+{
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaStreamGetAttribute(cudaStream_t /* stream */, cudaStreamAttrID /* attr */,
+                                   cudaStreamAttrValue *value)
+{
+    *value = cudaStreamAttrValue{};
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaCtxResetPersistingL2Cache()
+{
     return cudaSuccess;
 }
 

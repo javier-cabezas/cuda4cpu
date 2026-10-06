@@ -50,6 +50,9 @@
 #define __global__
 #define __forceinline__ inline __attribute__((always_inline))
 #define __launch_bounds__(...)
+#define __grid_constant__
+#define __managed__
+#define __align__(n) __attribute__((aligned(n)))
 #define __device__
 #define __host__
 #define __shared__ static thread_local

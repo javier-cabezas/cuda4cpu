@@ -43,6 +43,7 @@ enum cudaError {
     cudaErrorInvalidDevice          = 101,
     cudaErrorInvalidResourceHandle  = 400,
     cudaErrorNotReady               = 600,
+    cudaErrorAssert                 = 710,
     cudaErrorLaunchFailure          = 719,
     cudaErrorNotSupported           = 801,
     cudaErrorUnknown                = 999

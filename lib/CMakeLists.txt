@@ -9,7 +9,13 @@ target_sources(cuda4cpu
         BASE_DIRS ${CUDA4CPU_INCLUDE_DIR}
         FILES
             ${CUDA4CPU_INCLUDE_DIR}/cuda4cpu.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime.h
+            ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime_api.h
+            ${CUDA4CPU_INCLUDE_DIR}/cuda_profiler_api.h
+            ${CUDA4CPU_INCLUDE_DIR}/device_launch_parameters.h
+            ${CUDA4CPU_INCLUDE_DIR}/vector_functions.h
+            ${CUDA4CPU_INCLUDE_DIR}/vector_types.h
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
             ${CUDA4CPU_INCLUDE_DIR}/launch.hpp
             ${CUDA4CPU_INCLUDE_DIR}/warp.hpp
