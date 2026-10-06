@@ -32,6 +32,14 @@ jobs:
       - name: Configure, build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
 
+      # Correct programs give the same results whatever the order in which the
+      # threads of a block run between barriers
+      - name: Test with the threads of each block in reverse and in random order
+        if: matrix.compiler.name == 'gcc-14' && matrix.preset == 'release'
+        run: |
+          CUDA4CPU_SCHEDULE=reverse ctest --preset release -E '^schedule_'
+          CUDA4CPU_SCHEDULE=random:${{ github.run_id }} ctest --preset release -E '^schedule_'
+
       - name: Install
         run: cmake --install build/${{ matrix.preset }} --prefix "${{ runner.temp }}/cuda4cpu"
 
@@ -55,3 +63,56 @@ jobs:
           cmake --preset debug -DCUDA4CPU_PORTABLE_CONTEXT=ON
           cmake --build --preset debug
           ctest --preset debug
+
+  # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
+  # test suite must run clean. (The driver test builds a program without the
+  # sanitizer flags against the instrumented library.)
+  sanitizers:
+    name: gcc-14 / AddressSanitizer and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
+      ASAN_OPTIONS: allocator_may_return_null=1
+      UBSAN_OPTIONS: print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14 gdb
+
+      - name: Configure, build and test
+        run: |
+          cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          cmake --build --preset debug
+          ctest --preset debug -E '^driver$'
+
+  # With CUDA4CPU_ENABLE_VALGRIND, the fiber stacks are registered with
+  # Valgrind, which must report no errors. The slowest tests are left out.
+  valgrind:
+    name: gcc-14 / Valgrind
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14 valgrind
+
+      - name: Build
+        run: |
+          cmake --preset debug -DCUDA4CPU_ENABLE_VALGRIND=ON -DCUDA4CPU_BUILD_BENCHMARKS=OFF
+          cmake --build --preset debug
+
+      - name: Test under Valgrind
+        working-directory: build/debug/tests
+        run: |
+          for test in barriers warp atomics launch runtime rewrite_features sample_vector_add sample_softmax; do
+            echo "::group::$test"
+            OMP_NUM_THREADS=2 valgrind -q --error-exitcode=1 ./$test
+            echo "::endgroup::"
+          done

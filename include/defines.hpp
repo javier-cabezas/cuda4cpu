@@ -55,7 +55,9 @@
 #define __shared__ static thread_local
 #define __constant__
 
-#define __syncthreads cuda4cpu::thread_block::syncthreads
+// The file and line identify each __syncthreads() for the divergent barrier
+// check, and are the same in every copy the compiler inlines
+#define __syncthreads() cuda4cpu::thread_block::syncthreads(__FILE__, __LINE__)
 
 #define threadIdx cuda4cpu::thread_block::get_thread()
 #define blockIdx  cuda4cpu::thread_block::get_block()

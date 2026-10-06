@@ -158,7 +158,8 @@ public:
 
     //! Implementation of the __syncthreads intrinsic.
     //! Switches to the next CUDA thread until all the live threads in the block have reached the barrier.
-    static void syncthreads();
+    //! file and line identify the call, to check that all threads reach the same one.
+    static void syncthreads(const char *file = nullptr, int line = 0);
 
     //! Implementation of __syncwarp: waits for the live lanes of the calling warp in mask
     static void syncwarp(unsigned mask);
@@ -238,6 +239,8 @@ private:
     void promote();
     void switch_from_current();
     size_t next_runnable(size_t from) const;
+    size_t next_runnable_after(size_t tid) const;
+    void check_barrier_site(const char *file, int line);
     void release_block();
     void try_release_warp(size_t tid);
     void try_release_warp_waiters(size_t w);
@@ -251,6 +254,8 @@ private:
     size_t nthreads_;
     size_t stack_size_;
     size_t cur_;    //!< CUDA thread being executed
+    size_t pos_;    //!< Position of cur_ in the running order (direct mode only)
+    const unsigned *order_;   //!< Running order of the threads, or nullptr for 0, 1, 2, ...
     bool direct_;   //!< No CUDA thread has reached a barrier in this block yet
     void *shared_mem_;
     std::vector<dim3> ids_;
@@ -291,9 +296,9 @@ private:
         thread_block &block = *Current_;
         if (!block.direct_) [[unlikely]]
             block.finish_current();
-        if (block.cur_ + 1 == block.nthreads_)
+        if (++block.pos_ == block.nthreads_)
             return false;
-        block.set_current_thread(block.cur_ + 1);
+        block.set_current_thread(block.order_ ? block.order_[block.pos_] : block.pos_);
         return true;
     }
 

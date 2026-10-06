@@ -48,6 +48,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
   fiber cache) and `system` (topology via OpenMP plus optional libnuma).
+- `tools/cuda4cpu-gdb.py`: gdb convenience functions (`$threadIdx()`, ...)
+  and the `cuda4cpu` command, which read `thread_block::Vars_`. The library is
+  always built with `-g` so that gdb knows that variable's type.
 - `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
   `extern __shared__ T x[];` in a `.cu` file and in the local headers it
   includes. It uses Python 3, standard library only.
@@ -84,6 +87,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `extern __shared__` placement, checked at run time, including that
     `__LINE__` matches the original file. Update its expected line if you
     edit the file above that check.
+  - `schedule_{forward,reverse,random}`: a kernel with a missing
+    `__syncthreads()` that the default order hides and the others expose
+  - `divergent_barrier_{warn,ignore,error}`: the divergent barrier check in
+    each mode (error mode must abort with a single report)
+  - `gdb` (`gdb_test.cmake`, if gdb is installed): a breakpoint conditioned on
+    `$threadIdx("x")`, the built-in variables, and a backtrace that ends where
+    the fiber started
   - `rewrite_unit` (`rewrite/test_rewrite.py`): exact rewriter output, the
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
@@ -201,6 +211,38 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - Don't define `__noinline__` as a macro: libstdc++ uses
   `__attribute__((__noinline__))`.
 
+- Debugging settings come from the environment, read once in `settings`:
+  `CUDA4CPU_SCHEDULE` (forward, reverse, random[:seed]) and
+  `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore).
+- Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
+  to a permutation (`fibers::order`, inverse in `position`). It's reversed once
+  per thread_block, or shuffled per block from the seed and the block index.
+  Direct mode walks it with `pos_`. `promote()` marks `order_[0..pos_)` as
+  finished, and `next_runnable_after()` follows the order. Anything that
+  reasons about which threads ran in direct mode must use the order, not
+  `t < cur_`: `warp_live_mask` once got this wrong, and `__activemask()` before
+  the first barrier gave wrong lanes in random order. Run the tests with
+  `CUDA4CPU_SCHEDULE=random:<several seeds>` after scheduler changes. Direct mode runs on
+  the stack of `order_[0]` (`direct_stack`), never stack 0, because a thread
+  that hasn't started yet must not start on the stack the promoted thread is
+  still using.
+- `__syncthreads()` is a function-like macro passing `__FILE__` and `__LINE__`.
+  The divergent barrier check compares them, not return addresses: the
+  compiler inlines a lambda-launched kernel into both `run_direct` and
+  `run_one`, so one call site has several addresses.
+- AddressSanitizer: `__sanitizer_start/finish_switch_fiber` are weak
+  references, called only when the runtime is present. Every switch goes
+  through `fibers::switch_to`/`start_fiber`, which call `sanitizer_leave` as
+  the last thing before the raw switch. A context saved into `discarded`
+  leaves its fake stack in `stack_fake_stacks[running_stack]`, and the next
+  fiber started on that stack takes it in `sanitizer_started`. The fake stack
+  may hold the caller's addressable locals, so nothing may touch them after
+  `sanitizer_leave`; and destroying fake stacks instead of reusing them costs
+  two mmap calls per CUDA thread. Every context records the stack it runs on
+  (`stack_index`, set in `start_fiber` and `promote`).
+- ThreadSanitizer isn't supported: GCC's libgomp synchronizes through raw
+  futexes that it can't see, and modeling barriers for it requires keeping it
+  out of the scheduler state and `Vars_`, which all CUDA threads share.
 - The rewriter must never add or remove newlines, so that line numbers stay
   the same; it also prepends `#line 1 "<original path>"`. It copies the
   kernel expression, configuration and arguments verbatim, and never splits

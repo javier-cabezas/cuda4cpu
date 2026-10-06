@@ -26,9 +26,15 @@
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <mutex>
 #include <new>
+#include <numeric>
+#include <random>
+#include <set>
 #include <string>
+#include <utility>
 
 #include <setjmp.h>
 #include <sys/mman.h>
@@ -111,6 +117,15 @@ cuda4cpu_fiber_trampoline:
 )");
 #endif
 
+// The sanitizer fiber API (sanitizer/common_interface_defs.h), referenced
+// weakly: the functions exist only when the program runs with a sanitizer
+// runtime, so the same build of the library works with and without one.
+extern "C" {
+[[gnu::weak]] void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
+[[gnu::weak]] void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old,
+                                                   size_t *size_old);
+}
+
 namespace cuda4cpu {
 
 // static variables
@@ -171,16 +186,106 @@ constexpr size_t stack_offset(size_t i)
     return (i % stack_offset_lines) * cache_line;
 }
 
+//! A suspended fiber
+struct context {
 #if CUDA4CPU_ASM_CONTEXT
-//! A suspended fiber: its registers are saved on its own stack
-struct context {
-    void *sp;
-};
+    void *sp;                         //!< Its registers are saved on its own stack
 #else
-struct context {
     jmp_buf buf;
-};
 #endif
+};
+
+//! What the sanitizer fiber API needs about a context: the stack it runs on
+//! and AddressSanitizer's fake stack. Kept apart from context, which every
+//! switch touches.
+struct sanitizer_context {
+    const void *stack_bottom = nullptr;
+    size_t stack_size = 0;
+    size_t stack_index = size_t(-1);    //!< Fiber stack it runs on; -1 for the OS thread's
+    void *fake_stack = nullptr;
+};
+
+//!
+//! Debugging settings, read once from the environment
+//!
+struct settings {
+    enum class order { forward, reverse, random };
+    enum class divergence { warn, error, ignore };
+
+    order schedule = order::forward;            //!< CUDA4CPU_SCHEDULE
+    uint64_t seed = 0;
+    divergence barriers = divergence::warn;     //!< CUDA4CPU_DIVERGENT_BARRIERS
+
+    static const settings &get()
+    {
+        static const settings s = read();
+        return s;
+    }
+
+private:
+    static settings read()
+    {
+        settings s;
+        if (const char *v = std::getenv("CUDA4CPU_SCHEDULE"); v != nullptr && *v != '\0') {
+            std::string value = v;
+            if (value == "forward") {
+                s.schedule = order::forward;
+            } else if (value == "reverse") {
+                s.schedule = order::reverse;
+            } else if (value == "random" || value.rfind("random:", 0) == 0) {
+                s.schedule = order::random;
+                s.seed = value.size() > 7 ? std::strtoull(value.c_str() + 7, nullptr, 0)
+                                          : std::random_device{}();
+                std::fprintf(stderr, "cuda4cpu: running threads in random order, seed %llu "
+                                     "(CUDA4CPU_SCHEDULE=random:%llu reproduces it)\n",
+                             (unsigned long long)s.seed, (unsigned long long)s.seed);
+            } else {
+                std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_SCHEDULE=%s: expected forward, "
+                                     "reverse, random or random:<seed>\n", v);
+            }
+        }
+        if (const char *v = std::getenv("CUDA4CPU_DIVERGENT_BARRIERS"); v != nullptr && *v != '\0') {
+            std::string value = v;
+            if (value == "warn")
+                s.barriers = divergence::warn;
+            else if (value == "error")
+                s.barriers = divergence::error;
+            else if (value == "ignore")
+                s.barriers = divergence::ignore;
+            else
+                std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_DIVERGENT_BARRIERS=%s: expected "
+                                     "warn, error or ignore\n", v);
+        }
+        return s;
+    }
+};
+
+//! Reports threads of a block that reached different __syncthreads() calls,
+//! once for each pair of calls
+void report_divergent_barrier(const char *file1, int line1, const char *file2, int line2, dim3 block)
+{
+    static std::mutex lock;
+    static std::set<std::pair<std::string, std::string>> reported;
+
+    auto where = [](const char *file, int line) {
+        return file == nullptr ? std::string("unknown location") : std::string(file) + ":" + std::to_string(line);
+    };
+    const std::string first = where(file1, line1), other = where(file2, line2);
+
+    const bool error = settings::get().barriers == settings::divergence::error;
+
+    // Held until the report is out, and through the abort in error mode, so
+    // that blocks running in parallel report one at a time
+    std::lock_guard<std::mutex> guard(lock);
+    if (!reported.insert(std::minmax(first, other)).second && !error)
+        return;
+    std::fprintf(stderr,
+                 "cuda4cpu: %s: threads of block (%u, %u, %u) reached different __syncthreads() calls, "
+                 "at %s and %s. CUDA requires every thread of a block to reach the same one.\n",
+                 error ? "error" : "warning", block.x, block.y, block.z, first.c_str(), other.c_str());
+    if (error)
+        std::abort();
+}
 
 }
 
@@ -200,6 +305,7 @@ struct thread_block::fibers {
     //! guard page below it so that a stack overflow faults instead of silently
     //! corrupting the neighboring stack.
     fibers(size_t n, size_t stack_size) :
+        sanitize{__sanitizer_start_switch_fiber != nullptr && __sanitizer_finish_switch_fiber != nullptr},
         page{size_t(sysconf(_SC_PAGESIZE))},
         stack_size{(stack_size + page - 1) / page * page},
         stride{this->stack_size + page},
@@ -249,6 +355,9 @@ struct thread_block::fibers {
         return base + i * stride + page;
     }
 
+    //! The program runs with a sanitizer that needs to know about fiber switches
+    const bool sanitize;
+
     const size_t page;
     const size_t stack_size;
     const size_t stride;
@@ -265,27 +374,87 @@ struct thread_block::fibers {
     //! Saves the running context in save and resumes load
     void switch_to(context &save, context &load)
     {
+        if (sanitize) [[unlikely]]
+            sanitizer_leave(save, load);
 #if CUDA4CPU_ASM_CONTEXT
         cuda4cpu_switch_context(&save.sp, load.sp);
 #else
         if (_setjmp(save.buf) == 0)
             _longjmp(load.buf, 1);
 #endif
+        if (sanitize) [[unlikely]]
+            sanitizer_resumed(save);
     }
 
-    //! Saves the running context in save and starts fiber i from its entry point
+    //! Saves the running context in save and starts fiber i from its entry
+    //! point, on stack i
     void start_fiber(context &save, size_t i)
     {
+        set_stack(i, i);
+        starting_stack = i;
 #if CUDA4CPU_ASM_CONTEXT
         // The frame that cuda4cpu_switch_context pops: r15, r14, r13, r12, rbx,
         // rbp, and the return address
         void **sp = reinterpret_cast<void **>(stack(i) + stack_size - stack_offset(i)) - 7;
-        std::fill(sp, sp + 6, nullptr);
+        for (int r = 0; r < 6; ++r)
+            sp[r] = nullptr;
         sp[6] = reinterpret_cast<void *>(cuda4cpu_fiber_trampoline);
+        if (sanitize) [[unlikely]]
+            sanitizer_leave(save, ctx[i]);
         cuda4cpu_switch_context(&save.sp, sp);
 #else
-        switch_to(save, start[i]);
+        if (sanitize) [[unlikely]]
+            sanitizer_leave(save, ctx[i]);
+        if (_setjmp(save.buf) == 0)
+            _longjmp(start[i].buf, 1);
 #endif
+        if (sanitize) [[unlikely]]
+            sanitizer_resumed(save);
+    }
+
+    //! Tells AddressSanitizer that the running context switches to the stack
+    //! that load runs on. A context saved in discarded never resumes: its fake
+    //! stack goes back to the stack it ran on. Call this last before the
+    //! switch, after the caller's last use of its addressable locals.
+    [[gnu::noinline]] void sanitizer_leave(context &save, const context &load)
+    {
+        void **fake_stack = &sanitizer_of(save).fake_stack;
+        if (&save == &discarded) {
+            if (stack_fake_stacks.empty())
+                stack_fake_stacks.resize(ctx.size());
+            fake_stack = &stack_fake_stacks[running_stack];
+        }
+        const auto &target = sanitizer_of(load);
+        __sanitizer_start_switch_fiber(fake_stack, target.stack_bottom, target.stack_size);
+    }
+
+    //! Tells AddressSanitizer that self runs again
+    [[gnu::noinline]] void sanitizer_resumed(context &self)
+    {
+        auto &sc = sanitizer_of(self);
+        __sanitizer_finish_switch_fiber(sc.fake_stack, nullptr, nullptr);
+        running_stack = sc.stack_index;
+    }
+
+    //! Tells AddressSanitizer that a fiber started, with the fake stack the
+    //! last thread on its stack left. When execute() starts it, the stack it
+    //! comes from is the OS thread's, where the block returns.
+    void sanitizer_started(bool from_caller)
+    {
+        if (!sanitize) [[likely]]
+            return;
+        if (stack_fake_stacks.empty())
+            stack_fake_stacks.resize(ctx.size());
+        running_stack = starting_stack;
+        void *fake_stack = std::exchange(stack_fake_stacks[running_stack], nullptr);
+
+        const void *bottom = nullptr;
+        size_t size = 0;
+        __sanitizer_finish_switch_fiber(fake_stack, &bottom, &size);
+        if (from_caller) {
+            sanitizer_caller.stack_bottom = bottom;
+            sanitizer_caller.stack_size   = size;
+        }
     }
 
     // Scheduling state in fiber mode, as one bit per lane and one word per
@@ -297,6 +466,46 @@ struct thread_block::fibers {
 
     size_t live_count    = 0;         //!< Threads that have not returned
     size_t block_arrived = 0;         //!< Threads waiting at __syncthreads()
+    const char *barrier_file = nullptr;   //!< Where the first thread called the pending __syncthreads()
+    int barrier_line = 0;
+
+    // AddressSanitizer fake stacks of the fiber stacks. Like the stacks, they
+    // are reused: a thread that returns leaves its fake stack here, and the
+    // next thread that starts on that stack takes it (creating and destroying
+    // one per CUDA thread costs two mmap calls).
+    std::vector<void *> stack_fake_stacks;
+    std::vector<sanitizer_context> sanitizer_ctx;     //!< One for each context in ctx
+    sanitizer_context sanitizer_caller;
+    sanitizer_context sanitizer_discarded;
+
+    sanitizer_context &sanitizer_of(const context &c)
+    {
+        if (&c == &caller)
+            return sanitizer_caller;
+        if (&c == &discarded)
+            return sanitizer_discarded;
+        if (sanitizer_ctx.empty())
+            sanitizer_ctx.resize(ctx.size());
+        return sanitizer_ctx[size_t(&c - ctx.data())];
+    }
+
+    //! Records that the thread whose context is ctx[t] runs on stack s
+    void set_stack(size_t t, size_t s)
+    {
+        if (!sanitize) [[likely]]
+            return;
+        auto &sc = sanitizer_of(ctx[t]);
+        sc.stack_bottom = stack(s);
+        sc.stack_size   = stack_size;
+        sc.stack_index  = s;
+    }
+    size_t running_stack  = size_t(-1);
+    size_t starting_stack = size_t(-1);
+
+    // Running order of the threads when CUDA4CPU_SCHEDULE is not forward
+    std::vector<unsigned> order;
+    std::vector<unsigned> position;   //!< Inverse of order
+    size_t direct_stack = 0;          //!< Stack of the fiber that runs direct mode
 
     uint32_t runnable(size_t w) const
     {
@@ -334,11 +543,25 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
     nthreads_{conf_.nthreads()},
     stack_size_{stack_size},
     cur_{0},
+    pos_{0},
+    order_{nullptr},
     direct_{true},
     shared_mem_{nullptr},
     ids_(nthreads_),
     fibers_{std::make_unique<fibers>(nthreads_, stack_size)}
 {
+    if (settings::get().schedule != settings::order::forward) {
+        auto &f = *fibers_;
+        f.order.resize(nthreads_);
+        f.position.resize(nthreads_);
+        std::iota(f.order.begin(), f.order.end(), 0u);
+        if (settings::get().schedule == settings::order::reverse)
+            std::reverse(f.order.begin(), f.order.end());
+        for (size_t p = 0; p < nthreads_; ++p)
+            f.position[f.order[p]] = unsigned(p);
+        order_ = f.order.data();
+    }
+
     for (size_t i = 0; i < nthreads_; ++i) {
         // Precompute thread ids
         ids_[i] = dim3(unsigned(i % block.x),
@@ -413,6 +636,23 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     kernel_   = &kernel;
     block_id_ = block_id;
     direct_   = true;
+    pos_      = 0;
+
+    auto &f = *fibers_;
+    if (settings::get().schedule == settings::order::random) {
+        // A different order for every block, reproducible from the seed
+        uint64_t linear = (uint64_t(block_id.z) * conf_.grid.y + block_id.y) * conf_.grid.x + block_id.x;
+        std::mt19937_64 random(settings::get().seed ^ (linear * 0x9e3779b97f4a7c15ull));
+        std::shuffle(f.order.begin(), f.order.end(), random);
+        for (size_t p = 0; p < nthreads_; ++p)
+            f.position[f.order[p]] = unsigned(p);
+    }
+
+    // Direct mode runs on the stack of the first thread in the order: when the
+    // block switches to fiber mode, that thread has returned or is the one
+    // that keeps running there, so no other thread starts on that stack.
+    const size_t first = order_ ? order_[0] : 0;
+    f.direct_stack = first;
 
     thread_block *prev = Current_;
     builtin_vars prev_vars = Vars_;
@@ -420,8 +660,8 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     Vars_.block_idx.set(block_id);
     Vars_.block_dim.set(conf_.block);
     Vars_.grid_dim.set(conf_.grid);
-    set_current_thread(0);
-    fibers_->start_fiber(fibers_->caller, 0);
+    set_current_thread(first);
+    f.start_fiber(f.caller, first);
     Current_ = prev;
     Vars_    = prev_vars;
 }
@@ -457,6 +697,7 @@ void thread_block::fiber_entry(unsigned ptr_high, unsigned ptr_low)
 
 void thread_block::fiber_main()
 {
+    fibers_->sanitizer_started(direct_);
     if (direct_) {
         // Fiber 0 at the start of a block. Returns when every CUDA thread has
         // returned without reaching a barrier.
@@ -478,26 +719,38 @@ void thread_block::promote()
     for (size_t w = 0; w < f.live.size(); ++w) {
         const size_t base = w * warp_size;
         uint32_t exists = nthreads_ - base >= warp_size ? ~0u : (1u << (nthreads_ - base)) - 1;
-        uint32_t after  = base >= cur_ ? ~0u : (cur_ - base >= warp_size ? 0u : ~0u << (cur_ - base));
+        // In the default order, the threads before cur_ have returned
+        uint32_t after  = order_ || base >= cur_ ? ~0u
+                                                 : (cur_ - base >= warp_size ? 0u : ~0u << (cur_ - base));
         f.live[w]       = exists & after;
         f.started[w]    = 0;
         f.block_wait[w] = 0;
         f.warp_wait[w]  = 0;
     }
+    if (order_) {
+        for (size_t p = 0; p < pos_; ++p)
+            f.live[order_[p] / warp_size] &= ~lane_bit(order_[p]);
+    }
     f.started[cur_ / warp_size] = lane_bit(cur_);
 
-    f.live_count    = nthreads_ - cur_;
+    // The current thread keeps running on the stack of direct mode
+    f.set_stack(cur_, f.direct_stack);
+
+    f.live_count    = nthreads_ - pos_;
     f.block_arrived = 0;
     direct_         = false;
 }
 
-void thread_block::syncthreads()
+void thread_block::syncthreads(const char *file, int line)
 {
     thread_block &block = *Current_;
     if (block.direct_)
         block.promote();
 
     auto &f = *block.fibers_;
+    if (settings::get().barriers != settings::divergence::ignore)
+        block.check_barrier_site(file, line);
+
     const size_t w = block.cur_ / warp_size;
     f.block_wait[w] |= lane_bit(block.cur_);
     if (++f.block_arrived == f.live_count)
@@ -560,12 +813,21 @@ unsigned thread_block::warp_live_mask(size_t base) const
         return fibers_->live[w] & ~fibers_->block_wait[w];
     }
 
-    // In direct mode, threads before the current one have returned and the
-    // rest have not started
+    // In direct mode, the threads before the current one in the running order
+    // have returned and the rest have not started
     const size_t end = std::min(base + warp_size, nthreads_);
     unsigned mask = 0;
-    for (size_t t = std::max(base, cur_); t < end; ++t)
-        mask |= lane_bit(t);
+    if (order_ == nullptr) {
+        for (size_t t = std::max(base, cur_); t < end; ++t)
+            mask |= lane_bit(t);
+    } else {
+        for (size_t t = base; t < end; ++t)
+            mask |= lane_bit(t);
+        for (size_t p = 0; p < pos_; ++p) {
+            if (order_[p] >= base && order_[p] < end)
+                mask &= ~lane_bit(order_[p]);
+        }
+    }
     return mask;
 }
 
@@ -618,7 +880,7 @@ void thread_block::try_release_warp(size_t tid)
 void thread_block::switch_from_current()
 {
     const size_t self = cur_;
-    const size_t next = next_runnable(self + 1);
+    const size_t next = order_ ? next_runnable_after(self) : next_runnable(self + 1);
     if (next == self)
         return;
 
@@ -642,7 +904,7 @@ void thread_block::finish_current()
 
     try_release_warp_waiters(w);
 
-    switch_to_thread(no_thread, next_runnable(self + 1));
+    switch_to_thread(no_thread, order_ ? next_runnable_after(self) : next_runnable(self + 1));
     __builtin_unreachable();
 }
 
@@ -698,6 +960,38 @@ size_t thread_block::next_runnable(size_t from) const
         return w0 * warp_size + size_t(std::countr_zero(m));
 
     deadlock();
+}
+
+//! Returns the thread after tid in the running order, wrapping around, that
+//! can run
+size_t thread_block::next_runnable_after(size_t tid) const
+{
+    if (order_ == nullptr)
+        return next_runnable(tid + 1);
+
+    const auto &f = *fibers_;
+    const size_t p = f.position[tid];
+    for (size_t k = 1; k <= nthreads_; ++k) {
+        const unsigned t = order_[(p + k) % nthreads_];
+        if (f.runnable(t / warp_size) & lane_bit(t))
+            return t;
+    }
+    deadlock();
+}
+
+//! Checks that the current thread waits at the same __syncthreads() call as
+//! the threads that arrived before it
+void thread_block::check_barrier_site(const char *file, int line)
+{
+    auto &f = *fibers_;
+    if (f.block_arrived == 0) {
+        f.barrier_file = file;
+        f.barrier_line = line;
+    } else if (line != f.barrier_line ||
+               (file != f.barrier_file && (file == nullptr || f.barrier_file == nullptr ||
+                                           std::strcmp(file, f.barrier_file) != 0))) {
+        report_divergent_barrier(f.barrier_file, f.barrier_line, file, line, block_id_);
+    }
 }
 
 void thread_block::deadlock() const
@@ -779,7 +1073,7 @@ void detail::get_device_properties(cudaDeviceProp &prop)
         p.minor = 0;
 
         // Each OS thread is a multiprocessor that runs one block at a time
-        p.multiProcessorCount         = system::get_system().get_num_procs();
+        p.multiProcessorCount         = omp_get_max_threads();
         p.maxThreadsPerMultiProcessor = 1024;
         p.maxBlocksPerMultiProcessor  = 1;
 
@@ -806,7 +1100,6 @@ void detail::get_device_properties(cudaDeviceProp &prop)
 system::system()
 {
     cpus_ = omp_get_num_procs();
-    omp_set_num_threads(cpus_);
 
 #ifdef CUDA4CPU_HAVE_NUMA
     if (numa_available() < 0) {

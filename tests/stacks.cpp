@@ -62,6 +62,14 @@ __global__ void overflow(unsigned *out, unsigned depth)
 
 static unsigned errors = 0;
 
+#if defined(__SANITIZE_ADDRESS__)
+static constexpr bool address_sanitizer = true;
+#elif defined(__has_feature)
+static constexpr bool address_sanitizer = __has_feature(address_sanitizer);
+#else
+static constexpr bool address_sanitizer = false;
+#endif
+
 template <size_t Bytes>
 static void run_big_frame(const char *name)
 {
@@ -99,7 +107,11 @@ int main()
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) {
+    // AddressSanitizer catches the overflow itself, reports it and exits
+    bool detected = WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
+    if (address_sanitizer)
+        detected = detected || (WIFEXITED(status) && WEXITSTATUS(status) != 0);
+    if (!detected) {
         std::cout << "stack overflow did not raise SIGSEGV (status " << status << ")\n";
         ++errors;
     }

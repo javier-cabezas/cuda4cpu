@@ -63,6 +63,7 @@ configure_file(tools/cuda4cpu-c++.in install/cuda4cpu-c++ @ONLY FILE_PERMISSIONS
 
 install(PROGRAMS tools/cuda4cpu-rewrite "${PROJECT_BINARY_DIR}/install/cuda4cpu-c++"
         DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES tools/cuda4cpu-gdb.py DESTINATION ${CMAKE_INSTALL_DATADIR}/cuda4cpu)
 
 install(TARGETS cuda4cpu
         EXPORT cuda4cpu-targets
