@@ -9,8 +9,9 @@ CUDA syntax that C++ can't express (`kernel<<<...>>>(...)` launches and
 `extern __shared__` arrays), so `.cu` files compile unchanged. A library and
 headers then provide the kernel language and the runtime API.
 
-It's useful for debugging kernels with ordinary CPU tools (gdb, Valgrind),
-for running CUDA code on machines without a GPU, and for prototyping.
+It's useful for debugging kernels with ordinary CPU tools (gdb,
+AddressSanitizer, Valgrind) and checks a GPU can't make, for running CUDA code
+on machines without a GPU, and for prototyping.
 
 ## Contents
 
@@ -20,6 +21,7 @@ for running CUDA code on machines without a GPU, and for prototyping.
 - [Porting a CUDA program](#porting-a-cuda-program)
 - [Supported CUDA features](#supported-cuda-features)
 - [How it works](#how-it-works)
+- [Debugging](#debugging)
 - [Limitations](#limitations)
 - [License](#license)
 
@@ -233,8 +235,9 @@ your kernels use it.
 ## How it works
 
 - **Grid → OpenMP threads.** `launch(...).call(...)` splits the grid's thread
-  blocks into contiguous chunks, about 8 per CPU core, and hands them out to
-  the cores dynamically, so blocks of uneven cost balance out.
+  blocks into contiguous chunks, about 8 per OS thread, and hands them out to
+  the threads dynamically, so blocks of uneven cost balance out. There is one
+  OS thread per CPU core, unless `OMP_NUM_THREADS` says otherwise.
 - **Block → fibers.** Within a block, each CUDA thread is a user-level fiber
   with its own stack. On x86-64, switching fibers takes a dozen instructions
   that save and restore the callee-saved registers. That's about 12–20 ns per
@@ -264,6 +267,64 @@ your kernels use it.
 - **Device memory is host memory.** `cudaMalloc` is `malloc`, `cudaMemcpy` is
   `memcpy`, and streams and events run synchronously.
 
+## Debugging
+
+Kernels are ordinary CPU code, so CPU debugging tools work on them. cuda4cpu
+also adds checks that only a CPU implementation can make.
+
+**gdb.** Set breakpoints by line, step and inspect locals as in any program.
+Each CUDA thread has its own stack, so a backtrace shows the kernel's frames
+and ends where the thread started. cuda4cpu's gdb script adds the built-in
+variables of the CUDA thread you're stopped in:
+
+```
+(gdb) source /usr/local/share/cuda4cpu/cuda4cpu-gdb.py
+(gdb) break kernel.cu:42 if $threadIdx("x") == 6 && $blockIdx("x") == 2
+(gdb) run
+(gdb) print $threadIdx()
+$1 = {x = 6, y = 0, z = 0}
+(gdb) cuda4cpu
+thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
+```
+
+`$threadIdx()`, `$blockIdx()`, `$blockDim()` and `$gridDim()` return the whole
+value. With a dimension (`$threadIdx("x")`), they return one component, which
+is what breakpoint conditions need. gdb lists OS threads, not the CUDA threads
+suspended at barriers. Set `OMP_NUM_THREADS=1` to run all the blocks on one
+thread, one after another.
+
+**Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the
+threads of a block run one after another, in index order by default. A missing
+barrier goes unnoticed when the thread that reads shared memory happens to run
+after the one that writes it. Run the program again with
+`CUDA4CPU_SCHEDULE=reverse` or `CUDA4CPU_SCHEDULE=random`; if the results
+change, a barrier is missing. `random` prints its seed, and
+`CUDA4CPU_SCHEDULE=random:<seed>` repeats that order.
+
+**Divergent barriers.** CUDA requires all the threads of a block to reach the
+same `__syncthreads()`. cuda4cpu reports blocks whose threads reach different
+ones:
+
+```
+cuda4cpu: warning: threads of block (0, 0, 0) reached different __syncthreads() calls,
+at kernel.cu:12 and kernel.cu:15. CUDA requires every thread of a block to reach the same one.
+```
+
+`CUDA4CPU_DIVERGENT_BARRIERS` chooses what happens: `warn` (the default), `error`
+(abort, to stop in a debugger) or `ignore`.
+
+**AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
+(and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
+fiber stacks, so out-of-bounds accesses in kernels are reported with the
+kernel's source line. That covers local arrays and memory from `cudaMalloc`.
+The library doesn't need to be rebuilt. By default, AddressSanitizer aborts on
+allocations too large to satisfy. Set `ASAN_OPTIONS=allocator_may_return_null=1`
+to make `cudaMalloc` return `cudaErrorMemoryAllocation` instead.
+
+**Valgrind.** Build cuda4cpu with `-DCUDA4CPU_ENABLE_VALGRIND=ON`, so that it
+registers its fiber stacks with Valgrind. Otherwise Valgrind reports false
+errors in the context switch.
+
 ## Limitations
 
 - **Linux/glibc on 64-bit only.** The context switch is written for x86-64.
@@ -277,9 +338,9 @@ your kernels use it.
   memory. Kernels with deep recursion or large local arrays can request more
   with `cudaDeviceSetLimit(cudaLimitStackSize, bytes)` before launching.
   Smaller requests are rounded up to 64 KiB.
-- **No AddressSanitizer or ThreadSanitizer for kernels with barriers.** The
-  sanitizers don't know about the fiber stack switches and report false
-  errors. Valgrind works with `CUDA4CPU_ENABLE_VALGRIND=ON`.
+- **No ThreadSanitizer yet.** It reports false races between kernels and
+  host code, because OpenMP synchronizes its threads in ways it can't see.
+  AddressSanitizer, UBSan and Valgrind work (see [Debugging](#debugging)).
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only, and asynchronous copies complete
   before they return, so `cudaErrorNotReady` never occurs.
