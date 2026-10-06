@@ -3,10 +3,11 @@
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**cuda4cpu** is a C++ library and set of headers that lets you compile and run
-CUDA kernels on CPUs with a regular C++ compiler. There's no GPU, no `nvcc` and
-no source-to-source translation. You include one header and replace the
-`<<<...>>>` launch syntax with a function call.
+**cuda4cpu** lets you compile and run CUDA programs on CPUs with a regular
+C++ compiler, with no GPU and no `nvcc`. A small tool rewrites the two pieces of
+CUDA syntax that C++ can't express (`kernel<<<...>>>(...)` launches and
+`extern __shared__` arrays), so `.cu` files compile unchanged. A library and
+headers then provide the kernel language and the runtime API.
 
 It's useful for debugging kernels with ordinary CPU tools (gdb, Valgrind),
 for running CUDA code on machines without a GPU, and for prototyping.
@@ -48,8 +49,7 @@ int main()
     // Initialize input data
     // ...
 
-    // Equivalent to: vecadd<<<N / 512, 512>>>(C, A, B, N);
-    cuda4cpu::launch(vecadd, N / 512, 512).call(C, A, B, N);
+    vecadd<<<N / 512, 512>>>(C, A, B, N);
     if (cudaGetLastError() != cudaSuccess)
         return 1;
     cudaDeviceSynchronize();
@@ -73,6 +73,7 @@ int main()
 | CMake 3.25+ | Ninja is recommended (the presets use it) |
 | OpenMP | Bundled with GCC; Clang needs `libomp` |
 | Linux / glibc, 64-bit | Fibers use an assembly context switch on x86-64, and `ucontext` with `_setjmp`/`_longjmp` elsewhere |
+| Python 3 | Runs `cuda4cpu-rewrite` when compiling `.cu` files (standard library only) |
 | libnuma (optional) | Used for NUMA topology discovery |
 | Valgrind (optional) | Headers needed for `CUDA4CPU_ENABLE_VALGRIND` |
 
@@ -123,84 +124,77 @@ Pass options at configure time, for example
 
 ### With CMake (recommended)
 
-After installing cuda4cpu:
+After installing cuda4cpu, add `.cu` files with `cuda4cpu_add_cuda_sources`:
 
 ```cmake
 find_package(cuda4cpu 0.1 REQUIRED)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE cuda4cpu::cuda4cpu)
+cuda4cpu_add_cuda_sources(my_app kernels.cu solver.cu)
 ```
 
-Or vendor it as a subdirectory, with `add_subdirectory(cuda4cpu)` or
-`FetchContent`, and link against the same `cuda4cpu::cuda4cpu` target.
+At build time, each `.cu` file is rewritten by `cuda4cpu-rewrite`, along with
+the local headers it includes with `#include "..."`. The result is compiled as
+C++, with `cuda_runtime.h` included implicitly as nvcc does. Changing a `.cu`
+file or one of its headers triggers a new rewrite. The function also links
+the target against `cuda4cpu::cuda4cpu`, which brings in the include path,
+C++23 and OpenMP. C++ files that use cuda4cpu directly only need
+`target_link_libraries(my_app PRIVATE cuda4cpu::cuda4cpu)`.
 
-The target brings in everything your code needs: the include path, C++23
-and OpenMP.
-
-To compile `.cu` files as they are, have CMake treat them as C++, and include
-`cuda_runtime.h` implicitly as nvcc does:
-
-```cmake
-set_source_files_properties(kernels.cu PROPERTIES LANGUAGE CXX)
-target_compile_options(my_app PRIVATE -include cuda_runtime.h)
-```
+You can also vendor cuda4cpu as a subdirectory, with `add_subdirectory(cuda4cpu)`
+or `FetchContent`. Both the function and the target are then available.
 
 ### Without CMake
 
+`cuda4cpu-c++` is a compiler driver: use it like your C++ compiler, with `.cu`
+files among the inputs.
+
 ```sh
-g++ -std=c++23 -fopenmp -I/usr/local/include/cuda4cpu -c main.cpp
-g++ -fopenmp -o my_app main.o -lcuda4cpu
+cuda4cpu-c++ -O2 -o my_app main.cpp kernels.cu
+cuda4cpu-c++ -O2 -c kernels.cu        # kernels.o, as with any compiler
 ```
 
-For a `.cu` file, add `-x c++ -include cuda_runtime.h`.
+It rewrites the `.cu` files, adds the C++ standard, OpenMP and the cuda4cpu
+include directory, and links `libcuda4cpu` when it links. It runs
+`$CUDA4CPU_CXX`, `$CXX` or `c++`. It takes the compiler's options, not
+nvcc's.
+
+To run the rewriter on its own: `cuda4cpu-rewrite kernels.cu -o kernels.cpp`.
 
 ## Porting a CUDA program
 
-1. Use cuda4cpu's `cuda_runtime.h`. It provides the CUDA API in the global
-   namespace, like the real header. Files that include it keep compiling
-   unchanged. For files that rely on nvcc including it implicitly, pass
-   `-include cuda_runtime.h` (see [Using cuda4cpu in your
-   project](#using-cuda4cpu-in-your-project)).
+CUDA code compiles as it is: there are no source changes. The rewriting turns
+the two pieces of syntax C++ lacks into cuda4cpu calls:
 
-2. Replace each kernel launch with `cuda4cpu::launch(kernel, grid, block).call(args...)`:
+```cpp
+// CUDA                                    // what the compiler sees
+kernel<<<grid, block, smem, stream>>>(x);  cuda4cpu::launch([&](const auto &...a) { kernel(a...); },
+                                                           grid, block, smem, stream).call(x);
+extern __shared__ float sdata[];           float *sdata = cuda4cpu::dynamic_shared<float>();
+```
 
-   ```cpp
-   // CUDA
-   stencil<<<dim3(64, 512), dim3(32, 4)>>>(B, A, cols);
+The kernel, the launch configuration and the arguments are copied as they are.
+So template arguments are deduced from the arguments and default arguments
+apply, as in CUDA. Because the compiler knows which kernel each launch runs, it
+can inline it. Line numbers are preserved, and diagnostics and `__FILE__` refer
+to the original file.
 
-   // cuda4cpu
-   cuda4cpu::launch(stencil, dim3(64, 512), dim3(32, 4)).call(B, A, cols);
-   ```
+C++ code can also use the API directly, without the rewriter:
+`cuda4cpu::launch(kernel, grid, block[, smem]).call(args...)` and
+`cuda4cpu::dynamic_shared<T>()`. Code that includes `cuda4cpu.hpp` and uses
+`using namespace cuda4cpu` can write `launch` without the namespace.
 
-   Template kernels work the same way: `launch(stencil<4>, grid, block).call(...)`.
-   The optional third and fourth launch parameters (dynamic shared memory size
-   and stream) go after the block: `launch(kernel, grid, block, shared_bytes)`.
-   Code that includes `cuda4cpu.hpp` and uses `using namespace cuda4cpu` can
-   write `launch` without the namespace.
+GCC warns about `#pragma unroll` with `-Wall`; add `-Wno-unknown-pragmas` if
+your kernels use it.
 
-3. Replace `extern __shared__` arrays (dynamic shared memory) with a pointer.
-   C++ has no way to express an array whose size is set at launch time:
+`tests/samples/` has ten CUDA programs, unmodified `.cu` files built with
+`cuda4cpu_add_cuda_sources`, each checked against a host reference:
 
-   ```cpp
-   // CUDA
-   extern __shared__ float sdata[];
-
-   // cuda4cpu
-   float *sdata = dynamic_shared<float>();
-   ```
-
-4. Compile `.cu` files as C++ with your regular compiler. GCC warns about
-   `#pragma unroll` with `-Wall`; add `-Wno-unknown-pragmas` if your kernels
-   use it.
-
-`tests/samples/` has ports of ten CUDA programs, each checked against a host
-reference. Five are CUDA samples using kernel-language features: reduction,
-matrix multiplication, histogram, prefix scan and n-body. The other five use
-the runtime API as real applications do: vectorAdd, asyncAPI, deviceQuery, the
-unified-memory program from NVIDIA's introduction to CUDA, and a softmax kernel.
-Apart from dynamic shared memory, the only change from the CUDA originals is
-the kernel launch.
+- **Kernel-language features:** five CUDA samples (reduction, matrix
+  multiplication, histogram, prefix scan and n-body).
+- **The runtime API, as real applications use it:** vectorAdd, asyncAPI,
+  deviceQuery, the unified-memory program from NVIDIA's introduction to CUDA,
+  and a softmax kernel.
 
 ## Supported CUDA features
 
@@ -289,6 +283,17 @@ the kernel launch.
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only, and asynchronous copies complete
   before they return, so `cudaErrorNotReady` never occurs.
+- **The rewriter finds local headers through relative paths only.** Headers
+  included with `#include "..."` relative to the including file are rewritten.
+  Headers found through include directories (`-I`) or `#include <...>` are not.
+  A launch or `extern __shared__` array in one of those doesn't compile.
+- **`extern __shared__` at namespace scope** becomes an object that converts
+  to a pointer and supports subscripts, but not `reinterpret_cast` or
+  `sizeof`. Inside functions it is a plain pointer. Alignment specifiers are
+  dropped: dynamic shared memory is always 64-byte aligned.
+- **`cuda4cpu-c++` with `-MD`** writes dependencies on the rewritten copies,
+  which are temporary. Use `cuda4cpu_add_cuda_sources` for builds that need
+  dependency tracking.
 - **One device: the CPU.** `cudaGetDeviceProperties` reports the CPU's name,
   memory, L2 cache and clock, one multiprocessor per OS thread, CUDA's limits
   for blocks and grids, and compute capability 6.0. That's the newest whose
