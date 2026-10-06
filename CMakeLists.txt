@@ -22,6 +22,10 @@ find_package(OpenMP REQUIRED COMPONENTS CXX)
 
 add_subdirectory(lib)
 
+# Compiling .cu files: cuda4cpu-rewrite and cuda4cpu_add_cuda_sources()
+set_property(GLOBAL PROPERTY CUDA4CPU_REWRITE "${PROJECT_SOURCE_DIR}/tools/cuda4cpu-rewrite")
+include(cmake/cuda4cpu-cuda.cmake)
+
 if(CUDA4CPU_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -39,6 +43,27 @@ include(CMakePackageConfigHelpers)
 
 set(CUDA4CPU_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/cuda4cpu)
 
+# The cuda4cpu-c++ compiler driver, configured for the build tree and, with
+# paths relative to its own directory, for the installation
+set(driver_permissions OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+                       WORLD_READ WORLD_EXECUTE)
+
+set(CUDA4CPU_DRIVER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
+set(CUDA4CPU_DRIVER_LIBRARY_DIR "${PROJECT_BINARY_DIR}/lib")
+set(CUDA4CPU_DRIVER_REWRITE "${PROJECT_SOURCE_DIR}/tools/cuda4cpu-rewrite")
+configure_file(tools/cuda4cpu-c++.in tools/cuda4cpu-c++ @ONLY FILE_PERMISSIONS ${driver_permissions})
+
+cmake_path(RELATIVE_PATH CMAKE_INSTALL_FULL_INCLUDEDIR BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
+           OUTPUT_VARIABLE CUDA4CPU_DRIVER_INCLUDE_DIR)
+string(APPEND CUDA4CPU_DRIVER_INCLUDE_DIR "/cuda4cpu")
+cmake_path(RELATIVE_PATH CMAKE_INSTALL_FULL_LIBDIR BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
+           OUTPUT_VARIABLE CUDA4CPU_DRIVER_LIBRARY_DIR)
+set(CUDA4CPU_DRIVER_REWRITE "cuda4cpu-rewrite")
+configure_file(tools/cuda4cpu-c++.in install/cuda4cpu-c++ @ONLY FILE_PERMISSIONS ${driver_permissions})
+
+install(PROGRAMS tools/cuda4cpu-rewrite "${PROJECT_BINARY_DIR}/install/cuda4cpu-c++"
+        DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 install(TARGETS cuda4cpu
         EXPORT cuda4cpu-targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -52,11 +77,13 @@ install(EXPORT cuda4cpu-targets
 
 configure_package_config_file(cmake/cuda4cpu-config.cmake.in
                               ${PROJECT_BINARY_DIR}/cuda4cpu-config.cmake
-                              INSTALL_DESTINATION ${CUDA4CPU_CMAKE_DIR})
+                              INSTALL_DESTINATION ${CUDA4CPU_CMAKE_DIR}
+                              PATH_VARS CMAKE_INSTALL_BINDIR)
 
 write_basic_package_version_file(${PROJECT_BINARY_DIR}/cuda4cpu-config-version.cmake
                                  COMPATIBILITY SameMinorVersion)
 
 install(FILES ${PROJECT_BINARY_DIR}/cuda4cpu-config.cmake
               ${PROJECT_BINARY_DIR}/cuda4cpu-config-version.cmake
+              cmake/cuda4cpu-cuda.cmake
         DESTINATION ${CUDA4CPU_CMAKE_DIR})

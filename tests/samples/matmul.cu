@@ -28,10 +28,8 @@
 #include <random>
 #include <vector>
 
-#include "cuda4cpu.hpp"
+#include <cuda_runtime.h>
 #include "sample.hpp"
-
-using namespace cuda4cpu;
 
 template <int BLOCK_SIZE>
 __global__ void matrixMulCUDA(float *C, const float *A, const float *B, int wA, int wB)
@@ -81,9 +79,8 @@ int main()
     for (auto &v : B) v = dist(gen);
 
     double ms = sample::time_ms([&] {
-        launch(matrixMulCUDA<block_size>, dim3(wB / block_size, hA / block_size),
-               dim3(block_size, block_size))
-            .call(C.data(), A.data(), B.data(), wA, wB);
+        matrixMulCUDA<block_size><<<dim3(wB / block_size, hA / block_size),
+                                    dim3(block_size, block_size)>>>(C.data(), A.data(), B.data(), wA, wB);
     });
 
     double host_ms = sample::time_ms([&] {

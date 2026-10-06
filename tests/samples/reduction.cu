@@ -29,14 +29,12 @@
 #include <random>
 #include <vector>
 
-#include "cuda4cpu.hpp"
+#include <cuda_runtime.h>
 #include "sample.hpp"
-
-using namespace cuda4cpu;
 
 __global__ void reduce_shared(float *partial, const float *in, size_t n)
 {
-    float *sdata = dynamic_shared<float>();   // CUDA: extern __shared__ float sdata[];
+    extern __shared__ float sdata[];
 
     unsigned tid = threadIdx.x;
     size_t i = size_t(blockIdx.x) * (blockDim.x * 2) + threadIdx.x;
@@ -101,8 +99,7 @@ int main()
         const unsigned blocks = unsigned((n + threads * 2 - 1) / (threads * 2));
         std::vector<float> partial(blocks);
         double ms = sample::time_ms([&] {
-            launch(reduce_shared, blocks, threads, threads * sizeof(float))
-                .call(partial.data(), in.data(), n);
+            reduce_shared<<<blocks, threads, threads * sizeof(float)>>>(partial.data(), in.data(), n);
         });
         double sum = 0.0;
         for (float p : partial) sum += p;
@@ -113,7 +110,7 @@ int main()
     {
         float sum = 0.f;
         double ms = sample::time_ms([&] {
-            launch(reduce_warp, 1024, threads).call(&sum, in.data(), n);
+            reduce_warp<<<1024, threads>>>(&sum, in.data(), n);
         });
         sample::report("reduce_warp", ms, host_ms);
         errors += sample::count_mismatches(&sum, &expected, 1, 1e-5);

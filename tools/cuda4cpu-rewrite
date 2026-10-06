@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+#
+# CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
+#
+# Copyright (C) 2014 Javier Cabezas
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Rewrites the CUDA syntax that C++ can't express into code cuda4cpu compiles.
+
+  kernel<<<grid, block[, shared[, stream]]>>>(args...)
+      -> cuda4cpu::launch([&](const auto &...cuda4cpu_args) { kernel(cuda4cpu_args...); },
+                          grid, block[, shared[, stream]]).call(args...)
+
+  extern __shared__ T name[];
+      -> T *name = cuda4cpu::dynamic_shared<T>();               (in a function)
+      -> static cuda4cpu::dynamic_shared_array<T> name;         (at namespace scope)
+
+The kernel, the launch configuration and the arguments are copied verbatim, so
+the result behaves like the CUDA launch: template arguments are deduced from the
+arguments and default arguments apply. Line numbers are preserved and a #line
+directive maps diagnostics and __FILE__ to the original file.
+
+Local headers included with #include "..." are rewritten too, into a shadow
+directory, and the #include directives point to the rewritten copies.
+"""
+
+import argparse
+import os
+import re
+import sys
+
+LAUNCH_PREFIX = 'cuda4cpu::launch([&](const auto &...cuda4cpu_args) { '
+LAUNCH_INFIX = '(cuda4cpu_args...); }, '
+
+# Keywords that can't end the expression that names a kernel
+KEYWORDS = frozenset('''
+    alignas alignof and asm auto bool break case catch char class const constexpr
+    const_cast continue decltype default delete do double dynamic_cast else enum
+    explicit export extern false float for friend goto if inline int long mutable
+    namespace new noexcept not nullptr operator or private protected public
+    register reinterpret_cast return short signed sizeof static static_assert
+    static_cast struct switch template this throw true try typedef typeid
+    typename union unsigned using virtual void volatile while co_await co_return
+    co_yield
+'''.split())
+
+STRING_PREFIXES = ('u8', 'u', 'U', 'L', '')
+
+
+class Token:
+    __slots__ = ('kind', 'start', 'end', 'text', 'line_start', 'line')
+
+    def __init__(self, kind, start, end, text, line_start):
+        self.kind = kind            # 'id', 'number', 'string', 'char', 'punct'
+        self.start = start
+        self.end = end
+        self.text = text
+        self.line_start = line_start  # first token on its line
+        self.line = 0
+
+    def __repr__(self):
+        return f'Token({self.kind!r}, {self.text!r})'
+
+
+class RewriteError(Exception):
+    pass
+
+
+def lex(text):
+    """Splits C++ source into tokens, skipping whitespace and comments."""
+    tokens = []
+    i, n = 0, len(text)
+    line_start = True
+
+    def add(kind, start, end):
+        nonlocal line_start
+        tokens.append(Token(kind, start, end, text[start:end], line_start))
+        line_start = False
+
+    while i < n:
+        c = text[i]
+        if c == '\n':
+            line_start = True
+            i += 1
+        elif c in ' \t\r\f\v':
+            i += 1
+        elif c == '\\' and text.startswith('\n', i + 1):
+            i += 2                                  # line continuation
+        elif text.startswith('//', i):
+            while i < n and text[i] != '\n':
+                i += 2 if text.startswith('\\\n', i) else 1
+        elif text.startswith('/*', i):
+            end = text.find('*/', i + 2)
+            i = n if end < 0 else end + 2
+        elif c.isalpha() or c == '_' or c == '$':
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] in '_$'):
+                j += 1
+            word = text[i:j]
+            if j < n and text[j] == '"' and word.endswith('R') and word[:-1] in STRING_PREFIXES:
+                j = skip_raw_string(text, j)
+                add('string', i, j)
+            elif j < n and text[j] in '"\'' and word in STRING_PREFIXES:
+                kind = 'string' if text[j] == '"' else 'char'
+                j = skip_quoted(text, j)
+                add(kind, i, j)
+            else:
+                add('id', i, j)
+            i = j
+        elif c.isdigit() or (c == '.' and i + 1 < n and text[i + 1].isdigit()):
+            # pp-number, including digit separators (1'000) and exponents (1e+5)
+            j = i + 1
+            while j < n:
+                if text[j].isalnum() or text[j] in '_.':
+                    j += 1
+                elif text[j] == "'" and j + 1 < n and text[j + 1].isalnum():
+                    j += 2
+                elif text[j] in '+-' and text[j - 1] in 'eEpP':
+                    j += 1
+                else:
+                    break
+            add('number', i, j)
+            i = j
+        elif c == '"':
+            j = skip_quoted(text, i)
+            add('string', i, j)
+            i = j
+        elif c == "'":
+            j = skip_quoted(text, i)
+            add('char', i, j)
+            i = j
+        elif text.startswith('::', i) or text.startswith('->', i):
+            add('punct', i, i + 2)
+            i += 2
+        else:
+            add('punct', i, i + 1)
+            i += 1
+    return tokens
+
+
+def skip_quoted(text, i):
+    """Returns the position after the string or character literal at i."""
+    quote = text[i]
+    j = i + 1
+    while j < len(text):
+        if text[j] == '\\':
+            j += 2
+        elif text[j] == quote:
+            return j + 1
+        elif text[j] == '\n':
+            return j                                # unterminated: stop at the line end
+        else:
+            j += 1
+    return j
+
+
+def skip_raw_string(text, i):
+    """Returns the position after the raw string literal whose quote is at i."""
+    paren = text.find('(', i)
+    if paren < 0:
+        return len(text)
+    delimiter = text[i + 1:paren]
+    end = text.find(')' + delimiter + '"', paren)
+    return len(text) if end < 0 else end + len(delimiter) + 2
+
+
+def adjacent(tokens, i, count, char):
+    """True if tokens[i:i+count] are `char` with no space between them."""
+    if i + count > len(tokens):
+        return False
+    for k in range(i, i + count):
+        if tokens[k].text != char:
+            return False
+        if k > i and tokens[k - 1].end != tokens[k].start:
+            return False
+    return True
+
+
+def match_forward(tokens, i):
+    """Index of the bracket that closes tokens[i] ('(', '[' or '{')."""
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    stack = []
+    for k in range(i, len(tokens)):
+        t = tokens[k].text
+        if t in pairs:
+            stack.append(pairs[t])
+        elif t in (')', ']', '}'):
+            if not stack or stack.pop() != t:
+                return None
+            if not stack:
+                return k
+    return None
+
+
+def match_back(tokens, i):
+    """Index of the bracket that opens tokens[i] (')', ']', '}' or '>').
+
+    Angle brackets are matched by counting, skipping anything inside (), []
+    and {}, which is how template argument lists nest.
+    """
+    close = tokens[i].text
+    open_ = {')': '(', ']': '[', '}': '{', '>': '<'}[close]
+    depth = 0
+    k = i
+    while k >= 0:
+        t = tokens[k].text
+        if close == '>' and t in (')', ']', '}'):
+            k = match_back(tokens, k)
+            if k is None:
+                return None
+        elif t == close:
+            depth += 1
+        elif t == open_:
+            depth -= 1
+            if depth == 0:
+                return k
+        elif close != '>' and t in (')', ']', '}'):
+            pass
+        k -= 1
+    return None
+
+
+def kernel_start(tokens, j):
+    """Index of the first token of the expression that ends at tokens[j] and
+    names the kernel: a possibly qualified name with template arguments, a
+    member access, a subscript, a call or a parenthesized expression."""
+    k = j
+    state = 'primary'
+    while k >= 0:
+        t = tokens[k]
+        if state == 'primary':
+            if t.kind == 'id' and t.text not in KEYWORDS:
+                k -= 1
+                state = 'after'
+            elif t.text == '>':
+                m = match_back(tokens, k)
+                if m is None:
+                    return None
+                k = m - 1
+                state = 'template_name'
+            elif t.text == ')':
+                m = match_back(tokens, k)
+                if m is None:
+                    return None
+                k = m - 1
+                # f(...) is a call; otherwise a parenthesized expression
+                if k >= 0 and (tokens[k].kind == 'id' and tokens[k].text not in KEYWORDS or
+                               tokens[k].text in (')', ']', '>')):
+                    state = 'primary'
+                else:
+                    state = 'after'
+            elif t.text == ']':
+                m = match_back(tokens, k)
+                if m is None:
+                    return None
+                k = m - 1
+                state = 'primary'
+            else:
+                return None
+        elif state == 'template_name':
+            if t.kind == 'id' and t.text not in KEYWORDS:
+                k -= 1
+                state = 'after'
+            else:
+                return None
+        elif state == 'after':
+            if t.text in ('::', '.', '->'):
+                if t.text == '::' and (k == 0 or not (tokens[k - 1].kind == 'id' or
+                                                      tokens[k - 1].text in ('>', ')', ']'))):
+                    return k                        # leading :: (global namespace)
+                k -= 1
+                state = 'primary'
+            elif t.kind == 'id' and t.text == 'template' and k > 0 and tokens[k - 1].text in ('::', '.', '->'):
+                k -= 1                              # x.template f<T>
+            else:
+                break
+    return k + 1
+
+
+def find_launches(tokens):
+    """Returns (start, lt, gt, open_paren, close_paren) token indices for every
+    kernel launch: tokens[start:lt] name the kernel, tokens[lt+3:gt] are the
+    configuration and tokens[open_paren+1:close_paren] the arguments."""
+    launches = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i].text == '<' and adjacent(tokens, i, 3, '<') and i > 0 and \
+                tokens[i - 1].text != 'operator' and not (i > 0 and tokens[i - 1].text == '<' and
+                                                          tokens[i - 1].end == tokens[i].start):
+            start = kernel_start(tokens, i - 1)
+            gt = config_end(tokens, i + 3)
+            if start is not None and start < i and gt is not None and \
+                    gt + 3 < len(tokens) and tokens[gt + 3].text == '(':
+                close = match_forward(tokens, gt + 3)
+                if close is not None:
+                    launches.append((start, i, gt, gt + 3, close))
+                    i += 3
+                    continue
+            raise RewriteError(line_of(tokens[i]), 'could not parse the kernel launch')
+        i += 1
+    return launches
+
+
+def config_end(tokens, i):
+    """Index of the first of the three '>' that end a launch configuration."""
+    depth = 0
+    for k in range(i, len(tokens)):
+        t = tokens[k].text
+        if t in '([{':
+            depth += 1
+        elif t in ')]}':
+            depth -= 1
+            if depth < 0:
+                return None
+        elif t == '>' and depth == 0 and adjacent(tokens, k, 3, '>'):
+            return k
+        elif t == ';' and depth == 0:
+            return None
+    return None
+
+
+def find_extern_shared(tokens):
+    """Returns (first, last, type_text_ranges, name, namespace_scope) for every
+    `extern __shared__ T name[];` declaration."""
+    found = []
+    scopes = []                                     # True for namespace scopes
+    for i, t in enumerate(tokens):
+        if t.text == '{':
+            scopes.append(opens_namespace(tokens, i))
+        elif t.text == '}':
+            if scopes:
+                scopes.pop()
+        elif t.text == 'extern' and i + 1 < len(tokens) and tokens[i + 1].kind != 'string':
+            semi = i
+            while semi < len(tokens) and tokens[semi].text not in (';', '{', '}'):
+                semi += 1
+            if semi >= len(tokens) or tokens[semi].text != ';':
+                continue
+            decl = tokens[i + 1:semi]
+            if not any(d.text == '__shared__' for d in decl):
+                continue
+            if len(decl) < 4 or decl[-1].text != ']' or decl[-2].text != '[' or decl[-3].kind != 'id':
+                raise RewriteError(line_of(t), 'unsupported extern __shared__ declaration')
+            # The type is what remains without __shared__ and alignment specifiers
+            type_tokens = []
+            k = 0
+            body = decl[:-3]
+            while k < len(body):
+                d = body[k]
+                if d.text == '__shared__':
+                    k += 1
+                elif d.text in ('__align__', 'alignas') and k + 1 < len(body) and body[k + 1].text == '(':
+                    close = k + 1
+                    depth = 0
+                    while close < len(body):
+                        depth += {'(': 1, ')': -1}.get(body[close].text, 0)
+                        if depth == 0:
+                            break
+                        close += 1
+                    k = close + 1
+                else:
+                    type_tokens.append(d)
+                    k += 1
+            if not type_tokens:
+                raise RewriteError(line_of(t), 'extern __shared__ declaration without a type')
+            found.append((i, semi, type_tokens, decl[-3].text, all(scopes)))
+    return found
+
+
+def opens_namespace(tokens, i):
+    """True if the '{' at tokens[i] opens a namespace or an extern "C" block."""
+    k = i - 1
+    while k >= 0 and (tokens[k].kind == 'id' or tokens[k].text == '::'):
+        if tokens[k].text == 'namespace':
+            return True
+        k -= 1
+    return k >= 1 and tokens[k].kind == 'string' and tokens[k - 1].text == 'extern'
+
+
+def line_of(token):
+    return token.line
+
+
+class Rewriter:
+    def __init__(self, shadow_dir):
+        self.shadow_dir = shadow_dir
+        self.read_files = []                        # every file read, for depfiles
+        self.done = {}                              # original path -> shadow path
+
+    def shadow_path(self, path):
+        return os.path.join(self.shadow_dir, path.lstrip(os.sep))
+
+    def rewrite_file(self, path):
+        """Rewrites path and the local headers it includes; returns the text."""
+        path = os.path.abspath(path)
+        self.read_files.append(path)
+        with open(path, encoding='utf-8', errors='surrogateescape') as f:
+            text = f.read()
+        try:
+            return rewrite_text(text, path, self.include_hook(path))
+        except RewriteError as e:
+            line, message = e.args
+            raise RewriteError(line, f'{path}:{line}: error: {message}') from None
+
+    def include_hook(self, path):
+        directory = os.path.dirname(path)
+
+        def hook(name):
+            header = os.path.normpath(os.path.join(directory, name))
+            if not os.path.isfile(header):
+                return None                         # found through -I, or a system header
+            if header not in self.done:
+                shadow = self.shadow_path(header)
+                self.done[header] = shadow
+                write_if_changed(shadow, self.rewrite_file(header))
+            return self.done[header]
+        return hook
+
+
+def rewrite_text(text, path, include_hook=None):
+    """Rewrites the CUDA syntax of text, which comes from path."""
+    tokens = lex(text)
+    line, pos = 1, 0
+    for t in tokens:
+        line += text.count('\n', pos, t.start)
+        pos = t.start
+        t.line = line
+
+    replacements = []                               # (start, end, new text)
+
+    if include_hook is not None:
+        for i, t in enumerate(tokens):
+            if t.text == '#' and t.line_start and i + 2 < len(tokens) and \
+                    tokens[i + 1].text == 'include' and tokens[i + 2].kind == 'string' and \
+                    tokens[i + 2].text.startswith('"'):
+                target = include_hook(tokens[i + 2].text[1:-1])
+                if target is not None:
+                    replacements.append((tokens[i + 2].start, tokens[i + 2].end, quote(target)))
+
+    for first, semi, type_tokens, name, namespace_scope in find_extern_shared(tokens):
+        type_text = ' '.join(source(text, type_tokens[0], type_tokens[-1]).split())
+        if namespace_scope:
+            new = f'static cuda4cpu::dynamic_shared_array<{type_text}> {name};'
+        else:
+            new = f'{type_text} *{name} = cuda4cpu::dynamic_shared<{type_text}>();'
+        replacements.append((tokens[first].start, tokens[semi].end, new))
+
+    replacements.sort()
+    launches = find_launches(tokens)                # sorted by position
+
+    def render(begin, end):
+        """text[begin:end] with the launches and replacements inside it. A
+        launch nested in another one's arguments is skipped here and rendered
+        by the recursive call for those arguments."""
+        out = []
+        pos = begin
+        for start, lt, gt, open_, close in launches:
+            s, e = tokens[start].start, tokens[close].end
+            if s < pos or e > end:
+                continue
+            out.append(render_plain(pos, s))
+            kernel = text[tokens[start].start:tokens[lt - 1].end]
+            config = render(tokens[lt + 2].end, tokens[gt].start)
+            args = render(tokens[open_].end, tokens[close].start)
+            out.append(f'{LAUNCH_PREFIX}{kernel}{LAUNCH_INFIX}{config}).call({args})')
+            pos = e
+        out.append(render_plain(pos, end))
+        return ''.join(out)
+
+    def render_plain(begin, end):
+        out = []
+        pos = begin
+        for s, e, new in replacements:
+            if s >= begin and e <= end:
+                out.append(text[pos:s])
+                out.append(new)
+                pos = e
+        out.append(text[pos:end])
+        return ''.join(out)
+
+    return f'#line 1 {quote(path)}\n{render(0, len(text))}'
+
+
+def quote(path):
+    return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def source(text, first, last):
+    return text[first.start:last.end]
+
+
+def write_if_changed(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, encoding='utf-8', errors='surrogateescape') as f:
+            if f.read() == content:
+                return
+    except OSError:
+        pass
+    with open(path, 'w', encoding='utf-8', errors='surrogateescape') as f:
+        f.write(content)
+
+
+def write_depfile(path, target, dependencies):
+    def escape(p):
+        return p.replace('\\', '\\\\').replace(' ', '\\ ').replace('#', '\\#').replace('$', '$$')
+    with open(path, 'w') as f:
+        f.write(escape(target) + ': ' + ' \\\n  '.join(escape(d) for d in dependencies) + '\n')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Rewrites CUDA launches (kernel<<<...>>>(...)) and extern __shared__ '
+                    'declarations so that cuda4cpu can compile a .cu file.')
+    parser.add_argument('input', help='CUDA source file')
+    parser.add_argument('-o', '--output', help='rewritten file (default: standard output)')
+    parser.add_argument('--shadow-dir',
+                        help='directory for the rewritten local headers (default: OUTPUT.headers)')
+    parser.add_argument('--depfile', help='write a Makefile-style dependency file')
+    args = parser.parse_args(argv)
+
+    if args.shadow_dir is None:
+        if args.output is None:
+            parser.error('--shadow-dir is required when writing to standard output')
+        args.shadow_dir = args.output + '.headers'
+
+    rewriter = Rewriter(os.path.abspath(args.shadow_dir))
+    try:
+        result = rewriter.rewrite_file(args.input)
+    except RewriteError as e:
+        print(f'cuda4cpu-rewrite: {e.args[1]}', file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f'cuda4cpu-rewrite: {e}', file=sys.stderr)
+        return 1
+
+    if args.output is None:
+        sys.stdout.write(result)
+    else:
+        write_if_changed(os.path.abspath(args.output), result)
+    if args.depfile:
+        write_depfile(args.depfile, args.output or '-', rewriter.read_files)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

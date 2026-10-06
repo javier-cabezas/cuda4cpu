@@ -43,7 +43,7 @@ namespace detail {
 
 struct fiber_access;
 
-template <typename... Args>
+template <typename F, typename... Stored>
 struct kernel_call;
 
 //!
@@ -224,7 +224,7 @@ public:
 private:
     struct fibers;
     friend struct detail::fiber_access;
-    template <typename... Args>
+    template <typename F, typename... Stored>
     friend struct detail::kernel_call;
 
     thread_block(dim3 block, size_t stack_size);
@@ -315,15 +315,35 @@ dynamic_shared()
     return static_cast<T *>(thread_block::get_dynamic_shared());
 }
 
+//! Replacement for `extern __shared__ T name[];` at namespace scope, where a
+//! pointer variable would be initialized only once: every use refers to the
+//! dynamic shared memory of the calling thread block. Converts to T * and
+//! supports subscripts.
+template <typename T>
+struct dynamic_shared_array {
+    operator T *() const
+    {
+        return dynamic_shared<T>();
+    }
+
+    template <typename I>
+    T &operator[](I i) const
+    {
+        return dynamic_shared<T>()[i];
+    }
+};
+
 namespace detail {
 
-template <typename... Args>
+//! One launch: a callable (the kernel, or a lambda that calls it) and the
+//! arguments, copied once when the kernel is launched
+template <typename F, typename... Stored>
 struct kernel_call : kernel_closure {
-    template <typename... Args2>
-    kernel_call(void (*f)(Args...), Args2 &&...a) :
+    template <typename... Args>
+    kernel_call(F f, Args &&...a) :
         kernel_closure{&run_direct_impl, &run_one_impl},
-        func(f),
-        args(std::forward<Args2>(a)...)
+        func(std::move(f)),
+        args(std::forward<Args>(a)...)
     {
     }
 
@@ -341,12 +361,49 @@ struct kernel_call : kernel_closure {
         std::apply(call.func, call.args);
     }
 
-    void (*func)(Args...);
-    std::tuple<std::decay_t<Args>...> args;
+    F func;
+    std::tuple<Stored...> args;
 };
+
+//! CUDA's limits: launches outside them fail on a GPU, so they fail here too
+inline bool valid_launch(const launch_conf &conf)
+{
+    const dim3 &b = conf.block, &g = conf.grid;
+    return b.x > 0 && b.y > 0 && b.z > 0 && b.x <= 1024 && b.y <= 1024 && b.z <= 64 &&
+           conf.nthreads() <= 1024 &&
+           g.x > 0 && g.y > 0 && g.z > 0 && g.x <= 2147483647u && g.y <= 65535 && g.z <= 65535;
+}
+
+//! Runs every block of a launch whose configuration is valid
+inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
+{
+    const size_t nblocks = conf.nblocks();
+    const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
+
+    // Contiguous chunks of blocks, handed out dynamically so that blocks of
+    // uneven cost balance across OS threads. About 8 chunks per OS thread
+    // keeps neighboring blocks together and the scheduling overhead low.
+    // Only the OS threads that get blocks acquire (and, the first time,
+    // create) fibers.
+    const size_t chunk = std::max<size_t>(1, nblocks / (size_t(omp_get_max_threads()) * 8));
+
+    #pragma omp parallel
+    {
+        thread_block *block = nullptr;
+
+        #pragma omp for schedule(dynamic, chunk)
+        for (size_t i = 0; i < nblocks; ++i) {
+            if (block == nullptr)
+                block = &thread_block::acquire(conf, stack_size);
+            block->execute(kernel, conf.block_id(i));
+        }
+    }
+}
 
 }
 
+//! Launch of a kernel given as a function: call(args...) converts the
+//! arguments to the kernel's parameter types and runs the grid
 template <typename... Args>
 struct grid_launcher {
     grid_launcher(void (&func)(Args...), dim3 conf_grid, dim3 conf_block, size_t shared_mem) :
@@ -360,41 +417,46 @@ struct grid_launcher {
     template <typename... Args2>
     void call(Args2 &&...args)
     {
-        // CUDA's limits: launches outside them fail on a GPU, so they fail here too
-        const dim3 &b = conf_.block, &g = conf_.grid;
-        if (b.x == 0 || b.y == 0 || b.z == 0 || b.x > 1024 || b.y > 1024 || b.z > 64 ||
-            conf_.nthreads() > 1024 ||
-            g.x == 0 || g.y == 0 || g.z == 0 || g.x > 2147483647u || g.y > 65535 || g.z > 65535) {
+        if (!detail::valid_launch(conf_)) {
             detail::record_error(cudaErrorInvalidConfiguration);
             return;
         }
-        const size_t nblocks = conf_.nblocks();
-
-        const detail::kernel_call<Args...> kernel(&func_, std::forward<Args2>(args)...);
-        const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
-
-        // Contiguous chunks of blocks, handed out dynamically so that blocks of
-        // uneven cost balance across OS threads. About 8 chunks per OS thread
-        // keeps neighboring blocks together and the scheduling overhead low.
-        // Only the OS threads that get blocks acquire (and, the first time,
-        // create) fibers.
-        const size_t chunk = std::max<size_t>(1, nblocks / (size_t(omp_get_max_threads()) * 8));
-
-        #pragma omp parallel
-        {
-            thread_block *block = nullptr;
-
-            #pragma omp for schedule(dynamic, chunk)
-            for (size_t i = 0; i < nblocks; ++i) {
-                if (block == nullptr)
-                    block = &thread_block::acquire(conf_, stack_size);
-                block->execute(kernel, conf_.block_id(i));
-            }
-        }
+        const detail::kernel_call<void (*)(Args...), std::decay_t<Args>...>
+            kernel(&func_, std::forward<Args2>(args)...);
+        detail::run_grid(conf_, kernel);
     }
 
 private:
     void (&func_)(Args...);
+    launch_conf conf_;
+};
+
+//! Launch of a kernel given as a callable, such as the lambda that
+//! cuda4cpu-rewrite generates for kernel<<<...>>>(args...): call(args...)
+//! copies the arguments and calls the callable with them in every CUDA thread
+template <typename F>
+struct callable_launcher {
+    callable_launcher(F func, dim3 conf_grid, dim3 conf_block, size_t shared_mem) :
+                      func_{std::move(func)},
+                      conf_{conf_grid,
+                            conf_block,
+                            shared_mem}
+    {
+    }
+
+    template <typename... Args>
+    void call(Args &&...args)
+    {
+        if (!detail::valid_launch(conf_)) {
+            detail::record_error(cudaErrorInvalidConfiguration);
+            return;
+        }
+        const detail::kernel_call<F, std::decay_t<Args>...> kernel(func_, std::forward<Args>(args)...);
+        detail::run_grid(conf_, kernel);
+    }
+
+private:
+    F func_;
     launch_conf conf_;
 };
 
@@ -406,6 +468,58 @@ launch(void (&func)(Args...), dim3 grid, dim3 block,
        size_t shared_mem = 0, cudaStream_t /* stream */ = nullptr)
 {
     return grid_launcher<Args...>(func, grid, block, shared_mem);
+}
+
+//! Launches a callable as a kernel: every CUDA thread calls it with the
+//! arguments given to call(). This is what cuda4cpu-rewrite generates, with a
+//! lambda that calls the kernel, so that template arguments are deduced and
+//! default arguments apply as in CUDA, and the compiler can inline the kernel.
+template <typename F>
+    requires std::is_class_v<std::remove_cvref_t<F>>
+callable_launcher<std::remove_cvref_t<F>>
+launch(F &&func, dim3 grid, dim3 block,
+       size_t shared_mem = 0, cudaStream_t /* stream */ = nullptr)
+{
+    return callable_launcher<std::remove_cvref_t<F>>(std::forward<F>(func), grid, block, shared_mem);
+}
+
+namespace detail {
+
+template <typename... Args, size_t... I>
+cudaError_t launch_with_argument_array(void (*func)(Args...), dim3 grid, dim3 block, void **args,
+                                       size_t shared_mem, std::index_sequence<I...>)
+{
+    if (!valid_launch(launch_conf{grid, block, shared_mem}))
+        return record_error(cudaErrorInvalidConfiguration);
+
+    launch(*func, grid, block, shared_mem).call(*static_cast<std::remove_reference_t<Args> *>(args[I])...);
+    return cudaSuccess;
+}
+
+}
+
+inline namespace cuda_api {
+
+//! Launches func with the arguments that args points to, one pointer per
+//! parameter, as in CUDA
+template <typename... Args>
+cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
+                             size_t sharedMem = 0, cudaStream_t /* stream */ = nullptr)
+{
+    return detail::launch_with_argument_array(func, gridDim, blockDim, args, sharedMem,
+                                              std::index_sequence_for<Args...>{});
+}
+
+template <typename T>
+    requires std::is_void_v<T>
+cudaError_t cudaLaunchKernel(const T * /* func */, dim3, dim3, void **, size_t = 0, cudaStream_t = nullptr)
+{
+    static_assert(!std::is_void_v<T>,
+                  "cuda4cpu needs the kernel's type to unpack its arguments: pass the kernel itself "
+                  "to cudaLaunchKernel, not a void pointer");
+    return cudaErrorNotSupported;
+}
+
 }
 
 } // namespace cuda4cpu

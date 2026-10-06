@@ -22,7 +22,7 @@
 //
 // The CUDA samples' "asyncAPI": asynchronous copies and a kernel in the
 // default stream, timed with events while the host polls for completion.
-// The only porting change is the kernel launch.
+// Unmodified CUDA.
 //
 
 #include <stdio.h>
@@ -91,7 +91,7 @@ int main(int argc, char *argv[])
     // asynchronously issue work to the GPU (all to stream 0)
     checkCudaErrors(cudaEventRecord(start, 0));
     cudaMemcpyAsync(d_a, a, nbytes, cudaMemcpyHostToDevice, 0);
-    cuda4cpu::launch(increment_kernel, blocks, threads, 0, 0).call(d_a, value);   // CUDA: increment_kernel<<<blocks, threads, 0, 0>>>(d_a, value)
+    increment_kernel<<<blocks, threads, 0, 0>>>(d_a, value);
     cudaMemcpyAsync(a, d_a, nbytes, cudaMemcpyDeviceToHost, 0);
     checkCudaErrors(cudaEventRecord(stop, 0));
 
