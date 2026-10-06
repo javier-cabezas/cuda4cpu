@@ -20,8 +20,8 @@
 
 
 //
-// The CUDA samples' "vectorAdd", with every runtime call checked. The only
-// porting change is the kernel launch.
+// The CUDA samples' "vectorAdd", with every runtime call checked. Unmodified
+// CUDA.
 //
 
 #include <stdio.h>
@@ -98,7 +98,7 @@ int main(void)
     int threadsPerBlock = 256;
     int blocksPerGrid = (numElements + threadsPerBlock - 1) / threadsPerBlock;
     printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
-    cuda4cpu::launch(vectorAdd, blocksPerGrid, threadsPerBlock).call(d_A, d_B, d_C, numElements);   // CUDA: vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(...)
+    vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C, numElements);
     err = cudaGetLastError();
 
     if (err != cudaSuccess) {

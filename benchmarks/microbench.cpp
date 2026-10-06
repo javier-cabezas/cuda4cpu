@@ -135,7 +135,14 @@ int main()
             #pragma omp parallel for
             for (size_t i = 0; i < n; ++i) C[i] = A[i] + B[i];
         });
+        // The form that cuda4cpu-rewrite generates for vecadd<<<...>>>(...): the
+        // kernel is known at compile time, so it can be inlined
+        double ms_rewritten = median_ms([&] {
+            launch([&](const auto &...a) { vecadd(a...); }, unsigned(n / 256), 256)
+                .call(C.data(), A.data(), B.data(), n);
+        });
         row("vecadd 16M floats", ms, "ms");
+        row("  launched as rewritten from vecadd<<<...>>>", ms_rewritten, "ms");
         row("  same loop with OpenMP", omp, "ms");
     }
 

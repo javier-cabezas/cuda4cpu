@@ -22,8 +22,8 @@
 //
 // The program from NVIDIA's "An Even Easier Introduction to CUDA": unified
 // memory and a grid-stride loop. Like the original .cu file it includes no
-// CUDA header, because nvcc includes cuda_runtime.h implicitly (the build
-// passes -include cuda_runtime.h). The only porting change is the launch.
+// CUDA header, because nvcc includes cuda_runtime.h implicitly (so does
+// cuda4cpu_add_cuda_sources). Unmodified CUDA.
 //
 
 #include <iostream>
@@ -57,7 +57,7 @@ int main(void)
   // Run kernel on 1M elements on the GPU
   int blockSize = 256;
   int numBlocks = (N + blockSize - 1) / blockSize;
-  cuda4cpu::launch(add, numBlocks, blockSize).call(N, x, y);   // CUDA: add<<<numBlocks, blockSize>>>(N, x, y)
+  add<<<numBlocks, blockSize>>>(N, x, y);
 
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();

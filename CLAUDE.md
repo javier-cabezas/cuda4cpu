@@ -17,6 +17,7 @@ cmake --workflow --preset release   # same, Release
 ctest --preset debug -R stencil2d   # run a single test
 cmake --preset debug -DCUDA4CPU_ENABLE_VALGRIND=ON   # opt-in options, see CMakeLists.txt
 build/release/benchmarks/microbench   # launch, barrier, shuffle and scheduling costs
+python3 tests/rewrite/test_rewrite.py tools/cuda4cpu-rewrite   # rewriter unit tests
 ```
 
 Build trees live in `build/<preset>/` (git-ignored). The presets export
@@ -47,6 +48,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
   fiber cache) and `system` (topology via OpenMP plus optional libnuma).
+- `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
+  `extern __shared__ T x[];` in a `.cu` file and in the local headers it
+  includes. It uses Python 3, standard library only.
+  `tools/cuda4cpu-c++.in`: the compiler driver, configured into
+  `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
+  installation, with paths relative to its own directory.
+- `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()`, used in-tree and
+  installed with the package config. It finds the rewriter through the
+  `CUDA4CPU_REWRITE` global property.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
@@ -65,20 +75,33 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `events`: event timing
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
-  - `samples/`: ports of CUDA programs, checked against a host reference.
+  - `samples/*.cu`: ten unmodified CUDA programs, built with
+    `cuda4cpu_add_cuda_sources` and checked against a host reference.
     Five use kernel features (reduction, matmul, histogram, scan, nbody, which
     also print timings). Five use the runtime API like real code (vector_add,
-    async_api, device_query, managed_add, softmax), changing only the launch
-    line from the original. `managed_add` includes no header and is built with
-    `-include cuda_runtime.h`, like nvcc.
+    async_api, device_query, managed_add, softmax).
+  - `rewrite/features.cu` (+ `features.cuh`): every launch form and
+    `extern __shared__` placement, checked at run time, including that
+    `__LINE__` matches the original file. Update its expected line if you
+    edit the file above that check.
+  - `rewrite_unit` (`rewrite/test_rewrite.py`): exact rewriter output, the
+    syntax that must stay untouched, errors, and shadow headers with depfiles.
+  - `driver`: builds `samples/vector_add.cu` with the build-tree
+    `cuda4cpu-c++`, in one step and with separate compile and link.
 
 ## How execution works (read before touching `launch.hpp`)
 
-- `grid_launcher::call` stores the kernel pointer and its arguments (a
-  `std::tuple`) in a `detail::kernel_call<Args...>`. That type also provides
-  the two thread loops instantiated for the kernel's signature: `run_direct`
-  and `run_one`. The blocks run in an `omp for schedule(dynamic, chunk)`
-  loop, with about 8 contiguous chunks per OS thread.
+- `launch(kernel, ...)` returns a `grid_launcher<Args...>`, and
+  `launch(callable, ...)` returns a `callable_launcher<F>` (that's what the
+  rewriter emits, with a lambda that calls the kernel). Their `call(args...)`
+  stores the callable and the arguments (a `std::tuple`) in a
+  `detail::kernel_call<F, Stored...>`. That type provides the two thread loops
+  instantiated for it, `run_direct` and `run_one`, and `detail::run_grid`
+  runs the blocks in an `omp for schedule(dynamic, chunk)` loop, with about 8
+  contiguous chunks per OS thread. With a lambda, the kernel is known at
+  compile time and gets inlined into the loop: rewritten vecadd matches a
+  plain OpenMP loop, while launching through a function pointer costs about
+  1.3x.
 - An OS thread that gets blocks calls `thread_block::acquire`, which returns a
   `thread_block` from a small `thread_local` cache keyed by block shape and
   stack size. Creating one maps its stacks.
@@ -177,6 +200,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `cudaErrorInvalidConfiguration`.
 - Don't define `__noinline__` as a macro: libstdc++ uses
   `__attribute__((__noinline__))`.
+
+- The rewriter must never add or remove newlines, so that line numbers stay
+  the same; it also prepends `#line 1 "<original path>"`. It copies the
+  kernel expression, configuration and arguments verbatim, and never splits
+  them at commas: that is ambiguous without a C++ parser (`a < b, c > d`).
+  The lexer has to skip comments, string, character and raw-string literals,
+  and digit separators (`1'000`).
+- Shadow headers are written under `<output>.headers/<absolute original
+  path>`, and the rewritten `#include` points to them with an absolute path.
+  Only quote includes that resolve relative to the including file are
+  rewritten.
 
 ## Conventions
 

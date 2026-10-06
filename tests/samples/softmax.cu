@@ -22,8 +22,8 @@
 //
 // Row-wise softmax with temperature, as found in machine-learning code: one
 // warp per row, warp-shuffle reductions, fast-math intrinsics, read-only
-// loads and a __constant__ parameter set with cudaMemcpyToSymbol. The only
-// porting change is the kernel launch.
+// loads and a __constant__ parameter set with cudaMemcpyToSymbol. Unmodified
+// CUDA.
 //
 
 #include <cmath>
@@ -108,7 +108,7 @@ int main()
 
     const int threads = 256, warps_per_block = threads / 32;
     const int blocks = (rows + warps_per_block - 1) / warps_per_block;
-    cuda4cpu::launch(softmax_rows, blocks, threads).call(d_out, d_in, rows, cols);   // CUDA: softmax_rows<<<blocks, threads>>>(...)
+    softmax_rows<<<blocks, threads>>>(d_out, d_in, rows, cols);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(h_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));

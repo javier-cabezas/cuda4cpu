@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+#
+# CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
+#
+# Copyright (C) 2014 Javier Cabezas
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""A C++ compiler driver that compiles CUDA source files with cuda4cpu.
+
+Use it like the C++ compiler, with .cu files among the inputs:
+
+    cuda4cpu-c++ -O2 -o app main.cpp kernels.cu
+
+Each .cu file is rewritten by cuda4cpu-rewrite and compiled as C++ with
+cuda_runtime.h included implicitly, as nvcc does. The driver adds the C++
+standard, OpenMP and the cuda4cpu include directory, and links libcuda4cpu
+when it links. The compiler is $CUDA4CPU_CXX, $CXX or c++.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@'))
+LIBRARY_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_LIBRARY_DIR@'))
+REWRITE = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_REWRITE@'))
+
+# Compiler options whose value is the next argument
+OPTIONS_WITH_VALUE = {
+    '-o', '-x', '-include', '-imacros', '-isystem', '-iquote', '-idirafter', '-iprefix',
+    '-iwithprefix', '-iwithprefixbefore', '-isysroot', '-MF', '-MT', '-MQ', '-Xlinker',
+    '-Xassembler', '-Xpreprocessor', '-L', '-I', '-D', '-U', '-l', '-T', '-u', '-e',
+    '-aux-info', '--param', '-dumpbase', '-dumpdir', '-wrapper', '-z',
+}
+
+# Options that stop before linking
+NO_LINK = {'-c', '-S', '-E', '-M', '-MM', '-fsyntax-only'}
+
+
+def main(argv):
+    compiler = os.environ.get('CUDA4CPU_CXX') or os.environ.get('CXX') or 'c++'
+    work = tempfile.mkdtemp(prefix='cuda4cpu-')
+    try:
+        args = []
+        has_cuda = False
+        i = 0
+        while i < len(argv):
+            arg = argv[i]
+            if arg in OPTIONS_WITH_VALUE and i + 1 < len(argv):
+                args += [arg, argv[i + 1]]
+                i += 2
+                continue
+            if not arg.startswith('-') and arg.endswith('.cu'):
+                # Keep the file name, so that the default object name stays the same
+                out = os.path.join(work, str(i), os.path.basename(arg))
+                os.makedirs(os.path.dirname(out))
+                status = subprocess.call([sys.executable, REWRITE, arg, '-o', out,
+                                          '--shadow-dir', os.path.join(work, str(i), 'headers')])
+                if status != 0:
+                    return status
+                args += ['-x', 'c++', out, '-x', 'none']
+                has_cuda = True
+            else:
+                args.append(arg)
+            i += 1
+
+        front = ['-I' + INCLUDE_DIR]
+        if not any(a.startswith('-std=') for a in args):
+            front.append('-std=c++23')
+        if '-fopenmp' not in args:
+            front.append('-fopenmp')
+        if has_cuda:
+            front += ['-include', 'cuda_runtime.h']
+
+        back = []
+        if not NO_LINK.intersection(args):
+            back = ['-L' + LIBRARY_DIR, '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
+
+        return subprocess.call([compiler] + front + args + back)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

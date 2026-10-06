@@ -28,10 +28,8 @@
 #include <random>
 #include <vector>
 
-#include "cuda4cpu.hpp"
+#include <cuda_runtime.h>
 #include "sample.hpp"
-
-using namespace cuda4cpu;
 
 #define EPS2 0.01f
 
@@ -57,7 +55,7 @@ __global__ void integrateBodies(float4 *newPos, float4 *newVel,
                                 const float4 *oldPos, const float4 *oldVel,
                                 float deltaTime, int numBodies)
 {
-    float4 *shPosition = dynamic_shared<float4>();   // CUDA: extern __shared__ float4 shPosition[];
+    extern __shared__ float4 shPosition[];
 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     float4 pos = oldPos[i];
@@ -100,8 +98,8 @@ int main()
     }
 
     double ms = sample::time_ms([&] {
-        launch(integrateBodies, n / threads, threads, threads * sizeof(float4))
-            .call(new_pos.data(), new_vel.data(), pos.data(), vel.data(), dt, n);
+        integrateBodies<<<n / threads, threads, threads * sizeof(float4)>>>(
+            new_pos.data(), new_vel.data(), pos.data(), vel.data(), dt, n);
     });
 
     // Same interaction order as the kernel, so the results match closely

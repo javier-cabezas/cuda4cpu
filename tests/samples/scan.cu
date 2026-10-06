@@ -28,10 +28,8 @@
 #include <random>
 #include <vector>
 
-#include "cuda4cpu.hpp"
+#include <cuda_runtime.h>
 #include "sample.hpp"
-
-using namespace cuda4cpu;
 
 __device__ int warp_inclusive_scan(int value)
 {
@@ -93,9 +91,9 @@ int main()
     std::vector<int> block_sums(blocks), scanned_sums(blocks), unused(1);
 
     double ms = sample::time_ms([&] {
-        launch(block_scan, blocks, threads).call(out.data(), block_sums.data(), in.data(), n);
-        launch(block_scan, 1, threads).call(scanned_sums.data(), unused.data(), block_sums.data(), size_t(blocks));
-        launch(add_block_offsets, blocks, threads).call(out.data(), scanned_sums.data(), n);
+        block_scan<<<blocks, threads>>>(out.data(), block_sums.data(), in.data(), n);
+        block_scan<<<1, threads>>>(scanned_sums.data(), unused.data(), block_sums.data(), size_t(blocks));
+        add_block_offsets<<<blocks, threads>>>(out.data(), scanned_sums.data(), n);
     });
 
     double host_ms = sample::time_ms([&] {

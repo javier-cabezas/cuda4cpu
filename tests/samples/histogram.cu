@@ -28,10 +28,8 @@
 #include <random>
 #include <vector>
 
-#include "cuda4cpu.hpp"
+#include <cuda_runtime.h>
 #include "sample.hpp"
-
-using namespace cuda4cpu;
 
 constexpr int BIN_COUNT = 256;
 
@@ -64,7 +62,7 @@ int main()
     std::vector<unsigned int> hist(BIN_COUNT, 0), hist_gold(BIN_COUNT, 0);
 
     double ms = sample::time_ms([&] {
-        launch(histogram256, 240, 192).call(hist.data(), data.data(), n);
+        histogram256<<<240, 192>>>(hist.data(), data.data(), n);
     });
 
     double host_ms = sample::time_ms([&] {
