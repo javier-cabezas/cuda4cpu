@@ -1,9 +1,48 @@
-foreach(test IN ITEMS atomics barriers events launch runtime stacks stencil2d stencil3d warp)
+foreach(test IN ITEMS atomics barriers divergent_barrier events launch runtime schedule stacks stencil2d
+                      stencil3d warp)
     add_executable(${test} ${test}.cpp)
     set_target_properties(${test} PROPERTIES CXX_EXTENSIONS OFF)
     target_link_libraries(${test} PRIVATE cuda4cpu::cuda4cpu)
-    add_test(NAME ${test} COMMAND ${test})
+    if(NOT test MATCHES "^(divergent_barrier|schedule)$")
+        add_test(NAME ${test} COMMAND ${test})
+    endif()
 endforeach()
+
+# A missing __syncthreads() that the default order hides and the others expose
+add_test(NAME schedule_forward COMMAND schedule hidden)
+add_test(NAME schedule_reverse COMMAND schedule exposed)
+add_test(NAME schedule_random COMMAND schedule exposed)
+set_tests_properties(schedule_forward PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=forward")
+set_tests_properties(schedule_reverse PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=reverse")
+set_tests_properties(schedule_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:12345")
+
+# Threads that reach different __syncthreads() calls: warned about by default,
+# fatal or ignored on request
+add_test(NAME divergent_barrier_warn COMMAND divergent_barrier)
+set_tests_properties(divergent_barrier_warn PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning: threads of block \\([0-9], 0, 0\\) reached different __syncthreads\\(\\) calls, at [^ ]*divergent_barrier.cpp:[0-9]+ and [^ ]*divergent_barrier.cpp:[0-9]+"
+    ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=warn")
+add_test(NAME divergent_barrier_ignore COMMAND divergent_barrier)
+set_tests_properties(divergent_barrier_ignore PROPERTIES
+    FAIL_REGULAR_EXPRESSION "different __syncthreads"
+    ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=ignore")
+add_test(NAME divergent_barrier_error
+         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:divergent_barrier>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/divergent_barrier_error.cmake)
+
+# The gdb script: a breakpoint conditioned on the CUDA thread, the built-in
+# variables, and a backtrace that ends at the fiber trampoline
+find_program(GDB gdb)
+if(GDB)
+    add_executable(barriers_debuginfo barriers.cpp)
+    set_target_properties(barriers_debuginfo PROPERTIES CXX_EXTENSIONS OFF)
+    target_compile_options(barriers_debuginfo PRIVATE -g -O0)
+    target_link_libraries(barriers_debuginfo PRIVATE cuda4cpu::cuda4cpu)
+    add_test(NAME gdb
+             COMMAND ${CMAKE_COMMAND} -DGDB=${GDB} -DSCRIPT=${PROJECT_SOURCE_DIR}/tools/cuda4cpu-gdb.py
+                     -DPROGRAM=$<TARGET_FILE:barriers_debuginfo> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/barriers.cpp
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/gdb_test.cmake)
+endif()
 
 # Ports of CUDA programs, checked against a host reference. They are .cu files
 # in their original CUDA syntax, compiled through cuda4cpu_add_cuda_sources.

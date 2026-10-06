@@ -35,6 +35,10 @@ target_link_libraries(cuda4cpu PUBLIC OpenMP::OpenMP_CXX)
 
 target_compile_options(cuda4cpu PRIVATE -Wall)
 
+# Debug information in every build, so that debuggers can show the CUDA thread
+# that each OS thread runs (see tools/cuda4cpu-gdb.py)
+target_compile_options(cuda4cpu PRIVATE -g)
+
 # Let the compiler inline the scheduler's helpers into each other; otherwise
 # every call between them goes through the PLT of the shared library
 target_compile_options(cuda4cpu PRIVATE -fno-semantic-interposition)

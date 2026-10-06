@@ -91,7 +91,7 @@ __global__ void triangular(float *out, int scale)
 
 int main()
 {
-    std::printf("cuda4cpu micro-benchmarks, %d OS threads\n\n", system::get_system().get_num_procs());
+    std::printf("cuda4cpu micro-benchmarks, %d OS threads\n\n", omp_get_max_threads());
 
     // Launch overhead with cached fibers
     {
@@ -113,7 +113,7 @@ int main()
         const int n = 1000, threads = 256, blocks = 64;
         double base = median_ms([&] { launch(barriers, blocks, threads).call(0); });
         double ms   = median_ms([&] { launch(barriers, blocks, threads).call(n); });
-        double per_core = double(blocks) * threads * n / system::get_system().get_num_procs();
+        double per_core = double(blocks) * threads * n / omp_get_max_threads();
         row("__syncthreads, per thread", (ms - base) * 1e6 / per_core, "ns");
     }
 
@@ -122,7 +122,7 @@ int main()
         int out = 0;
         double base = median_ms([&] { launch(shuffles, blocks, threads).call(&out, 0); });
         double ms   = median_ms([&] { launch(shuffles, blocks, threads).call(&out, n); });
-        double per_core = double(blocks) * threads * n / system::get_system().get_num_procs();
+        double per_core = double(blocks) * threads * n / omp_get_max_threads();
         row("__shfl_xor_sync, per lane", (ms - base) * 1e6 / per_core, "ns");
     }
 

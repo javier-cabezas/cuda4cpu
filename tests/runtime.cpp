@@ -125,10 +125,11 @@ int main()
         EXPECT(cudaMalloc(&d, 16 * sizeof(float)) == cudaSuccess && d != nullptr);
         EXPECT(cudaMallocManaged(&m, 16 * sizeof(float)) == cudaSuccess && m != nullptr);
         EXPECT(cudaMallocHost(&h, 16 * sizeof(float)) == cudaSuccess && h != nullptr);
-        EXPECT(cudaHostAlloc(&h, 16 * sizeof(float), cudaHostAllocMapped) == cudaSuccess);
+        cudaFreeHost(h);
+        EXPECT(cudaHostAlloc(&h, 16 * sizeof(float), cudaHostAllocMapped) == cudaSuccess && h != nullptr);
+        cudaFreeHost(h);
         cudaFree(d);
         cudaFree(m);
-        cudaFreeHost(h);
     }
 
     // Copies and memset
