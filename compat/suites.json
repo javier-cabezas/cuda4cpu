@@ -1,0 +1,376 @@
+{
+  "suites": {
+    "cuda-samples": {
+      "url": "https://github.com/NVIDIA/cuda-samples.git",
+      "revision": "v13.4",
+      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries, Thrust/CUB, MPI or multiple GPUs). They check their own results.",
+      "defaults": {
+        "sources": [
+          "*.cu",
+          "*.cpp"
+        ],
+        "include": [
+          "Common"
+        ],
+        "waived_exit": 2
+      },
+      "programs": [
+        {
+          "dir": "cpp/0_Introduction/asyncAPI"
+        },
+        {
+          "dir": "cpp/0_Introduction/cudaOpenMP"
+        },
+        {
+          "dir": "cpp/0_Introduction/fp16ScalarProduct"
+        },
+        {
+          "dir": "cpp/0_Introduction/matrixMul"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleAssert"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleAttributes"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleCallback"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleCooperativeGroups"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleCubemapTexture"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleLayeredTexture"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleMultiCopy"
+        },
+        {
+          "dir": "cpp/0_Introduction/simplePitchLinearTexture"
+        },
+        {
+          "dir": "cpp/0_Introduction/simplePrintf"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleStreams"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleSurfaceWrite"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleTexture"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleVoteIntrinsics"
+        },
+        {
+          "dir": "cpp/0_Introduction/simpleZeroCopy"
+        },
+        {
+          "dir": "cpp/0_Introduction/systemWideAtomics"
+        },
+        {
+          "dir": "cpp/0_Introduction/vectorAdd"
+        },
+        {
+          "dir": "cpp/1_Utilities/deviceQuery"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/convolutionSeparable"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/convolutionTexture"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/dct8x8"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/eigenvalues"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/histogram"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/interval"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/reduction"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/reductionMultiBlockCG"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/scalarProd"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/scan"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/shfl_scan"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/sortingNetworks"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/streamOrderedAllocation"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/threadFenceReduction"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/StreamPriorities"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/binaryPartitionCG"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/cdpBezierTessellation"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/cdpSimplePrint"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/cdpSimpleQuicksort"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/graphConditionalNodes"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/graphMemoryFootprint"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/graphMemoryNodes"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/jacobiCudaGraphs"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/localityDomains"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/newdelete"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/warpAggregatedAtomicsCG"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/BlackScholes"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/HSOpticalFlow"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/SobolQRNG"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/binomialOptions"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/dwtHaar1D"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/dxtc"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/fastWalshTransform"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/quasirandomGenerator"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/stereoDisparity"
+        },
+        {
+          "dir": "cpp/6_Performance/LargeKernelParameter"
+        },
+        {
+          "dir": "cpp/6_Performance/UnifiedMemoryPerf",
+          "skip": "a GPU memory benchmark that sweeps sizes up to the device memory; it runs for more than 10 minutes on a CPU"
+        },
+        {
+          "dir": "cpp/6_Performance/alignedTypes"
+        },
+        {
+          "dir": "cpp/6_Performance/cudaGraphsPerfScaling"
+        },
+        {
+          "dir": "cpp/6_Performance/transpose"
+        }
+      ]
+    },
+    "rodinia": {
+      "url": "https://github.com/yuhc/gpu-rodinia.git",
+      "revision": "9c10d3ea16ddba2ba057cc3951a9efc4c2cc18a4",
+      "description": "Rodinia benchmarks that generate their inputs (the others need Rodinia's separate data download). Except lud -v, they don't check their results: passing means they run to completion.",
+      "defaults": {
+        "verified": false,
+        "cflags": [
+          "-std=gnu89"
+        ]
+      },
+      "programs": [
+        {
+          "dir": "cuda/backprop",
+          "sources": [
+            "backprop.c",
+            "facetrain.c",
+            "imagenet.c",
+            "backprop_cuda.cu"
+          ],
+          "args": [
+            "65536"
+          ]
+        },
+        {
+          "dir": "cuda/gaussian",
+          "sources": [
+            "gaussian.cu"
+          ],
+          "args": [
+            "-s",
+            "512"
+          ]
+        },
+        {
+          "dir": "cuda/lavaMD",
+          "sources": [
+            "main.c",
+            "kernel/kernel_gpu_cuda_wrapper.cu",
+            "util/num/num.c",
+            "util/timer/timer.c",
+            "util/device/device.cu"
+          ],
+          "args": [
+            "-boxes1d",
+            "10"
+          ]
+        },
+        {
+          "dir": "cuda/lud",
+          "name": "lud",
+          "sources": [
+            "cuda/lud.cu",
+            "cuda/lud_kernel.cu",
+            "common/common.c"
+          ],
+          "include": [
+            "cuda/lud/common"
+          ],
+          "args": [
+            "-s",
+            "256",
+            "-v"
+          ],
+          "verified": true,
+          "reject": "dismatch"
+        },
+        {
+          "dir": "cuda/nw",
+          "name": "needle",
+          "sources": [
+            "needle.cu"
+          ],
+          "args": [
+            "2048",
+            "10"
+          ]
+        },
+        {
+          "dir": "cuda/pathfinder",
+          "sources": [
+            "pathfinder.cu"
+          ],
+          "args": [
+            "100000",
+            "100",
+            "20"
+          ]
+        },
+        {
+          "dir": "cuda/srad/srad_v2",
+          "name": "srad_v2",
+          "sources": [
+            "srad.cu"
+          ],
+          "args": [
+            "2048",
+            "2048",
+            "0",
+            "127",
+            "0",
+            "127",
+            "0.5",
+            "2"
+          ]
+        },
+        {
+          "dir": "cuda/streamcluster",
+          "sources": [
+            "streamcluster_cuda_cpu.cpp",
+            "streamcluster_cuda.cu",
+            "streamcluster_header.cu"
+          ],
+          "args": [
+            "10",
+            "20",
+            "256",
+            "65536",
+            "65536",
+            "1000",
+            "none",
+            "output.txt",
+            "1"
+          ]
+        },
+        {
+          "dir": "cuda/hybridsort",
+          "sources": [
+            "bucketsort.cu",
+            "mergesort.cu",
+            "main.cu"
+          ],
+          "args": [
+            "r"
+          ]
+        },
+        {
+          "dir": "cuda/particlefilter",
+          "name": "particlefilter_naive",
+          "sources": [
+            "ex_particle_CUDA_naive_seq.cu"
+          ],
+          "args": [
+            "-x",
+            "128",
+            "-y",
+            "128",
+            "-z",
+            "10",
+            "-np",
+            "1000"
+          ]
+        },
+        {
+          "dir": "cuda/particlefilter",
+          "name": "particlefilter_float",
+          "sources": [
+            "ex_particle_CUDA_float_seq.cu"
+          ],
+          "args": [
+            "-x",
+            "128",
+            "-y",
+            "128",
+            "-z",
+            "10",
+            "-np",
+            "1000"
+          ]
+        }
+      ]
+    }
+  }
+}

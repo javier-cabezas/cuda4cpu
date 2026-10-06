@@ -26,6 +26,21 @@ namespace cuda4cpu {
 
 inline namespace cuda_api {
 
+enum : unsigned int {
+    cudaStreamDefault     = 0x00,
+    cudaStreamNonBlocking = 0x01
+};
+
+using cudaHostFn_t = void (*)(void *userData);
+
+//! Runs fn in order with the work in stream, which has completed
+static inline
+cudaError_t cudaLaunchHostFunc(cudaStream_t /* stream */, cudaHostFn_t fn, void *userData)
+{
+    fn(userData);
+    return cudaSuccess;
+}
+
 static inline
 cudaError_t cudaStreamAddCallback(cudaStream_t stream, cudaStreamCallback_t callback, void *userData, unsigned int /*flags*/)
 {

@@ -27,6 +27,9 @@ import sys
 import tempfile
 import unittest
 
+# Importing the tool would otherwise leave bytecode next to it, in tools/
+sys.dont_write_bytecode = True
+
 TOOL = sys.argv.pop(1) if len(sys.argv) > 1 else os.path.join(
     os.path.dirname(__file__), '..', '..', 'tools', 'cuda4cpu-rewrite')
 loader = importlib.machinery.SourceFileLoader('cuda4cpu_rewrite', TOOL)
@@ -70,6 +73,9 @@ class Launches(unittest.TestCase):
     def test_statement_context(self):
         self.assertEqual(rewrite('if (c) a<<<1, 1>>>(); else b<<<1, 1>>>();'),
                          f'if (c) {launch("a", "1, 1", "")}; else {launch("b", "1, 1", "")};')
+
+    def test_spaces_between_brackets(self):
+        self.assertEqual(rewrite('k << < g, b >> > (x);'), launch('k', ' g, b ', 'x') + ';')
 
     def test_shift_in_configuration(self):
         self.assertEqual(rewrite('k<<<n >> 1, dim3(m >> 2)>>>(x);'),

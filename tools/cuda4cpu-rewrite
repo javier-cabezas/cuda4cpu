@@ -177,16 +177,12 @@ def skip_raw_string(text, i):
     return len(text) if end < 0 else end + len(delimiter) + 2
 
 
-def adjacent(tokens, i, count, char):
-    """True if tokens[i:i+count] are `char` with no space between them."""
+def consecutive(tokens, i, count, char):
+    """True if tokens[i:i+count] are all `char`. Like nvcc, this accepts spaces
+    between them: some CUDA code writes launches as kernel<< <...>> >(...)."""
     if i + count > len(tokens):
         return False
-    for k in range(i, i + count):
-        if tokens[k].text != char:
-            return False
-        if k > i and tokens[k - 1].end != tokens[k].start:
-            return False
-    return True
+    return all(tokens[k].text == char for k in range(i, i + count))
 
 
 def match_forward(tokens, i):
@@ -297,9 +293,8 @@ def find_launches(tokens):
     launches = []
     i = 0
     while i < len(tokens):
-        if tokens[i].text == '<' and adjacent(tokens, i, 3, '<') and i > 0 and \
-                tokens[i - 1].text != 'operator' and not (i > 0 and tokens[i - 1].text == '<' and
-                                                          tokens[i - 1].end == tokens[i].start):
+        if tokens[i].text == '<' and consecutive(tokens, i, 3, '<') and i > 0 and \
+                tokens[i - 1].text not in ('operator', '<'):
             start = kernel_start(tokens, i - 1)
             gt = config_end(tokens, i + 3)
             if start is not None and start < i and gt is not None and \
@@ -325,7 +320,7 @@ def config_end(tokens, i):
             depth -= 1
             if depth < 0:
                 return None
-        elif t == '>' and depth == 0 and adjacent(tokens, k, 3, '>'):
+        elif t == '>' and depth == 0 and consecutive(tokens, k, 3, '>'):
             return k
         elif t == ';' and depth == 0:
             return None

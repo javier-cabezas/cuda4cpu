@@ -33,3 +33,20 @@
 #include "cuda4cpu.hpp"
 
 using namespace cuda4cpu::cuda_api;
+
+// The include guards of CUDA's own headers: code (such as the helpers of the
+// CUDA samples) tests them to know that the runtime API is available
+#ifndef __CUDA_RUNTIME_H__
+#define __CUDA_RUNTIME_H__
+#endif
+#ifndef __CUDA_RUNTIME_API_H__
+#define __CUDA_RUNTIME_API_H__
+#endif
+#ifndef __DRIVER_TYPES_H__
+#define __DRIVER_TYPES_H__
+#endif
+
+//! Calling convention of host callbacks, empty on Linux
+#ifndef CUDART_CB
+#define CUDART_CB
+#endif

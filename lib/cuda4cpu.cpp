@@ -1087,6 +1087,9 @@ void detail::get_device_properties(cudaDeviceProp &prop)
         p.directManagedMemAccessFromHost    = 1;
         p.hostNativeAtomicSupported         = 1;
         p.canUseHostPointerForRegisteredMem = 1;
+        p.hostRegisterSupported             = 1;
+        p.hostRegisterReadOnlySupported     = 1;
+        p.memoryPoolsSupported              = 1;
         p.globalL1CacheSupported            = 1;
         p.localL1CacheSupported             = 1;
         p.singleToDoublePrecisionPerfRatio  = 2;

@@ -26,6 +26,13 @@ namespace cuda4cpu {
 
 inline namespace cuda_api {
 
+enum : unsigned int {
+    cudaEventDefault       = 0x00,
+    cudaEventBlockingSync  = 0x01,
+    cudaEventDisableTiming = 0x02,
+    cudaEventInterprocess  = 0x04
+};
+
 static inline
 cudaError_t cudaEventCreate(cudaEvent_t *event)
 {

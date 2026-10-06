@@ -142,6 +142,39 @@ inline T atomicXor(T *address, std::type_identity_t<T> val)
 }
 
 //
+// Scoped atomics (_block, _system): all the threads of a CPU share one memory,
+// so every scope behaves like the device scope
+//
+
+#define CUDA4CPU_SCOPED_ATOMIC(name)                                      \
+    template <typename T, typename... Args>                               \
+    inline auto name##_block(T *address, Args... args)                    \
+        -> decltype(name(address, args...))                               \
+    {                                                                     \
+        return name(address, args...);                                    \
+    }                                                                     \
+    template <typename T, typename... Args>                               \
+    inline auto name##_system(T *address, Args... args)                   \
+        -> decltype(name(address, args...))                               \
+    {                                                                     \
+        return name(address, args...);                                    \
+    }
+
+CUDA4CPU_SCOPED_ATOMIC(atomicAdd)
+CUDA4CPU_SCOPED_ATOMIC(atomicSub)
+CUDA4CPU_SCOPED_ATOMIC(atomicExch)
+CUDA4CPU_SCOPED_ATOMIC(atomicMin)
+CUDA4CPU_SCOPED_ATOMIC(atomicMax)
+CUDA4CPU_SCOPED_ATOMIC(atomicInc)
+CUDA4CPU_SCOPED_ATOMIC(atomicDec)
+CUDA4CPU_SCOPED_ATOMIC(atomicCAS)
+CUDA4CPU_SCOPED_ATOMIC(atomicAnd)
+CUDA4CPU_SCOPED_ATOMIC(atomicOr)
+CUDA4CPU_SCOPED_ATOMIC(atomicXor)
+
+#undef CUDA4CPU_SCOPED_ATOMIC
+
+//
 // Memory fences. Threads of a block share one OS thread, so a block fence only
 // needs to stop the compiler from reordering accesses.
 //
