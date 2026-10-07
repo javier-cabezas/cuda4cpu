@@ -35,8 +35,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`launch_conf`, `system`, `thread_block`, `grid_launcher`, `launch()`,
   `dynamic_shared<T>()`). It holds only the launcher template and the inline
   built-in variable getters.
-- `include/warp.hpp`: `warpSize`, shuffles, votes and `__syncwarp`, built on
-  `thread_block::warp_shuffle`/`warp_ballot`/`syncwarp`.
+- `include/warp.hpp`: `warpSize`, shuffles, votes, matches, `__activemask`
+  and `__syncwarp`, built on `thread_block::warp_shuffle`/`warp_ballot`/
+  `warp_match`/`warp_active_mask`/`syncwarp`.
+- `include/cooperative_groups.h` (+ `cooperative_groups/reduce.h`, `scan.h`):
+  CUDA's cooperative groups, in the global namespace `cooperative_groups` as
+  in CUDA, with helpers in `cuda4cpu::detail::cg`. `thread_group` is the
+  type-erased base that every group converts to. Tiles of up to 32 threads
+  use the warp functions with the tile's lanes as the mask; larger tiles use
+  `thread_block::sync_warps`. Block and grid `sync()` take a defaulted
+  `std::source_location`, so the divergent barrier check reports the
+  caller's line.
 - `include/cuda/*.hpp`: the CUDA runtime API (types, errors, device, memory,
   streams, events), plus device-side `atomics.hpp` (on `std::atomic_ref`) and
   `math.hpp`. All CUDA names live in the **inline namespace
@@ -53,7 +62,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   always built with `-g` so that gdb knows that variable's type.
 - `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
   `extern __shared__ T x[];` in a `.cu` file and in the local headers it
-  includes. It uses Python 3, standard library only.
+  includes, and drops a `(void *)` cast on the kernel passed to
+  `cudaLaunchKernel`/`cudaLaunchCooperativeKernel` (cuda4cpu needs its type).
+  The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does. It
+  uses Python 3, standard library only.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory.
@@ -64,7 +76,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   cuda-samples and Rodinia, pinned by revision, with their sources, include
   directories, arguments and checks: `expect` and `reject` are output
   regexes, `verified: false` marks programs that don't check their results,
-  and `skip` gives a reason not to run one. `run.py` fetches the suites,
+  `skip` gives a reason not to run one, and `timeout` gives a long program
+  more time (such programs start first). `run.py` fetches the suites,
   builds each program with `cuda4cpu-c++` (`.c` files with the C compiler),
   runs it, and reports. `baseline.json` holds the expected status of each
   program: CI fails if a passing program regresses. When a change makes
@@ -81,6 +94,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()`
   - `atomics`: every atomic function, racing across blocks
+  - `cooperative_groups`: every group type and operation, including partial
+    warps and tiles, tiles of several warps that sync independently,
+    `coalesced_threads()` in a branch (warp-aggregated atomics), and
+    `grid.sync()` across rounds of a cooperative launch
   - `runtime`: error codes and the last error, launch limits, allocation,
     copies, memset, symbols, events, device queries and intrinsics, through
     `cuda_runtime.h` only
@@ -142,18 +159,40 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - The first `__syncthreads()` or warp function calls `promote()`: threads
   before `cur_` are finished, and the current thread stays on fiber 0's stack
   (its own stack is unused for that block).
-- In fiber mode, the scheduling state is one 32-bit word per warp for each of
-  `live`, `started`, `block_wait` and `warp_wait`. A thread can run when it is
-  live and not waiting. A waiting thread saves itself in `ctx[i]` and jumps to
+- In fiber mode, the scheduling state is a `warp_state` per warp, 32 bytes so
+  that a scheduling decision reads one cache line: 32-bit lane masks `live`,
+  `started`, `block_wait`, `warp_wait`, `tile_wait` (at the barrier of a tile
+  larger than a warp) and `converge_wait` (in `__activemask()`, also in
+  `warp_wait`), plus the pending tile's range of warps. Keeping them together
+  matters: as separate vectors, shuffles were 18% slower. A thread can run
+  when it is live and not waiting. A waiting thread saves itself in `ctx[i]` and jumps to
   the next runnable thread in index order (`next_runnable`). A thread that
   hasn't started begins from `start[j]`.
 - `__syncthreads()` is released when `block_arrived == live_count`. A warp
   function records its kind, mask, value and source lane, and is released by
   `try_release_warp` once every participating lane is in `warp_wait`. The
   releasing lane computes every lane's result. Participants are the live lanes
-  in the mask, minus lanes in `block_wait`, which are in another branch.
+  in the mask, minus lanes in `block_wait` or `tile_wait`, which are in
+  another branch. Lanes in `converge_wait` haven't arrived yet.
+- `__activemask()` (and `coalesced_threads()`) is the `op_converge` warp
+  operation, keyed by its call site. It is released once every live lane that
+  isn't at a barrier is in `warp_wait`, whatever it waits for, and returns the
+  lanes waiting at the same call site. This can't deadlock with other warp
+  operations, which wait for converging lanes: those only need everyone to be
+  blocked. The rare operations (matches, converge) are `[[gnu::noinline]]`
+  methods of `fibers`, out of `try_release_warp`'s hot path.
+- A tile barrier (`sync_warps`) is released when every live thread of its
+  warps that isn't at `__syncthreads()` is in `tile_wait`.
+- `grid_group::sync()` is a `__syncthreads()` that sets `grid_pending`;
+  `release_block()` then waits at the launch's `std::barrier`
+  (`kernel_closure::grid`) before releasing the block. Only
+  `cudaLaunchCooperativeKernel` sets it: `run_grid_cooperative` runs each
+  block on its own OS thread (OpenMP, or `std::jthread` when OpenMP can't
+  promise one thread per block), and a block that returns drops out of the
+  barrier.
 - Releases are rechecked whenever the set of lanes being waited for shrinks:
-  when a thread returns, or starts waiting at `__syncthreads()`. That is why
+  when a thread returns, or starts waiting at `__syncthreads()`, at a tile
+  barrier, or (for `__activemask()`) at any warp operation. That is why
   early returns don't block barriers, and why no barrier can deadlock.
   `deadlock()` is an internal consistency check.
 - `threadIdx`, `blockIdx`, `blockDim`, `gridDim` and the lane are stored in

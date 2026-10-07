@@ -45,6 +45,7 @@ enum cudaError {
     cudaErrorNotReady               = 600,
     cudaErrorAssert                 = 710,
     cudaErrorLaunchFailure          = 719,
+    cudaErrorCooperativeLaunchTooLarge = 720,
     cudaErrorNotSupported           = 801,
     cudaErrorUnknown                = 999
 };

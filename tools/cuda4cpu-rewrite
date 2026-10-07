@@ -28,6 +28,11 @@
       -> T *name = cuda4cpu::dynamic_shared<T>();               (in a function)
       -> static cuda4cpu::dynamic_shared_array<T> name;         (at namespace scope)
 
+  cudaLaunchKernel((void *)kernel, ...), and cudaLaunchCooperativeKernel
+      -> cudaLaunchKernel(kernel, ...)
+      The cast to void * would hide the kernel's parameter types, which
+      cuda4cpu needs to unpack the argument array.
+
 The kernel, the launch configuration and the arguments are copied verbatim, so
 the result behaves like the CUDA launch: template arguments are deduced from the
 arguments and default arguments apply. Line numbers are preserved and a #line
@@ -35,12 +40,19 @@ directive maps diagnostics and __FILE__ to the original file.
 
 Local headers included with #include "..." are rewritten too, into a shadow
 directory, and the #include directives point to the rewritten copies.
+
+The rewritten .cu file defines __CUDACC__ first, as nvcc does, so that code
+that tells CUDA compilation apart from host compilation (for instance the
+host fallbacks in the CUDA samples' helper_math.h) takes the CUDA branch.
 """
 
 import argparse
 import os
 import re
 import sys
+
+# Prepended to the rewritten .cu file, before its #line directive
+PROLOGUE = '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
 
 LAUNCH_PREFIX = 'cuda4cpu::launch([&](const auto &...cuda4cpu_args) { '
 LAUNCH_INFIX = '(cuda4cpu_args...); }, '
@@ -375,6 +387,29 @@ def find_extern_shared(tokens):
     return found
 
 
+# Launch functions whose kernel argument is commonly cast to void *
+LAUNCH_FUNCTIONS = frozenset(('cudaLaunchKernel', 'cudaLaunchCooperativeKernel'))
+
+
+def find_void_casts(tokens):
+    """Yields (first, last) token indices of each cast to void * of the
+    first argument of a launch function: (void *), (const void *) or
+    reinterpret_cast<void *>, with the parenthesis of a reinterpret_cast left
+    in place."""
+    for i, t in enumerate(tokens):
+        if t.kind != 'id' or t.text not in LAUNCH_FUNCTIONS or i + 1 >= len(tokens) or \
+                tokens[i + 1].text != '(' or (i > 0 and tokens[i - 1].text in ('.', '->')):
+            continue
+        k = i + 2
+        texts = [u.text for u in tokens[k:k + 7]]
+        for form in (['(', 'void', '*', ')'], ['(', 'const', 'void', '*', ')'],
+                     ['reinterpret_cast', '<', 'void', '*', '>'],
+                     ['reinterpret_cast', '<', 'const', 'void', '*', '>']):
+            if texts[:len(form)] == form:
+                yield k, k + len(form) - 1
+                break
+
+
 def opens_namespace(tokens, i):
     """True if the '{' at tokens[i] opens a namespace or an extern "C" block."""
     k = i - 1
@@ -452,6 +487,11 @@ def rewrite_text(text, path, include_hook=None):
         else:
             new = f'{type_text} *{name} = cuda4cpu::dynamic_shared<{type_text}>();'
         replacements.append((tokens[first].start, tokens[semi].end, new))
+
+    for first, last in find_void_casts(tokens):
+        # Keep the newlines the cast may span, so that line numbers don't change
+        replacements.append((tokens[first].start, tokens[last].end,
+                             '\n' * text.count('\n', tokens[first].start, tokens[last].end)))
 
     replacements.sort()
     launches = find_launches(tokens)                # sorted by position
@@ -542,6 +582,7 @@ def main(argv=None):
         print(f'cuda4cpu-rewrite: {e}', file=sys.stderr)
         return 1
 
+    result = PROLOGUE + result
     if args.output is None:
         sys.stdout.write(result)
     else:

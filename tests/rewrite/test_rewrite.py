@@ -74,6 +74,20 @@ class Launches(unittest.TestCase):
         self.assertEqual(rewrite('if (c) a<<<1, 1>>>(); else b<<<1, 1>>>();'),
                          f'if (c) {launch("a", "1, 1", "")}; else {launch("b", "1, 1", "")};')
 
+    def test_void_cast_of_launched_kernel(self):
+        self.assertEqual(rewrite('cudaLaunchCooperativeKernel((void *)k, g, b, args);'),
+                         'cudaLaunchCooperativeKernel(k, g, b, args);')
+        self.assertEqual(rewrite('cudaLaunchKernel((const void*)k<int>, g, b, args, 0, s);'),
+                         'cudaLaunchKernel(k<int>, g, b, args, 0, s);')
+        self.assertEqual(rewrite('cudaLaunchKernel(reinterpret_cast<void *>(&k), g, b, a);'),
+                         'cudaLaunchKernel((&k), g, b, a);')
+        self.assertEqual(rewrite('cudaLaunchKernel((void\n*)k, g, b, a);'),
+                         'cudaLaunchKernel(\nk, g, b, a);')
+        # Other calls, and casts elsewhere, are untouched
+        for text in ('f((void *)k);', 'cudaLaunchKernel(k, g, b, (void *)a);',
+                     'obj.cudaLaunchKernel((void *)k);'):
+            self.assertEqual(rewrite(text), text)
+
     def test_spaces_between_brackets(self):
         self.assertEqual(rewrite('k << < g, b >> > (x);'), launch('k', ' g, b ', 'x') + ';')
 
@@ -166,6 +180,7 @@ class Headers(unittest.TestCase):
 
             with open(out) as f:
                 main = f.read()
+            self.assertTrue(main.startswith(rw.PROLOGUE + f'#line 1 "{os.path.join(src, "main.cu")}"'))
             shadow_a = os.path.join(out + '.headers', src.lstrip(os.sep), 'sub', 'a.cuh')
             shadow_b = os.path.join(out + '.headers', src.lstrip(os.sep), 'sub', 'b.cuh')
             self.assertIn(f'#include "{shadow_a}"', main)

@@ -21,9 +21,11 @@
 #pragma once
 
 #include <algorithm>
+#include <barrier>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <thread>
 #include <memory>
 #include <tuple>
 #include <type_traits>
@@ -57,6 +59,9 @@ struct kernel_closure {
     void (*run_direct)(const kernel_closure &);
     //! Runs the current CUDA thread
     void (*run_one)(const kernel_closure &);
+    //! Barrier of all the blocks of a cooperative launch (cudaLaunchCooperativeKernel),
+    //! whose blocks all run at the same time; nullptr otherwise
+    std::barrier<> *grid = nullptr;
 };
 
 }
@@ -173,8 +178,31 @@ public:
     //! the live lanes in mask (low 32 bits) and the mask of those lanes (high 32 bits).
     static uint64_t warp_ballot(unsigned mask, bool predicate);
 
-    //! Implementation of __activemask: the lanes of the calling warp that have not returned
-    static unsigned warp_active_mask();
+    //! Implementation of __match_any_sync (all = false) and __match_all_sync
+    //! (all = true) over the live lanes in mask. match_any returns the lanes
+    //! whose value equals the caller's; match_all returns the participating
+    //! lanes if all values are equal, and 0 otherwise.
+    static unsigned warp_match(unsigned mask, uint64_t value, bool all);
+
+    //! Implementation of __activemask: waits until every lane of the calling
+    //! warp that can run is waiting (at a warp operation), and returns the
+    //! lanes waiting at the same call site, identified by site
+    static unsigned warp_active_mask(uint64_t site);
+
+    //! Barrier of a cooperative groups tile larger than a warp: waits until
+    //! every live thread of warps [first_warp, first_warp + nwarps) reaches
+    //! it, except threads waiting at __syncthreads() (a different branch)
+    static void sync_warps(size_t first_warp, size_t nwarps);
+
+    //! Implementation of cooperative_groups::grid_group::sync(): a
+    //! __syncthreads() whose release waits for every block of the grid
+    static void sync_grid(const char *file = nullptr, int line = 0);
+
+    //! Whether the running kernel was launched with cudaLaunchCooperativeKernel
+    static bool cooperative_launch()
+    {
+        return Current_->kernel_->grid != nullptr;
+    }
 
     //! Lane of the calling CUDA thread within its warp
     static inline unsigned
@@ -244,6 +272,8 @@ private:
     void release_block();
     void try_release_warp(size_t tid);
     void try_release_warp_waiters(size_t w);
+    void try_release_converge(size_t w);
+    void try_release_tile(size_t w);
     unsigned warp_live_mask(size_t base) const;
     uint64_t warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane);
     void reserve_shared(size_t bytes);
@@ -405,6 +435,43 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
     }
 }
 
+//! Most blocks a cooperative launch can have: one per multiprocessor, which
+//! is one per OS thread
+inline size_t max_cooperative_blocks()
+{
+    cudaDeviceProp prop;
+    get_device_properties(prop);
+    return size_t(prop.multiProcessorCount) * size_t(prop.maxBlocksPerMultiProcessor);
+}
+
+//! Runs every block of a cooperative launch at the same time, each one on its
+//! own OS thread, so that grid_group::sync() can wait for all of them
+inline void run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel)
+{
+    const size_t nblocks = conf.nblocks();
+    const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
+    std::barrier<> grid{std::ptrdiff_t(nblocks)};
+    kernel.grid = &grid;
+
+    auto run_block = [&](size_t i) {
+        thread_block::acquire(conf, stack_size).execute(kernel, conf.block_id(i));
+        grid.arrive_and_drop();   // a block that returned no longer takes part in grid.sync()
+    };
+
+    // OpenMP's threads keep their fibers between launches, but it can only
+    // promise one thread per block outside parallel regions and without
+    // dynamic adjustment
+    if (!omp_in_parallel() && !omp_get_dynamic() && nblocks <= size_t(omp_get_thread_limit())) {
+        #pragma omp parallel num_threads(int(nblocks))
+        run_block(size_t(omp_get_thread_num()));
+    } else {
+        std::vector<std::jthread> threads;
+        threads.reserve(nblocks);
+        for (size_t i = 0; i < nblocks; ++i)
+            threads.emplace_back(run_block, i);
+    }
+}
+
 }
 
 //! Launch of a kernel given as a function: call(args...) converts the
@@ -523,6 +590,93 @@ cudaError_t cudaLaunchKernel(const T * /* func */, dim3, dim3, void **, size_t =
                   "cuda4cpu needs the kernel's type to unpack its arguments: pass the kernel itself "
                   "to cudaLaunchKernel, not a void pointer");
     return cudaErrorNotSupported;
+}
+
+//! Launches func so that all its blocks run at the same time, which
+//! cooperative_groups::grid_group::sync() requires. The grid can have at most
+//! multiProcessorCount blocks (one per OS thread).
+template <typename... Args>
+cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
+                                        size_t sharedMem = 0, cudaStream_t /* stream */ = nullptr)
+{
+    return [&]<size_t... I>(std::index_sequence<I...>) {
+        const launch_conf conf{gridDim, blockDim, sharedMem};
+        if (!detail::valid_launch(conf))
+            return detail::record_error(cudaErrorInvalidConfiguration);
+        if (conf.nblocks() > detail::max_cooperative_blocks())
+            return detail::record_error(cudaErrorCooperativeLaunchTooLarge);
+
+        detail::kernel_call<void (*)(Args...), std::decay_t<Args>...>
+            kernel(func, *static_cast<std::remove_reference_t<Args> *>(args[I])...);
+        detail::run_grid_cooperative(conf, kernel);
+        return cudaSuccess;
+    }(std::index_sequence_for<Args...>{});
+}
+
+template <typename T>
+    requires std::is_void_v<T>
+cudaError_t cudaLaunchCooperativeKernel(const T * /* func */, dim3, dim3, void **, size_t = 0,
+                                        cudaStream_t = nullptr)
+{
+    static_assert(!std::is_void_v<T>,
+                  "cuda4cpu needs the kernel's type to unpack its arguments: pass the kernel itself "
+                  "to cudaLaunchCooperativeKernel, not a void pointer");
+    return cudaErrorNotSupported;
+}
+
+//
+// Occupancy. Each multiprocessor (OS thread) runs one block at a time, of any
+// size, so every kernel has the same occupancy.
+//
+
+template <typename T>
+cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(int *numBlocks, T /* func */, int blockSize,
+                                                                   size_t /* dynamicSMemSize */,
+                                                                   unsigned int /* flags */)
+{
+    if (numBlocks == nullptr || blockSize <= 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    *numBlocks = blockSize <= 1024 ? 1 : 0;
+    return cudaSuccess;
+}
+
+template <typename T>
+cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *numBlocks, T func, int blockSize,
+                                                          size_t dynamicSMemSize)
+{
+    return cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(numBlocks, func, blockSize,
+                                                                  dynamicSMemSize, 0);
+}
+
+//! Suggests the largest block, which runs the most CUDA threads per block
+//! switch, and one block per multiprocessor
+template <typename T>
+cudaError_t cudaOccupancyMaxPotentialBlockSize(int *minGridSize, int *blockSize, T /* func */,
+                                               size_t /* dynamicSMemSize */ = 0, int blockSizeLimit = 0)
+{
+    if (minGridSize == nullptr || blockSize == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *blockSize   = blockSizeLimit > 0 ? std::min(blockSizeLimit, 1024) : 1024;
+    *minGridSize = int(detail::max_cooperative_blocks());
+    return cudaSuccess;
+}
+
+template <typename T, typename UnaryFunction>
+cudaError_t cudaOccupancyMaxPotentialBlockSizeVariableSMem(int *minGridSize, int *blockSize, T func,
+                                                           UnaryFunction /* blockSizeToDynamicSMemSize */,
+                                                           int blockSizeLimit = 0)
+{
+    return cudaOccupancyMaxPotentialBlockSize(minGridSize, blockSize, func, 0, blockSizeLimit);
+}
+
+template <typename T>
+cudaError_t cudaOccupancyAvailableDynamicSMemPerBlock(size_t *dynamicSmemSize, T /* func */, int /* numBlocks */,
+                                                      int /* blockSize */)
+{
+    if (dynamicSmemSize == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *dynamicSmemSize = 48 * 1024;
+    return cudaSuccess;
 }
 
 }
