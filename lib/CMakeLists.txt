@@ -9,6 +9,9 @@ target_sources(cuda4cpu
         BASE_DIRS ${CUDA4CPU_INCLUDE_DIR}
         FILES
             ${CUDA4CPU_INCLUDE_DIR}/cuda4cpu.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups.h
+            ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/reduce.h
+            ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/scan.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime_api.h

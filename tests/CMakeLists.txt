@@ -1,4 +1,4 @@
-foreach(test IN ITEMS atomics barriers divergent_barrier events launch runtime schedule stacks stencil2d
+foreach(test IN ITEMS atomics barriers cooperative_groups divergent_barrier events launch runtime schedule stacks stencil2d
                       stencil3d warp)
     add_executable(${test} ${test}.cpp)
     set_target_properties(${test} PROPERTIES CXX_EXTENSIONS OFF)
