@@ -20,8 +20,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <source_location>
 #include <type_traits>
 
 #include "launch.hpp"
@@ -71,7 +73,31 @@ template <typename T>
 inline T
 shuffle(unsigned mask, T var, unsigned src_lane)
 {
-    return from_lane_value<T>(thread_block::warp_shuffle(mask, to_lane_value(var), src_lane));
+    if constexpr (sizeof(T) <= sizeof(uint64_t)) {
+        return from_lane_value<T>(thread_block::warp_shuffle(mask, to_lane_value(var), src_lane));
+    } else {
+        // Larger types move in 8-byte pieces
+        static_assert(std::is_trivially_copyable_v<T>, "warp shuffles need trivially copyable types");
+        unsigned char bytes[sizeof(T)];
+        std::memcpy(bytes, &var, sizeof(T));
+        for (size_t i = 0; i < sizeof(T); i += sizeof(uint64_t)) {
+            uint64_t piece = 0;
+            const size_t n = std::min(sizeof(uint64_t), sizeof(T) - i);
+            std::memcpy(&piece, bytes + i, n);
+            piece = thread_block::warp_shuffle(mask, piece, src_lane);
+            std::memcpy(bytes + i, &piece, n);
+        }
+        T result;
+        std::memcpy(&result, bytes, sizeof(T));
+        return result;
+    }
+}
+
+//! Identifies a call site: user-space addresses fit in 47 bits
+inline uint64_t
+call_site(const std::source_location &site)
+{
+    return uint64_t(reinterpret_cast<uintptr_t>(site.file_name())) ^ (uint64_t(site.line()) << 47);
 }
 
 }
@@ -83,12 +109,13 @@ inline void __syncwarp(unsigned mask = 0xffffffff)
     thread_block::syncwarp(mask);
 }
 
-//! Lanes of the calling warp that have not returned and are not waiting at
-//! __syncthreads(). Lanes that will take a different branch but haven't yet
-//! are included; they are left out of warp operations once they diverge.
-inline unsigned __activemask()
+//! Lanes of the calling warp that call __activemask() at the same place
+//! together. It waits until every lane of the warp that hasn't returned is
+//! blocked (at a warp operation or a barrier) and returns the lanes waiting
+//! here: lanes in another branch don't come here, so they are left out.
+inline unsigned __activemask(std::source_location site = std::source_location::current())
 {
-    return thread_block::warp_active_mask();
+    return thread_block::warp_active_mask(detail::call_site(site));
 }
 
 //! Value of var in lane srcLane of the caller's group of width lanes
@@ -147,6 +174,23 @@ inline int __all_sync(unsigned mask, int predicate)
 {
     uint64_t result = thread_block::warp_ballot(mask, predicate != 0);
     return unsigned(result) == unsigned(result >> 32);
+}
+
+//! Mask of the participating lanes whose value equals the caller's
+template <typename T>
+inline unsigned __match_any_sync(unsigned mask, T value)
+{
+    return thread_block::warp_match(mask, detail::to_lane_value(value), false);
+}
+
+//! Mask of the participating lanes if all of them have the same value (and
+//! *pred = 1), or 0 (and *pred = 0) otherwise
+template <typename T>
+inline unsigned __match_all_sync(unsigned mask, T value, int *pred)
+{
+    unsigned result = thread_block::warp_match(mask, detail::to_lane_value(value), true);
+    *pred = result != 0;
+    return result;
 }
 
 }

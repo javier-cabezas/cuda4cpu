@@ -298,7 +298,10 @@ struct thread_block::fibers {
     enum op : unsigned char {
         op_sync,
         op_shuffle,
-        op_ballot
+        op_ballot,
+        op_match_any,
+        op_match_all,
+        op_converge
     };
 
     //! Allocates one stack per fiber in a single mapping, each one with a
@@ -314,10 +317,7 @@ struct thread_block::fibers {
 #if !CUDA4CPU_ASM_CONTEXT
         start(n),
 #endif
-        live((n + warp_size - 1) / warp_size),
-        started(live.size()),
-        block_wait(live.size()),
-        warp_wait(live.size()),
+        warps((n + warp_size - 1) / warp_size),
         warp_mask(n),
         warp_kind(n),
         warp_src(n),
@@ -457,17 +457,30 @@ struct thread_block::fibers {
         }
     }
 
-    // Scheduling state in fiber mode, as one bit per lane and one word per
-    // warp. A thread can run when it is live and not waiting.
-    std::vector<uint32_t> live;         //!< Has not returned from the kernel
-    std::vector<uint32_t> started;      //!< Has started, so it resumes from ctx
-    std::vector<uint32_t> block_wait;   //!< Waiting at __syncthreads()
-    std::vector<uint32_t> warp_wait;    //!< Waiting at a warp-synchronous operation
+    // Scheduling state in fiber mode, as one bit per lane, together for each
+    // warp so that a scheduling decision reads a single cache line. A thread
+    // can run when it is live and not waiting.
+    struct alignas(32) warp_state {
+        uint32_t live          = 0;   //!< Has not returned from the kernel
+        uint32_t started       = 0;   //!< Has started, so it resumes from ctx
+        uint32_t block_wait    = 0;   //!< Waiting at __syncthreads()
+        uint32_t warp_wait     = 0;   //!< Waiting at a warp-synchronous operation
+        uint32_t tile_wait     = 0;   //!< Waiting at the barrier of a tile larger than a warp
+        uint32_t converge_wait = 0;   //!< Waiting in __activemask() (also in warp_wait)
+
+        // The warps of the tile barrier pending in this warp, [tile_begin,
+        // tile_end) (empty if none). Tiles are aligned groups of whole warps,
+        // so a warp is in at most one pending tile barrier.
+        unsigned tile_begin = 0;
+        unsigned tile_end   = 0;
+    };
+    std::vector<warp_state> warps;
 
     size_t live_count    = 0;         //!< Threads that have not returned
     size_t block_arrived = 0;         //!< Threads waiting at __syncthreads()
     const char *barrier_file = nullptr;   //!< Where the first thread called the pending __syncthreads()
     int barrier_line = 0;
+    bool grid_pending = false;        //!< The pending __syncthreads() is a grid_group::sync()
 
     // AddressSanitizer fake stacks of the fiber stacks. Like the stacks, they
     // are reused: a thread that returns leaves its fake stack here, and the
@@ -507,9 +520,56 @@ struct thread_block::fibers {
     std::vector<unsigned> position;   //!< Inverse of order
     size_t direct_stack = 0;          //!< Stack of the fiber that runs direct mode
 
+    // The rarer warp operations, kept out of try_release_warp so that the
+    // path of shuffles and votes stays short
+
+    //! Results of the __match_any_sync or __match_all_sync that thread tid
+    //! waits at, over lanes
+    [[gnu::noinline]] void compute_match(size_t tid, uint32_t lanes)
+    {
+        const size_t base = tid / warp_size * warp_size;
+        if (warp_kind[tid] == op_match_any) {
+            for (uint32_t m = lanes; m != 0; m &= m - 1) {
+                unsigned l = unsigned(std::countr_zero(m));
+                uint32_t same = 0;
+                for (uint32_t k = lanes; k != 0; k &= k - 1) {
+                    unsigned o = unsigned(std::countr_zero(k));
+                    if (warp_value[base + o] == warp_value[base + l])
+                        same |= 1u << o;
+                }
+                warp_result[base + l] = same;
+            }
+        } else {
+            bool equal = true;
+            for (uint32_t m = lanes; m != 0; m &= m - 1)
+                equal = equal && warp_value[base + unsigned(std::countr_zero(m))] == warp_value[tid];
+            for (uint32_t m = lanes; m != 0; m &= m - 1)
+                warp_result[base + unsigned(std::countr_zero(m))] = equal ? lanes : 0;
+        }
+    }
+
+    //! Completes the __activemask() call that thread tid waits at, once every
+    //! lane that can run is waiting: the lanes waiting at the same call are the
+    //! ones executing it together
+    [[gnu::noinline]] void release_converge(size_t tid)
+    {
+        const size_t base = tid / warp_size * warp_size;
+        auto &warp = warps[tid / warp_size];
+        uint32_t group = 0;
+        for (uint32_t m = warp.converge_wait; m != 0; m &= m - 1) {
+            unsigned l = unsigned(std::countr_zero(m));
+            if (warp_value[base + l] == warp_value[tid])
+                group |= 1u << l;
+        }
+        for (uint32_t m = group; m != 0; m &= m - 1)
+            warp_result[base + unsigned(std::countr_zero(m))] = group;
+        warp.warp_wait     &= ~group;
+        warp.converge_wait &= ~group;
+    }
+
     uint32_t runnable(size_t w) const
     {
-        return live[w] & ~block_wait[w] & ~warp_wait[w];
+        return warps[w].live & ~warps[w].block_wait & ~warps[w].warp_wait & ~warps[w].tile_wait;
     }
 
     // Pending warp-synchronous operation of each thread
@@ -716,28 +776,33 @@ void thread_block::fiber_main()
 void thread_block::promote()
 {
     auto &f = *fibers_;
-    for (size_t w = 0; w < f.live.size(); ++w) {
+    for (size_t w = 0; w < f.warps.size(); ++w) {
         const size_t base = w * warp_size;
         uint32_t exists = nthreads_ - base >= warp_size ? ~0u : (1u << (nthreads_ - base)) - 1;
         // In the default order, the threads before cur_ have returned
         uint32_t after  = order_ || base >= cur_ ? ~0u
                                                  : (cur_ - base >= warp_size ? 0u : ~0u << (cur_ - base));
-        f.live[w]       = exists & after;
-        f.started[w]    = 0;
-        f.block_wait[w] = 0;
-        f.warp_wait[w]  = 0;
+        f.warps[w].live       = exists & after;
+        f.warps[w].started    = 0;
+        f.warps[w].block_wait = 0;
+        f.warps[w].warp_wait  = 0;
+        f.warps[w].tile_wait  = 0;
+        f.warps[w].tile_begin = 0;
+        f.warps[w].tile_end   = 0;
+        f.warps[w].converge_wait = 0;
     }
     if (order_) {
         for (size_t p = 0; p < pos_; ++p)
-            f.live[order_[p] / warp_size] &= ~lane_bit(order_[p]);
+            f.warps[order_[p] / warp_size].live &= ~lane_bit(order_[p]);
     }
-    f.started[cur_ / warp_size] = lane_bit(cur_);
+    f.warps[cur_ / warp_size].started = lane_bit(cur_);
 
     // The current thread keeps running on the stack of direct mode
     f.set_stack(cur_, f.direct_stack);
 
     f.live_count    = nthreads_ - pos_;
     f.block_arrived = 0;
+    f.grid_pending  = false;
     direct_         = false;
 }
 
@@ -752,13 +817,56 @@ void thread_block::syncthreads(const char *file, int line)
         block.check_barrier_site(file, line);
 
     const size_t w = block.cur_ / warp_size;
-    f.block_wait[w] |= lane_bit(block.cur_);
-    if (++f.block_arrived == f.live_count)
+    f.warps[w].block_wait |= lane_bit(block.cur_);
+    if (++f.block_arrived == f.live_count) {
         block.release_block();
-    else
-        block.try_release_warp_waiters(w);   // they no longer wait for this lane
+    } else {
+        // They no longer wait for this lane
+        block.try_release_warp_waiters(w);
+        block.try_release_tile(w);
+    }
 
     block.switch_from_current();
+}
+
+void thread_block::sync_grid(const char *file, int line)
+{
+    thread_block &block = *Current_;
+    if (block.kernel_->grid == nullptr) {
+        std::fprintf(stderr, "cuda4cpu: grid_group::sync() in a kernel not launched with "
+                             "cudaLaunchCooperativeKernel, in block (%u, %u, %u)\n",
+                     block.block_id_.x, block.block_id_.y, block.block_id_.z);
+        std::abort();
+    }
+    if (block.direct_)
+        block.promote();
+    block.fibers_->grid_pending = true;
+    syncthreads(file, line);
+}
+
+void thread_block::sync_warps(size_t first_warp, size_t nwarps)
+{
+    thread_block &block = *Current_;
+    if (block.direct_)
+        block.promote();
+
+    auto &f = *block.fibers_;
+    const size_t w   = block.cur_ / warp_size;
+    const size_t end = std::min(first_warp + nwarps, f.warps.size());
+    f.warps[w].tile_wait |= lane_bit(block.cur_);
+    for (size_t t = first_warp; t < end; ++t) {
+        f.warps[t].tile_begin = unsigned(first_warp);
+        f.warps[t].tile_end   = unsigned(end);
+    }
+    block.try_release_tile(w);
+    block.try_release_warp_waiters(w);   // warp operations leave this lane out now
+
+    block.switch_from_current();
+}
+
+unsigned thread_block::warp_match(unsigned mask, uint64_t value, bool all)
+{
+    return unsigned(Current_->warp_op(all ? fibers::op_match_all : fibers::op_match_any, mask, value, 0));
 }
 
 void thread_block::syncwarp(unsigned mask)
@@ -776,10 +884,9 @@ uint64_t thread_block::warp_ballot(unsigned mask, bool predicate)
     return Current_->warp_op(fibers::op_ballot, mask, predicate ? 1 : 0, 0);
 }
 
-unsigned thread_block::warp_active_mask()
+unsigned thread_block::warp_active_mask(uint64_t site)
 {
-    const thread_block &block = *Current_;
-    return block.warp_live_mask(block.cur_ / warp_size * warp_size);
+    return unsigned(Current_->warp_op(fibers::op_converge, ~0u, site, 0));
 }
 
 //! Publishes the calling thread's part of a warp-synchronous operation, waits
@@ -796,8 +903,12 @@ uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value
     f.warp_kind[self]  = kind;
     f.warp_src[self]   = src_lane % warp_size;
     f.warp_value[self] = value;
-    f.warp_wait[self / warp_size] |= lane_bit(self);
+    f.warps[self / warp_size].warp_wait |= lane_bit(self);
+    if (kind == fibers::op_converge)
+        f.warps[self / warp_size].converge_wait |= lane_bit(self);
     try_release_warp(self);
+    if (f.warps[self / warp_size].converge_wait != 0)
+        try_release_converge(self / warp_size);   // they may have waited for this lane
 
     switch_from_current();
     return f.warp_result[self];
@@ -810,7 +921,7 @@ unsigned thread_block::warp_live_mask(size_t base) const
 {
     if (!direct_) {
         const size_t w = base / warp_size;
-        return fibers_->live[w] & ~fibers_->block_wait[w];
+        return fibers_->warps[w].live & ~fibers_->warps[w].block_wait & ~fibers_->warps[w].tile_wait;
     }
 
     // In direct mode, the threads before the current one in the running order
@@ -834,7 +945,14 @@ unsigned thread_block::warp_live_mask(size_t base) const
 void thread_block::release_block()
 {
     auto &f = *fibers_;
-    std::fill(f.block_wait.begin(), f.block_wait.end(), 0u);
+    if (f.grid_pending) {
+        // Every thread of the block is at grid_group::sync(): the last one to
+        // arrive waits for the other blocks, which run on other OS threads
+        f.grid_pending = false;
+        kernel_->grid->arrive_and_wait();
+    }
+    for (auto &warp : f.warps)
+        warp.block_wait = 0;
     f.block_arrived = 0;
 }
 
@@ -845,10 +963,19 @@ void thread_block::try_release_warp(size_t tid)
     auto &f = *fibers_;
     const size_t w    = tid / warp_size;
     const size_t base = w * warp_size;
+    const auto &warp = f.warps[w];
     const uint32_t lanes = warp_live_mask(base) & f.warp_mask[tid];
-    if ((lanes & ~f.warp_wait[w]) != 0)
+    const bool converge = f.warp_kind[tid] == fibers::op_converge;
+    // For other operations, lanes in __activemask() haven't arrived: they'll
+    // come once it returns
+    const uint32_t arrived = converge ? warp.warp_wait : warp.warp_wait & ~warp.converge_wait;
+    if ((lanes & ~arrived) != 0)
         return;
 
+    if (converge) {
+        f.release_converge(tid);
+        return;
+    }
     switch (f.warp_kind[tid]) {
     case fibers::op_shuffle:
         for (uint32_t m = lanes; m != 0; m &= m - 1) {
@@ -868,11 +995,15 @@ void thread_block::try_release_warp(size_t tid)
             f.warp_result[base + unsigned(std::countr_zero(m))] = ballot | uint64_t(lanes) << 32;
         break;
     }
+    case fibers::op_match_any:
+    case fibers::op_match_all:
+        f.compute_match(tid, lanes);
+        break;
     default:
         break;
     }
 
-    f.warp_wait[w] &= ~lanes;
+    f.warps[w].warp_wait &= ~lanes;
 }
 
 //! Suspends the current thread, which just started waiting or was released,
@@ -892,7 +1023,7 @@ void thread_block::finish_current()
     auto &f = *fibers_;
     const size_t self = cur_;
     const size_t w    = self / warp_size;
-    f.live[w] &= ~lane_bit(self);
+    f.warps[w].live &= ~lane_bit(self);
     if (--f.live_count == 0) {
         f.switch_to(f.discarded, f.caller);
         __builtin_unreachable();
@@ -903,6 +1034,7 @@ void thread_block::finish_current()
         release_block();
 
     try_release_warp_waiters(w);
+    try_release_tile(w);
 
     switch_to_thread(no_thread, order_ ? next_runnable_after(self) : next_runnable(self + 1));
     __builtin_unreachable();
@@ -913,10 +1045,38 @@ void thread_block::finish_current()
 void thread_block::try_release_warp_waiters(size_t w)
 {
     auto &f = *fibers_;
-    for (uint32_t pending = f.warp_wait[w]; pending != 0; ) {
+    for (uint32_t pending = f.warps[w].warp_wait; pending != 0; ) {
         unsigned l = unsigned(std::countr_zero(pending));
         try_release_warp(w * warp_size + l);
-        pending &= f.warp_wait[w] & ~(1u << l);
+        pending &= f.warps[w].warp_wait & ~(1u << l);
+    }
+}
+
+//! Completes the __activemask() calls of warp w that no longer wait for any lane
+void thread_block::try_release_converge(size_t w)
+{
+    auto &f = *fibers_;
+    for (uint32_t pending = f.warps[w].converge_wait; pending != 0; ) {
+        unsigned l = unsigned(std::countr_zero(pending));
+        try_release_warp(w * warp_size + l);
+        pending &= f.warps[w].converge_wait & ~(1u << l);
+    }
+}
+
+//! Completes the tile barrier pending in warp w, if every thread of the tile
+//! that has not returned and is not at __syncthreads() has reached it
+void thread_block::try_release_tile(size_t w)
+{
+    auto &f = *fibers_;
+    const size_t begin = f.warps[w].tile_begin, end = f.warps[w].tile_end;
+    for (size_t t = begin; t < end; ++t) {
+        if ((f.warps[t].live & ~f.warps[t].block_wait & ~f.warps[t].tile_wait) != 0)
+            return;
+    }
+    for (size_t t = begin; t < end; ++t) {
+        f.warps[t].tile_wait  = 0;
+        f.warps[t].tile_begin = 0;
+        f.warps[t].tile_end   = 0;
     }
 }
 
@@ -929,7 +1089,7 @@ void thread_block::switch_to_thread(size_t from, size_t to)
     context &save = from == no_thread ? f.discarded : f.ctx[from];
     set_current_thread(to);
 
-    uint32_t &started = f.started[to / warp_size];
+    uint32_t &started = f.warps[to / warp_size].started;
     if ((started & lane_bit(to)) == 0) {
         started |= lane_bit(to);
         f.start_fiber(save, to);
@@ -944,7 +1104,7 @@ void thread_block::switch_to_thread(size_t from, size_t to)
 size_t thread_block::next_runnable(size_t from) const
 {
     const auto &f = *fibers_;
-    const size_t nwarps = f.live.size();
+    const size_t nwarps = f.warps.size();
     const size_t first  = from % nthreads_;
     const size_t w0     = first / warp_size;
     const uint32_t from_lane = ~0u << (first % warp_size);
@@ -1076,6 +1236,8 @@ void detail::get_device_properties(cudaDeviceProp &prop)
         p.multiProcessorCount         = omp_get_max_threads();
         p.maxThreadsPerMultiProcessor = 1024;
         p.maxBlocksPerMultiProcessor  = 1;
+        // All the blocks of a cooperative launch run at once, one per OS thread
+        p.cooperativeLaunch           = 1;
 
         // Device memory is host memory
         p.integrated                        = 1;
