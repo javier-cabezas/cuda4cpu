@@ -33,6 +33,9 @@ cuda4cpu-c++ (C files with the C compiler), run, and classified:
     build_failed  did not compile or link
     skipped       not run, for the reason the manifest gives ("skip")
 
+A program's "timeout" in the manifest replaces --timeout; programs with longer
+timeouts start first.
+
 The report lists every program with its status and the first error. With
 --baseline, programs that passed in the baseline and don't pass now are
 regressions, and make the script exit with status 1.
@@ -222,10 +225,13 @@ def main(argv=None):
             sources[suite] = os.path.join(args.work, 'src', suite)
             fetch(suite, spec['url'], spec['revision'], sources[suite])
 
+    # Programs given a longer timeout in the manifest are the long ones: they
+    # start first, so that the others run while they do
+    order = sorted(programs, key=lambda p: -p.get('timeout', args.timeout))
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {pool.submit(evaluate, p, sources[p['suite']], args.work, driver, args.cc, args.timeout):
-                   f'{p["suite"]}/{p["name"]}' for p in programs}
+                   f'{p["suite"]}/{p["name"]}' for p in order}
         for future in concurrent.futures.as_completed(futures):
             key = futures[future]
             results[key] = future.result()

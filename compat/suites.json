@@ -106,7 +106,8 @@
           "dir": "cpp/2_Concepts_and_Techniques/scalarProd"
         },
         {
-          "dir": "cpp/2_Concepts_and_Techniques/scan"
+          "dir": "cpp/2_Concepts_and_Techniques/scan",
+          "timeout": 1500
         },
         {
           "dir": "cpp/2_Concepts_and_Techniques/shfl_scan"
