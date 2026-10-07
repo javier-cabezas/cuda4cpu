@@ -182,6 +182,11 @@ apply, as in CUDA. Because the compiler knows which kernel each launch runs, it
 can inline it. Line numbers are preserved, and diagnostics and `__FILE__` refer
 to the original file.
 
+The rewriter also drops a `(void *)` cast on the kernel passed to
+`cudaLaunchKernel` or `cudaLaunchCooperativeKernel`, because cuda4cpu needs the
+kernel's parameter types to unpack the argument array. It defines `__CUDACC__`,
+as nvcc does, so code that checks for a CUDA compiler takes the CUDA branch.
+
 C++ code can also use the API directly, without the rewriter:
 `cuda4cpu::launch(kernel, grid, block[, smem]).call(args...)` and
 `cuda4cpu::dynamic_shared<T>()`. Code that includes `cuda4cpu.hpp` and uses
@@ -208,8 +213,19 @@ your kernels use it.
 - `threadIdx`, `blockIdx`, `blockDim`, `gridDim`, `warpSize`
 - `__syncthreads()`, and dynamic shared memory through `dynamic_shared<T>()`
 - Warp functions: `__shfl_sync`, `__shfl_up_sync`, `__shfl_down_sync`,
-  `__shfl_xor_sync` (any type of up to 8 bytes, with `width`),
-  `__ballot_sync`, `__any_sync`, `__all_sync`, `__activemask`, `__syncwarp`
+  `__shfl_xor_sync` (any trivially copyable type, with `width`),
+  `__ballot_sync`, `__any_sync`, `__all_sync`, `__match_any_sync`,
+  `__match_all_sync`, `__activemask`, `__syncwarp`
+- Cooperative groups (`cooperative_groups.h`):
+  - `thread_block` and `grid_group`
+  - `thread_block_tile<N>` for N up to 1024. Tiles of up to 32 threads also
+    have shuffles, votes and matches.
+  - `coalesced_group` (`coalesced_threads()`)
+  - `tiled_partition`, both static and dynamic, `labeled_partition` and
+    `binary_partition`
+  - `reduce`, `inclusive_scan` and `exclusive_scan`, with `plus`, `less`,
+    `greater`, `bit_and`, `bit_or` and `bit_xor`
+  - `grid.sync()` in kernels launched with `cudaLaunchCooperativeKernel`
 - Atomics: `atomicAdd`, `atomicSub`, `atomicExch`, `atomicMin`, `atomicMax`,
   `atomicInc`, `atomicDec`, `atomicCAS`, `atomicAnd`, `atomicOr`, `atomicXor`
   for the same types as CUDA, and `__threadfence`, `__threadfence_block`,
@@ -242,7 +258,8 @@ your kernels use it.
 | More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc` |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
-| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h` |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h` |
+| Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
 
 ## Compatibility with real CUDA code
@@ -263,18 +280,17 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 19 of 61 (1 more waives itself, 1 is skipped as too slow) | 40 |
+| cuda-samples | 39 of 61 (1 more waives itself, 1 is skipped as too slow) | 20 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 
 Most of what's missing is a few features:
 
 | Programs | Missing |
 |---|---|
-| 24 | Cooperative groups (`cooperative_groups.h`) |
-| 6 | Textures and surfaces |
-| 3 | CUDA graphs |
+| 9 | Textures and surfaces |
+| 5 | CUDA graphs (one also uses NVTX) |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
-| 1 each | Half precision (`cuda_fp16.h`), NVTX, libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
+| 1 each | Half precision (`cuda_fp16.h`), libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
 
 To run the programs yourself (they need git and network access):
 
@@ -308,6 +324,12 @@ compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --rep
   lanes of one warp. Each lane publishes its value and yields. When the last
   participating lane arrives, the results are computed for all of them and
   they continue.
+- **Cooperative groups → the same barriers.** A tile of up to 32 threads is
+  a warp function with the tile's lanes as its mask. A larger tile waits at a
+  barrier over its warps, released like `__syncthreads()`. A cooperative
+  launch runs every block at the same time, each on its own OS thread, so
+  `grid.sync()` is a `__syncthreads()` whose last thread waits for the other
+  blocks.
 - **Atomics → `std::atomic_ref`.** Thread blocks run in parallel on different
   cores, so atomics on global memory are real atomic operations. They are
   relaxed, as in CUDA.
@@ -418,14 +440,22 @@ errors in the context switch.
   segmentation fault.
 - **Warp functions approximate convergence.** cuda4cpu can't see which lanes
   are in the same branch. A warp function waits for every lane in its mask
-  that hasn't returned and isn't waiting at `__syncthreads()`. So
-  `__activemask()` returns those lanes, and lanes in different branches that
-  run warp functions at the same time must use disjoint masks, as CUDA
-  requires.
-- **Not implemented yet:** cooperative groups, textures and surfaces, CUDA
-  graphs, dynamic parallelism, half precision, `__match_*_sync` and
-  `__reduce_*_sync`, 16-bit atomics, 2D/3D copies (`cudaMemcpy2D`,
-  `cudaMallocPitch`), and the driver API. [Compatibility with real CUDA
+  that hasn't returned and isn't waiting at `__syncthreads()`. Lanes in
+  different branches that run warp functions at the same time must use
+  disjoint masks, as CUDA requires. `__activemask()` and `coalesced_threads()`
+  wait until every lane of the warp is blocked somewhere, and return the lanes
+  that called them from the same place. Lanes in another branch don't call
+  them from there, so they are left out. Lanes that reach that place in
+  different loop iterations may still be grouped together, unlike on a GPU.
+- **Cooperative launches are limited to one block per OS thread**
+  (`multiProcessorCount` blocks), because all their blocks must run at the
+  same time. Larger grids fail with `cudaErrorCooperativeLaunchTooLarge`, as
+  on a GPU, and `grid.sync()` in a kernel launched otherwise aborts with a
+  message.
+- **Not implemented yet:** textures and surfaces, CUDA graphs, dynamic
+  parallelism, half precision, `__reduce_*_sync`, `memcpy_async`, 16-bit
+  atomics, 2D/3D copies (`cudaMemcpy2D`, `cudaMallocPitch`), and the driver
+  API. [Compatibility with real CUDA
   code](#compatibility-with-real-cuda-code) shows which programs each one
   blocks.
 
