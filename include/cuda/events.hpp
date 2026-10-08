@@ -48,6 +48,13 @@ cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int /*flags*/)
     return cudaEventCreate(event);
 }
 
+//! The C++ overload of cuda_runtime.h
+static inline
+cudaError_t cudaEventCreate(cudaEvent_t *event, unsigned int flags)
+{
+    return cudaEventCreateWithFlags(event, flags);
+}
+
 static inline
 cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
@@ -70,12 +77,47 @@ cudaError_t cudaEventQuery(cudaEvent_t /* event */)
     return cudaSuccess;
 }
 
+}
+
+namespace detail {
+
+// Defined in the library, with the graphs
+cudaError_t capture_event_record(cudaEvent_t event, cudaStream_t stream);
+cudaError_t capture_wait_event(cudaStream_t stream, cudaEvent_t event);
+
+}
+
+inline namespace cuda_api {
+
+//! In a stream being captured, records which captured work the event follows,
+//! for the streams that wait for it
 static inline
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = nullptr)
 {
+    if (detail::capturing(stream))
+        return detail::capture_event_record(event, stream);
     event->tstamp = std::chrono::system_clock::now();
     event->stream = stream;
+    event->capture.reset();
+    event->capture_deps.clear();
 
+    return cudaSuccess;
+}
+
+static inline
+cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream = nullptr, unsigned int /* flags */ = 0)
+{
+    return cudaEventRecord(event, stream);
+}
+
+//! Work runs when it's issued, so a stream never has to wait for an event,
+//! except in stream capture: waiting for an event recorded in a stream being
+//! captured makes stream join that capture, after the event's work.
+static inline
+cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int /* flags */ = 0)
+{
+    if (event != nullptr && (event->capture || detail::capturing(stream)))
+        return detail::capture_wait_event(stream, event);
     return cudaSuccess;
 }
 

@@ -33,17 +33,34 @@ enum : unsigned int {
 
 using cudaHostFn_t = void (*)(void *userData);
 
+}
+
+namespace detail {
+
+// Defined in the library, with the graphs
+cudaError_t capture_host(cudaStream_t stream, cudaHostFn_t fn, void *userData);
+void abandon_capture(cudaStream_t stream);
+
+}
+
+inline namespace cuda_api {
+
 //! Runs fn in order with the work in stream, which has completed
 static inline
-cudaError_t cudaLaunchHostFunc(cudaStream_t /* stream */, cudaHostFn_t fn, void *userData)
+cudaError_t cudaLaunchHostFunc(cudaStream_t stream, cudaHostFn_t fn, void *userData)
 {
+    if (detail::capturing(stream))
+        return detail::capture_host(stream, fn, userData);
     fn(userData);
     return cudaSuccess;
 }
 
+//! Not allowed in stream capture, as in CUDA: use cudaLaunchHostFunc
 static inline
 cudaError_t cudaStreamAddCallback(cudaStream_t stream, cudaStreamCallback_t callback, void *userData, unsigned int /*flags*/)
 {
+    if (detail::capturing(stream))
+        return detail::record_error(cudaErrorStreamCaptureUnsupported);
     callback(stream, cudaSuccess, userData);
 
     return cudaSuccess;
@@ -74,6 +91,8 @@ cudaError_t cudaStreamCreateWithFlags(cudaStream_t *stream, unsigned int flags)
 static inline
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
+    if (detail::capturing(stream))
+        detail::abandon_capture(stream);
     delete stream;
 
     return cudaSuccess;
@@ -96,21 +115,17 @@ cudaError_t cudaStreamGetPriority(cudaStream_t stream, int *priority)
 }
 
 static inline
-cudaError_t cudaStreamQuery(cudaStream_t /* stream */)
+cudaError_t cudaStreamQuery(cudaStream_t stream)
 {
-    return cudaSuccess;
+    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported) : cudaSuccess;
 }
 
+//! Work runs when it's issued, so there is nothing to wait for. A stream being
+//! captured can't be synchronized, as in CUDA.
 static inline
-cudaError_t cudaStreamSynchronize(cudaStream_t /* stream */)
+cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
-    return cudaSuccess;
-}
-
-static inline
-cudaError_t cudaStreamWaitEvent(cudaStream_t /* stream */, cudaEvent_t /* event */, unsigned int /* flags */ = 0)
-{
-    return cudaSuccess;
+    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported) : cudaSuccess;
 }
 
 }

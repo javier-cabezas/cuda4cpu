@@ -88,6 +88,44 @@ class Launches(unittest.TestCase):
                      'obj.cudaLaunchKernel((void *)k);'):
             self.assertEqual(rewrite(text), text)
 
+    def test_kernel_address(self):
+        kernels = '__global__ void k(int *p) {}\ntemplate <typename T> __global__ void t(T x) {}\n'
+        def body(text):
+            return rewrite(kernels + text)[len(kernels):]
+        self.assertEqual(body('params.func = (void *)k;'), 'params.func = cuda4cpu::kernel_address(k);')
+        self.assertEqual(body('void *f = (const void*)&k;'), 'void *f = cuda4cpu::kernel_address(&k);')
+        self.assertEqual(body('p.func = (void *)t<float>;'), 'p.func = cuda4cpu::kernel_address(t<float>);')
+        self.assertEqual(body('p.func = reinterpret_cast<void *>(k);'), 'p.func = cuda4cpu::kernel_address(k);')
+        self.assertEqual(body('p.func = (void\n*)k;'), 'p.func = cuda4cpu::kernel_address(k)\n;')
+        # The first argument of a launch keeps its type instead
+        self.assertEqual(body('cudaLaunchKernel((void *)k, g, b, a);'), 'cudaLaunchKernel(k, g, b, a);')
+        # Data pointers and functions that aren't kernels are left alone
+        for text in ('memset((void *)p, 0, n);', 'f((void *)h);', '(void *)kk;'):
+            self.assertEqual(body(text), text)
+
+    def test_kernel_names(self):
+        found = set(rw.find_kernels(rw.lex(
+            'static __global__ void a() {}\n'
+            '__global__ void __launch_bounds__(256, 2) b(int) {}\n'
+            'extern "C" __global__ void c();\n'
+            'template <int N> __global__ void d() {}\n'
+            '__device__ void not_a_kernel() {}\n')))
+        self.assertEqual(found, {'a', 'b', 'c', 'd'})
+
+    def test_device_clock(self):
+        self.assertEqual(rewrite('__global__ void k(long *t) { *t = clock(); }'),
+                         '__global__ void k(long *t) { *t = cuda4cpu::device_clock(); }')
+        self.assertEqual(rewrite('__device__ __forceinline__ long f(int (*g)[2]) { return clock() + s.clock(); }'),
+                         '__device__ __forceinline__ long f(int (*g)[2]) { return cuda4cpu::device_clock() + s.clock(); }')
+        # Host code, and device variables, are left alone
+        for text in ('int main() { return clock(); }', '__device__ int x = 0; long t = clock();',
+                     '__host__ void h() { std::clock(); }'):
+            self.assertEqual(rewrite(text), text)
+
+    def test_dim_fields(self):
+        self.assertEqual(rewrite('p.gridDim = g; q->blockDim.x = 1; n = gridDim.x * blockDim.x;'),
+                         'p.cuda4cpu_gridDim = g; q->cuda4cpu_blockDim.x = 1; n = gridDim.x * blockDim.x;')
+
     def test_spaces_between_brackets(self):
         self.assertEqual(rewrite('k << < g, b >> > (x);'), launch('k', ' g, b ', 'x') + ';')
 
@@ -168,7 +206,8 @@ class Headers(unittest.TestCase):
             src = os.path.join(tmp, 'src')
             os.makedirs(os.path.join(src, 'sub'))
             with open(os.path.join(src, 'main.cu'), 'w') as f:
-                f.write('#include "sub/a.cuh"\n#include <vector>\n#include "missing.h"\nint main() {}\n')
+                f.write('#include "sub/a.cuh"\n#include <vector>\n#include "missing.h"\n'
+                        'int main() { void *f = (void *)k; }\n')
             with open(os.path.join(src, 'sub', 'a.cuh'), 'w') as f:
                 f.write('#include "b.cuh"\nvoid a() { k<<<1, 1>>>(); }\n')
             with open(os.path.join(src, 'sub', 'b.cuh'), 'w') as f:
@@ -186,6 +225,7 @@ class Headers(unittest.TestCase):
             self.assertIn(f'#include "{shadow_a}"', main)
             self.assertIn('#include <vector>', main)
             self.assertIn('#include "missing.h"', main)       # not found locally: left alone
+            self.assertIn('cuda4cpu::kernel_address(k)', main)   # k is a kernel of b.cuh
             with open(shadow_a) as f:
                 a = f.read()
             self.assertIn(f'#include "{shadow_b}"', a)

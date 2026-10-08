@@ -53,7 +53,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   global scope, so helpers go in `cuda4cpu::detail`, never in `cuda_api`.
   Most functions are header-only. Device properties and aligned allocation
   are in the library.
-- `lib/cuda4cpu.cpp`: the only compiled source. It holds all the fiber code
+- `include/cuda/graphs.hpp` + `lib/graphs.cpp`: CUDA graphs and stream
+  capture. The API is declared in the header and defined in the library,
+  except what needs a kernel's type: `detail::bound_kernel` (a kernel with
+  copies of its arguments, which a kernel node runs), the capture of launches
+  and `kernel_address()`, all in `launch.hpp`. Async functions in `memory.hpp`,
+  `streams.hpp` and `events.hpp` check `detail::capturing(stream)` and call
+  the `detail::capture_*` functions of the library.
+- `include/nvtx3/nvToolsExt.h` (and `nvToolsExt.h`): NVTX stand-ins that do
+  nothing.
+- `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
   fiber cache) and `system` (topology via OpenMP plus optional libnuma).
@@ -62,8 +71,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   always built with `-g` so that gdb knows that variable's type.
 - `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
   `extern __shared__ T x[];` in a `.cu` file and in the local headers it
-  includes, and drops a `(void *)` cast on the kernel passed to
-  `cudaLaunchKernel`/`cudaLaunchCooperativeKernel` (cuda4cpu needs its type).
+  includes. It also:
+  - drops a `(void *)` cast on the kernel passed to
+    `cudaLaunchKernel`/`cudaLaunchCooperativeKernel`
+  - turns `(void *)kernel` elsewhere into `cuda4cpu::kernel_address(kernel)`,
+    for the `__global__` functions it has seen (`find_kernels`)
+  - turns `.gridDim`/`->gridDim` (and `blockDim`) into `cuda4cpu_gridDim`,
+    the name of the `cudaKernelNodeParams` fields
+  - turns `clock()` inside `__global__`/`__device__` bodies into
+    `cuda4cpu::device_clock()`
+
   The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does. It
   uses Python 3, standard library only.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
@@ -94,6 +111,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()`
   - `atomics`: every atomic function, racing across blocks
+  - `graphs` (`graphs.cu`, through the rewriter): stream capture with fork
+    and join, explicit graphs with every node type, `cudaGraphExecUpdate`,
+    conditional nodes, graph memory (reallocated at the same address after
+    `cudaFree`), 2D/3D copies and the device clock
   - `cooperative_groups`: every group type and operation, including partial
     warps and tiles, tiles of several warps that sync independently,
     `coalesced_threads()` in a branch (warp-aggregated atomics), and
@@ -256,6 +277,26 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `extern "C" inline` at global scope, which completes those declarations.
   Defining them in a namespace instead would make unqualified calls ambiguous.
   The same applies to `rsqrtf` with glibc 2.41+.
+- `gridDim` and `blockDim` are object-like macros, so any struct field with
+  those names breaks. CUDA's `cudaKernelNodeParams` has them: ours are named
+  `cuda4cpu_gridDim`/`cuda4cpu_blockDim`, and the rewriter renames member
+  accesses. Name new fields like that if a CUDA struct needs them
+  (`cudaLaunchConfig_t` does).
+- Kernel nodes and `cudaLaunchKernel(const void *)` find a kernel's binder in
+  a registry keyed by address, filled by `kernel_address()`. Launches of a
+  typed function pointer don't need it.
+- Graph allocations are `mmap(PROT_NONE)` ranges, committed with `mprotect`
+  while allocated (`graph_allocation`). So `cudaFree`, `cudaFreeHost` and
+  `cudaFreeAsync` go through `detail::free_memory` in the library, which
+  checks the registry (skipped while there are no graph allocations) before
+  `std::free`.
+- An executable graph copies its nodes (kernels are shared `bound_kernel`s),
+  so the graph can be destroyed right after instantiation, as CUDA allows.
+  `exec_node::origin` keeps the graph node pointer only as a key for
+  `cudaGraphExec*NodeSetParams` and updates; it may dangle.
+- `clock()` can't be overloaded (it's the C function, and `std::clock` must
+  keep working), so the rewriter replaces device calls. `clock64()` and
+  `device_clock()` count at `clockRate`, from `steady_clock`.
 - Allocations go through `detail::allocate_aligned` in the library. When
   inline, GCC may elide an allocation whose result is never dereferenced,
   and treat it as successful.

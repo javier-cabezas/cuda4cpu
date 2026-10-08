@@ -71,14 +71,24 @@ const char *cudaGetErrorName(cudaError_t error)
     case cudaErrorInvalidSymbol:          return "cudaErrorInvalidSymbol";
     case cudaErrorInvalidDevicePointer:   return "cudaErrorInvalidDevicePointer";
     case cudaErrorInvalidMemcpyDirection: return "cudaErrorInvalidMemcpyDirection";
+    case cudaErrorInvalidDeviceFunction: return "cudaErrorInvalidDeviceFunction";
     case cudaErrorNoDevice:               return "cudaErrorNoDevice";
     case cudaErrorInvalidDevice:          return "cudaErrorInvalidDevice";
     case cudaErrorInvalidResourceHandle:  return "cudaErrorInvalidResourceHandle";
+    case cudaErrorIllegalState: return "cudaErrorIllegalState";
     case cudaErrorNotReady:               return "cudaErrorNotReady";
     case cudaErrorAssert:                 return "cudaErrorAssert";
     case cudaErrorLaunchFailure:          return "cudaErrorLaunchFailure";
     case cudaErrorCooperativeLaunchTooLarge: return "cudaErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:           return "cudaErrorNotSupported";
+    case cudaErrorStreamCaptureUnsupported: return "cudaErrorStreamCaptureUnsupported";
+    case cudaErrorStreamCaptureInvalidated: return "cudaErrorStreamCaptureInvalidated";
+    case cudaErrorStreamCaptureMerge: return "cudaErrorStreamCaptureMerge";
+    case cudaErrorStreamCaptureUnmatched: return "cudaErrorStreamCaptureUnmatched";
+    case cudaErrorStreamCaptureUnjoined: return "cudaErrorStreamCaptureUnjoined";
+    case cudaErrorStreamCaptureIsolation: return "cudaErrorStreamCaptureIsolation";
+    case cudaErrorStreamCaptureImplicit: return "cudaErrorStreamCaptureImplicit";
+    case cudaErrorGraphExecUpdateFailure: return "cudaErrorGraphExecUpdateFailure";
     case cudaErrorUnknown:                return "cudaErrorUnknown";
     }
     return "unrecognized error code";
@@ -96,15 +106,35 @@ const char *cudaGetErrorString(cudaError_t error)
     case cudaErrorInvalidSymbol:          return "invalid device symbol";
     case cudaErrorInvalidDevicePointer:   return "invalid device pointer";
     case cudaErrorInvalidMemcpyDirection: return "invalid copy direction for memcpy";
+    case cudaErrorInvalidDeviceFunction:
+        return "invalid device function";
     case cudaErrorNoDevice:               return "no CUDA-capable device is detected";
     case cudaErrorInvalidDevice:          return "invalid device ordinal";
     case cudaErrorInvalidResourceHandle:  return "invalid resource handle";
+    case cudaErrorIllegalState:
+        return "the operation cannot be performed in the present state";
     case cudaErrorNotReady:               return "device not ready";
     case cudaErrorAssert:                 return "device-side assert triggered";
     case cudaErrorLaunchFailure:          return "unspecified launch failure";
     case cudaErrorCooperativeLaunchTooLarge:
         return "too many blocks in cooperative launch";
     case cudaErrorNotSupported:           return "operation not supported";
+    case cudaErrorStreamCaptureUnsupported:
+        return "operation not permitted when stream is capturing";
+    case cudaErrorStreamCaptureInvalidated:
+        return "operation failed due to a previous error during capture";
+    case cudaErrorStreamCaptureMerge:
+        return "operation would result in a merge of separate capture sequences";
+    case cudaErrorStreamCaptureUnmatched:
+        return "capture was not ended in the same stream as it began";
+    case cudaErrorStreamCaptureUnjoined:
+        return "capturing stream has unjoined work";
+    case cudaErrorStreamCaptureIsolation:
+        return "dependency created on uncaptured work in another stream";
+    case cudaErrorStreamCaptureImplicit:
+        return "operation would make the legacy stream depend on a capturing blocking stream";
+    case cudaErrorGraphExecUpdateFailure:
+        return "the graph update was not performed because it included changes which violated constraints specific to instantiated graph update";
     case cudaErrorUnknown:                return "unknown error";
     }
     return "unrecognized error code";

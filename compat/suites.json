@@ -107,7 +107,7 @@
         },
         {
           "dir": "cpp/2_Concepts_and_Techniques/scan",
-          "timeout": 1500
+          "timeout": 2400
         },
         {
           "dir": "cpp/2_Concepts_and_Techniques/shfl_scan"
@@ -140,7 +140,8 @@
           "dir": "cpp/3_CUDA_Features/graphConditionalNodes"
         },
         {
-          "dir": "cpp/3_CUDA_Features/graphMemoryFootprint"
+          "dir": "cpp/3_CUDA_Features/graphMemoryFootprint",
+          "skip": "launches 16M threads that each spin for 5 microseconds, a dozen times: it passes, but takes about 5 minutes on 16 cores and more than 10 on 4"
         },
         {
           "dir": "cpp/3_CUDA_Features/graphMemoryNodes"

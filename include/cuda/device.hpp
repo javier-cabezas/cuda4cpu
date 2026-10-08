@@ -22,6 +22,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <ctime>
+#include <thread>
 #include <cstddef>
 
 #include "error.hpp"
@@ -588,6 +591,36 @@ cudaError_t cudaDeviceGetLimit(size_t *value, cudaLimit limit)
     return cudaSuccess;
 }
 
+//
+// Device clocks. They count at the device's clockRate, so that kernels that
+// wait for a number of cycles computed from it wait that long.
+//
+
+//! Cycles of the device's clock (clockRate kHz) since an arbitrary point
+inline long long clock64()
+{
+    static const double cycles_per_ns = [] {
+        cudaDeviceProp prop;
+        detail::get_device_properties(prop);
+        return prop.clockRate / 1e6;
+    }();
+    const auto ns = std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1);
+    return static_cast<long long>(static_cast<double>(ns) * cycles_per_ns);
+}
+
+inline void __nanosleep(unsigned int ns)
+{
+    std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+}
+
+}
+
+//! CUDA's device clock(), which cuda4cpu-rewrite calls for clock() in
+//! __global__ and __device__ functions: the C library's clock() measures
+//! processor time instead
+inline clock_t device_clock()
+{
+    return static_cast<clock_t>(clock64());
 }
 
 }

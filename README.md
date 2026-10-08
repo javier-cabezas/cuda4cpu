@@ -182,10 +182,21 @@ apply, as in CUDA. Because the compiler knows which kernel each launch runs, it
 can inline it. Line numbers are preserved, and diagnostics and `__FILE__` refer
 to the original file.
 
-The rewriter also drops a `(void *)` cast on the kernel passed to
-`cudaLaunchKernel` or `cudaLaunchCooperativeKernel`, because cuda4cpu needs the
-kernel's parameter types to unpack the argument array. It defines `__CUDACC__`,
-as nvcc does, so code that checks for a CUDA compiler takes the CUDA branch.
+The rewriter also handles a few things that only nvcc understands:
+
+- **`(void *)kernel`** becomes `cuda4cpu::kernel_address(kernel)` for any
+  `__global__` function of the file or its local headers. It records the
+  kernel's parameter types, which graph kernel nodes and `cudaLaunchKernel`
+  need to unpack an argument array. The kernel passed to `cudaLaunchKernel`
+  just loses the cast.
+- **`params.gridDim` and `params.blockDim`** become `params.cuda4cpu_gridDim`
+  and `params.cuda4cpu_blockDim`. `gridDim` and `blockDim` are macros for the
+  built-in variables, so the fields of `cudaKernelNodeParams` have other names.
+- **`clock()` in `__global__` and `__device__` functions** becomes the device
+  clock, which counts at the reported `clockRate`, like `clock64()`. On the
+  host, `clock()` stays the C library's.
+- **`__CUDACC__`** is defined, as nvcc does, so code that checks for a CUDA
+  compiler takes the CUDA branch.
 
 C++ code can also use the API directly, without the rewriter:
 `cuda4cpu::launch(kernel, grid, block[, smem]).call(args...)` and
@@ -247,6 +258,9 @@ your kernels use it.
 - Scoped atomics (`atomicAdd_block`, `atomicCAS_system`, ...), which behave
   like the device-scope ones
 - `__grid_constant__`, `__align__`, `__managed__`
+- `clock()`, `clock64()` and `__nanosleep()`. The clocks count at the
+  device's `clockRate`, so that kernels that wait for a number of cycles wait
+  that long.
 
 **Runtime API**
 
@@ -255,10 +269,13 @@ your kernels use it.
 | Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes |
 | Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaSetDeviceFlags`, `cudaGetDeviceFlags`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only), `cudaDeviceGetStreamPriorityRange`, `cudaDeviceCanAccessPeer`, and the deprecated `cudaThreadSynchronize` and `cudaThreadExit` |
 | Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
+| 2D and 3D memory | `cudaMallocPitch`, `cudaMalloc3D`, `cudaMemcpy2D`, `cudaMemcpy2DAsync`, `cudaMemcpy3D`, `cudaMemcpy3DAsync`, `cudaMemset2D`, `cudaMemset2DAsync`, `cudaMemset3D`, `cudaMemcpyToSymbolAsync`, `cudaMemcpyFromSymbolAsync`; CUDA arrays aren't implemented |
 | More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc` |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
-| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h` |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
+| Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
+| Stream capture | `cudaStreamBeginCapture`, `cudaStreamBeginCaptureToGraph`, `cudaStreamEndCapture`, `cudaStreamIsCapturing`, `cudaStreamGetCaptureInfo`, `cudaStreamUpdateCaptureDependencies`, and fork and join through events. Kernel launches, async copies and memsets, `cudaLaunchHostFunc`, `cudaMallocAsync` and `cudaFreeAsync` are captured. |
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
 
@@ -280,7 +297,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 39 of 61 (1 more waives itself, 1 is skipped as too slow) | 20 |
+| cuda-samples | 42 of 61 (1 more waives itself, and 2 are skipped as too slow) | 16 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 
 Most of what's missing is a few features:
@@ -288,9 +305,8 @@ Most of what's missing is a few features:
 | Programs | Missing |
 |---|---|
 | 9 | Textures and surfaces |
-| 5 | CUDA graphs (one also uses NVTX) |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
-| 1 each | Half precision (`cuda_fp16.h`), libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
+| 1 each | Half precision (`cuda_fp16.h`), libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, inline PTX, OpenGL |
 
 To run the programs yourself (they need git and network access):
 
@@ -338,6 +354,13 @@ compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --rep
   memory.
 - **Device memory is host memory.** `cudaMalloc` is `malloc`, `cudaMemcpy` is
   `memcpy`, and streams and events run synchronously.
+- **Graphs run their nodes in order.** An instantiated graph is a snapshot of
+  its nodes in an order that respects their dependencies, and launching it
+  runs them one after the other. A stream being captured adds each operation
+  as a node that depends on the stream's previous work. Events carry those
+  dependencies to other streams, which builds the same graph as CUDA. Graph
+  allocations reserve their address range when the node is added, and are
+  committed while allocated, so using them after they are freed faults.
 
 ## Debugging
 
@@ -452,10 +475,16 @@ errors in the context switch.
   same time. Larger grids fail with `cudaErrorCooperativeLaunchTooLarge`, as
   on a GPU, and `grid.sync()` in a kernel launched otherwise aborts with a
   message.
-- **Not implemented yet:** textures and surfaces, CUDA graphs, dynamic
-  parallelism, half precision, `__reduce_*_sync`, `memcpy_async`, 16-bit
-  atomics, 2D/3D copies (`cudaMemcpy2D`, `cudaMallocPitch`), and the driver
-  API. [Compatibility with real CUDA
+- **Graph kernel nodes need the kernel's type.** The `void *` in
+  `cudaKernelNodeParams::func` must come from `cuda4cpu::kernel_address`.
+  The rewriter inserts it for `(void *)kernel`. A kernel known only by an
+  address taken elsewhere fails with `cudaErrorInvalidDeviceFunction`. Code
+  that doesn't go through the rewriter names the dimension fields
+  `cuda4cpu_gridDim` and `cuda4cpu_blockDim`. Graphs can't be launched into a
+  stream being captured.
+- **Not implemented yet:** textures and surfaces, dynamic parallelism, half
+  precision, `__reduce_*_sync`, `memcpy_async`, 16-bit atomics, inline PTX,
+  and the driver API. [Compatibility with real CUDA
   code](#compatibility-with-real-cuda-code) shows which programs each one
   blocks.
 
