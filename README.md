@@ -297,7 +297,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 43 of 61 (1 more waives itself, 1 is skipped as too slow) | 16 |
+| cuda-samples | 42 of 61 (1 more waives itself, and 2 are skipped as too slow) | 16 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 
 Most of what's missing is a few features:

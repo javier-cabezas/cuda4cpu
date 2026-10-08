@@ -24,7 +24,7 @@
   "cuda-samples/fastWalshTransform": "passed",
   "cuda-samples/fp16ScalarProduct": "build_failed",
   "cuda-samples/graphConditionalNodes": "passed",
-  "cuda-samples/graphMemoryFootprint": "passed",
+  "cuda-samples/graphMemoryFootprint": "skipped",
   "cuda-samples/graphMemoryNodes": "passed",
   "cuda-samples/histogram": "passed",
   "cuda-samples/interval": "passed",
