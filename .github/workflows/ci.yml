@@ -111,7 +111,7 @@ jobs:
       - name: Test under Valgrind
         working-directory: build/debug/tests
         run: |
-          for test in barriers warp atomics launch runtime cooperative_groups rewrite_features sample_vector_add sample_softmax; do
+          for test in barriers warp atomics launch runtime cooperative_groups graphs rewrite_features sample_vector_add sample_softmax; do
             echo "::group::$test"
             OMP_NUM_THREADS=2 valgrind -q --error-exitcode=1 ./$test
             echo "::endgroup::"

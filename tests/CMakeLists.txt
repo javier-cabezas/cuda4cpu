@@ -54,6 +54,13 @@ foreach(sample IN ITEMS async_api device_query histogram managed_add matmul nbod
     add_test(NAME sample_${sample} COMMAND sample_${sample})
 endforeach()
 
+# CUDA graphs: capture, explicit graphs, conditionals and graph memory. A .cu
+# file, so that (void *)kernel and params.gridDim go through the rewriter.
+add_executable(graphs)
+set_target_properties(graphs PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(graphs graphs.cu)
+add_test(NAME graphs COMMAND graphs)
+
 # Every launch form and extern __shared__ placement, checked at run time
 add_executable(rewrite_features)
 set_target_properties(rewrite_features PROPERTIES CXX_EXTENSIONS OFF)
