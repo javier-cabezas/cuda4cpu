@@ -67,6 +67,17 @@ set_target_properties(rewrite_features PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(rewrite_features rewrite/features.cu)
 add_test(NAME rewrite_features COMMAND rewrite_features)
 
+# HIP programs, through HIP's headers and names only: the runtime API, the
+# kernel language, and hipLaunchKernelGGL as a function template in a .cpp
+# file, which cuda4cpu_add_hip_sources compiles as HIP whatever its extension
+foreach(source IN ITEMS hip/runtime.hip hip/kernels.hip hip/template_launch.cpp)
+    cmake_path(GET source STEM stem)
+    add_executable(hip_${stem})
+    set_target_properties(hip_${stem} PROPERTIES CXX_EXTENSIONS OFF)
+    cuda4cpu_add_hip_sources(hip_${stem} ${source})
+    add_test(NAME hip_${stem} COMMAND hip_${stem})
+endforeach()
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/test_rewrite.py
@@ -79,6 +90,22 @@ add_test(NAME driver
                  -DWORK=${CMAKE_CURRENT_BINARY_DIR}/driver
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
 set_tests_properties(driver PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
+
+# cuda4cpu-hipcc compiles a .cpp file as HIP, and drops options for AMD GPUs;
+# cuda4cpu-c++ does with -x hip
+add_test(NAME driver_hipcc
+         COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-hipcc
+                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/hip/template_launch.cpp
+                 -DFLAGS=--offload-arch=gfx90a|-fgpu-rdc
+                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/driver_hipcc
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
+add_test(NAME driver_x_hip
+         COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++
+                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/hip/template_launch.cpp
+                 -DFLAGS=-x|hip
+                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/driver_x_hip
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
+set_tests_properties(driver_hipcc driver_x_hip PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
 
 # Passing the address of a symbol to cudaMemcpyToSymbol, which cuda4cpu
 # accepted before it took symbols by name as CUDA does, must not compile

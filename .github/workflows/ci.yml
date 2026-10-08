@@ -65,7 +65,7 @@ jobs:
           ctest --preset debug
 
   # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
-  # test suite must run clean. (The driver test builds a program without the
+  # test suite must run clean. (The driver tests build programs without the
   # sanitizer flags against the instrumented library.)
   sanitizers:
     name: gcc-14 / AddressSanitizer and UBSan
@@ -86,7 +86,7 @@ jobs:
         run: |
           cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           cmake --build --preset debug
-          ctest --preset debug -E '^driver$'
+          ctest --preset debug -E '^driver'
 
   # With CUDA4CPU_ENABLE_VALGRIND, the fiber stacks are registered with
   # Valgrind, which must report no errors. The slowest tests are left out.
@@ -111,17 +111,18 @@ jobs:
       - name: Test under Valgrind
         working-directory: build/debug/tests
         run: |
-          for test in barriers warp atomics launch runtime cooperative_groups graphs rewrite_features sample_vector_add sample_softmax; do
+          for test in barriers warp atomics launch runtime cooperative_groups graphs rewrite_features sample_vector_add sample_softmax hip_kernels; do
             echo "::group::$test"
             OMP_NUM_THREADS=2 valgrind -q --error-exitcode=1 ./$test
             echo "::endgroup::"
           done
 
-  # Real CUDA programs, unmodified: a curated set of NVIDIA's cuda-samples and
-  # Rodinia, fetched at the revisions in compat/suites.json. Fails if a program
-  # that passes in compat/baseline.json stops passing.
+  # Real CUDA and HIP programs, unmodified: a curated set of NVIDIA's
+  # cuda-samples, Rodinia and AMD's rocm-examples, fetched at the revisions in
+  # compat/suites.json. Fails if a program that passes in compat/baseline.json
+  # stops passing.
   compatibility:
-    name: gcc-14 / CUDA programs (cuda-samples, Rodinia)
+    name: gcc-14 / CUDA and HIP programs (cuda-samples, Rodinia, rocm-examples)
     runs-on: ubuntu-24.04
     env:
       CXX: g++-14

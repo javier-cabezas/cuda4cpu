@@ -18,11 +18,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Builds and runs real CUDA programs, unmodified, with cuda4cpu.
+"""Builds and runs real CUDA and HIP programs, unmodified, with cuda4cpu.
 
-The programs come from public suites (NVIDIA's cuda-samples, Rodinia), fetched
-at the revisions pinned in suites.json. Each program is compiled with
-cuda4cpu-c++ (C files with the C compiler), run, and classified:
+The programs come from public suites (NVIDIA's cuda-samples, Rodinia, AMD's
+rocm-examples), fetched at the revisions pinned in suites.json. Each program
+is compiled with cuda4cpu-c++, or with cuda4cpu-hipcc for suites whose
+"driver" is "hipcc" (C files with the C compiler), run, and classified:
 
     passed        exit code 0, the expected output if the manifest gives one
                   ("expect"), and none of the output it rejects ("reject")
@@ -85,8 +86,9 @@ def first_error(text):
     return lines[-1][:200] if lines else ''
 
 
-def build(program, source_dir, work_dir, driver, cc):
+def build(program, source_dir, work_dir, drivers, cc):
     """Compiles and links program; returns (ok, log)."""
+    driver = drivers[program.get('driver', 'c++')]
     directory = os.path.join(source_dir, program['dir'])
     out = os.path.join(work_dir, 'build', program['suite'], program['name'])
     shutil.rmtree(out, ignore_errors=True)
@@ -151,11 +153,11 @@ def run_program(program, source_dir, work_dir, timeout):
     return 'passed', elapsed, output
 
 
-def evaluate(program, source_dir, work_dir, driver, cc, timeout):
+def evaluate(program, source_dir, work_dir, drivers, cc, timeout):
     if program.get('skip'):
         return {'status': 'skipped', 'detail': program['skip']}
     start = time.monotonic()
-    ok, log = build(program, source_dir, work_dir, driver, cc)
+    ok, log = build(program, source_dir, work_dir, drivers, cc)
     build_time = time.monotonic() - start
     if not ok:
         return {'status': 'build_failed', 'build_time': build_time, 'detail': first_error(log)}
@@ -203,6 +205,7 @@ def markdown(results, programs, regressions, new_passes):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--driver', required=True, help='path to cuda4cpu-c++')
+    parser.add_argument('--hipcc', help='path to cuda4cpu-hipcc (default: next to --driver)')
     parser.add_argument('--cc', default=os.environ.get('CC', 'cc'), help='C compiler for .c files')
     parser.add_argument('--work', required=True, help='directory for the suites and the builds')
     parser.add_argument('--manifest', default=os.path.join(HERE, 'suites.json'))
@@ -216,6 +219,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     driver = os.path.abspath(args.driver)
+    drivers = {'c++': driver,
+               'hipcc': os.path.abspath(args.hipcc or os.path.join(os.path.dirname(driver), 'cuda4cpu-hipcc'))}
     manifest, programs = load_manifest(args.manifest)
     programs = [p for p in programs if fnmatch.fnmatch(f'{p["suite"]}/{p["name"]}', args.filter)]
 
@@ -230,7 +235,7 @@ def main(argv=None):
     order = sorted(programs, key=lambda p: -p.get('timeout', args.timeout))
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(evaluate, p, sources[p['suite']], args.work, driver, args.cc, args.timeout):
+        futures = {pool.submit(evaluate, p, sources[p['suite']], args.work, drivers, args.cc, args.timeout):
                    f'{p["suite"]}/{p["name"]}' for p in order}
         for future in concurrent.futures.as_completed(futures):
             key = futures[future]
@@ -256,8 +261,17 @@ def main(argv=None):
         with open(args.json, 'w') as f:
             json.dump(results, f, indent=2, sort_keys=True)
     if args.update_baseline and args.baseline:
+        # Programs that didn't run (--filter) keep their status, if they are
+        # still in the manifest
+        _, every_program = load_manifest(args.manifest)
+        known = {f'{p["suite"]}/{p["name"]}' for p in every_program}
+        statuses = {}
+        if os.path.exists(args.baseline):
+            with open(args.baseline) as f:
+                statuses = {k: v for k, v in json.load(f).items() if k in known}
+        statuses.update({k: r['status'] for k, r in results.items()})
         with open(args.baseline, 'w') as f:
-            json.dump({k: results[k]['status'] for k in sorted(results)}, f, indent=2)
+            json.dump(dict(sorted(statuses.items())), f, indent=2)
             f.write('\n')
 
     passed = sum(1 for r in results.values() if r['status'] == 'passed')

@@ -22,6 +22,12 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/vector_functions.h
             ${CUDA4CPU_INCLUDE_DIR}/vector_types.h
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_common.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_cooperative_groups.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime_api.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_vector_types.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_version.h
             ${CUDA4CPU_INCLUDE_DIR}/launch.hpp
             ${CUDA4CPU_INCLUDE_DIR}/warp.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/atomics.hpp

@@ -22,14 +22,20 @@
 
 #include "types.hpp"
 
+// Stream flags, which are macros as in CUDA: code passes cudaStreamDefault
+// where a stream goes, which needs a null pointer constant
+#define cudaStreamDefault     0x00
+#define cudaStreamNonBlocking 0x01
+
+//! The default stream of the calling thread. Work runs when it's issued, so
+//! it differs from the legacy default stream (cudaStreamLegacy, the null
+//! stream) only in stream capture, which works on it as on other streams.
+#define cudaStreamPerThread (::cuda4cpu::detail::per_thread_stream())
+#define cudaStreamLegacy    (static_cast<::cuda4cpu::cudaStream_t>(nullptr))
+
 namespace cuda4cpu {
 
 inline namespace cuda_api {
-
-enum : unsigned int {
-    cudaStreamDefault     = 0x00,
-    cudaStreamNonBlocking = 0x01
-};
 
 using cudaHostFn_t = void (*)(void *userData);
 
@@ -40,6 +46,13 @@ namespace detail {
 // Defined in the library, with the graphs
 cudaError_t capture_host(cudaStream_t stream, cudaHostFn_t fn, void *userData);
 void abandon_capture(cudaStream_t stream);
+
+//! The stream that cudaStreamPerThread names: one per OS thread
+inline cudaStream_t per_thread_stream()
+{
+    static thread_local cudaStream__ stream{};
+    return &stream;
+}
 
 }
 
@@ -91,6 +104,8 @@ cudaError_t cudaStreamCreateWithFlags(cudaStream_t *stream, unsigned int flags)
 static inline
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
+    if (stream == detail::per_thread_stream())
+        return detail::record_error(cudaErrorInvalidResourceHandle);
     if (detail::capturing(stream))
         detail::abandon_capture(stream);
     delete stream;

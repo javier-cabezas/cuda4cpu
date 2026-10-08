@@ -43,15 +43,27 @@ include(CMakePackageConfigHelpers)
 
 set(CUDA4CPU_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/cuda4cpu)
 
-# The cuda4cpu-c++ compiler driver, configured for the build tree and, with
-# paths relative to its own directory, for the installation
+# The compiler drivers, configured for the build tree and, with paths relative
+# to their own directory, for the installation: cuda4cpu-c++, and
+# cuda4cpu-hipcc, which compiles every C++ source as HIP, as hipcc does
 set(driver_permissions OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
                        WORLD_READ WORLD_EXECUTE)
+
+function(cuda4cpu_configure_drivers directory)
+    foreach(driver IN ITEMS c++ hipcc)
+        set(CUDA4CPU_DRIVER_MODE "")
+        if(driver STREQUAL "hipcc")
+            set(CUDA4CPU_DRIVER_MODE "hip")
+        endif()
+        configure_file(tools/cuda4cpu-c++.in ${directory}/cuda4cpu-${driver} @ONLY
+                       FILE_PERMISSIONS ${driver_permissions})
+    endforeach()
+endfunction()
 
 set(CUDA4CPU_DRIVER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
 set(CUDA4CPU_DRIVER_LIBRARY_DIR "${PROJECT_BINARY_DIR}/lib")
 set(CUDA4CPU_DRIVER_REWRITE "${PROJECT_SOURCE_DIR}/tools/cuda4cpu-rewrite")
-configure_file(tools/cuda4cpu-c++.in tools/cuda4cpu-c++ @ONLY FILE_PERMISSIONS ${driver_permissions})
+cuda4cpu_configure_drivers(tools)
 
 cmake_path(RELATIVE_PATH CMAKE_INSTALL_FULL_INCLUDEDIR BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
            OUTPUT_VARIABLE CUDA4CPU_DRIVER_INCLUDE_DIR)
@@ -59,9 +71,10 @@ string(APPEND CUDA4CPU_DRIVER_INCLUDE_DIR "/cuda4cpu")
 cmake_path(RELATIVE_PATH CMAKE_INSTALL_FULL_LIBDIR BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
            OUTPUT_VARIABLE CUDA4CPU_DRIVER_LIBRARY_DIR)
 set(CUDA4CPU_DRIVER_REWRITE "cuda4cpu-rewrite")
-configure_file(tools/cuda4cpu-c++.in install/cuda4cpu-c++ @ONLY FILE_PERMISSIONS ${driver_permissions})
+cuda4cpu_configure_drivers(install)
 
 install(PROGRAMS tools/cuda4cpu-rewrite "${PROJECT_BINARY_DIR}/install/cuda4cpu-c++"
+                 "${PROJECT_BINARY_DIR}/install/cuda4cpu-hipcc"
         DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES tools/cuda4cpu-gdb.py DESTINATION ${CMAKE_INSTALL_DATADIR}/cuda4cpu)
 

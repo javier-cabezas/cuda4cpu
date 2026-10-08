@@ -83,6 +83,11 @@ class Launches(unittest.TestCase):
                          'cudaLaunchKernel((&k), g, b, a);')
         self.assertEqual(rewrite('cudaLaunchKernel((void\n*)k, g, b, a);'),
                          'cudaLaunchKernel(\nk, g, b, a);')
+        # HIP's names
+        self.assertEqual(rewrite('hipLaunchKernel(reinterpret_cast<const void *>(&k), g, b, a, 0, s);'),
+                         'hipLaunchKernel((&k), g, b, a, 0, s);')
+        self.assertEqual(rewrite('hipLaunchCooperativeKernel((void *)k, g, b, a);'),
+                         'hipLaunchCooperativeKernel(k, g, b, a);')
         # Other calls, and casts elsewhere, are untouched
         for text in ('f((void *)k);', 'cudaLaunchKernel(k, g, b, (void *)a);',
                      'obj.cudaLaunchKernel((void *)k);'):
@@ -185,6 +190,36 @@ class ExternShared(unittest.TestCase):
         text = 'extern int x; extern "C" void f(); extern __device__ int y[];'
         self.assertEqual(rewrite(text), text)
 
+    def test_multiline_keeps_line_count(self):
+        self.assertEqual(rewrite('void k() { extern __shared__\n float s[]; }'),
+                         'void k() { float *s = cuda4cpu::dynamic_shared<float>();\n }')
+
+
+class HipDynamicShared(unittest.TestCase):
+    def test_function_scope(self):
+        # HIP's macro includes the semicolon, so the one written after it is extra
+        self.assertEqual(rewrite('void k() { HIP_DYNAMIC_SHARED(float, s); }'),
+                         'void k() { float *s = cuda4cpu::dynamic_shared<float>();; }')
+        self.assertEqual(rewrite('void k() { HIP_DYNAMIC_SHARED(float, s) }'),
+                         'void k() { float *s = cuda4cpu::dynamic_shared<float>(); }')
+
+    def test_type_with_commas(self):
+        self.assertEqual(rewrite('void k() { HIP_DYNAMIC_SHARED(std::pair<int, float>, s); }'),
+                         'void k() { std::pair<int, float> *s = cuda4cpu::dynamic_shared<std::pair<int, float>>();; }')
+
+    def test_namespace_scope(self):
+        self.assertEqual(rewrite('HIP_DYNAMIC_SHARED(int, s)'),
+                         'static cuda4cpu::dynamic_shared_array<int> s;')
+
+    def test_macro_definition_untouched(self):
+        for text in ('#define HIP_DYNAMIC_SHARED(type, var) var', '#ifdef HIP_DYNAMIC_SHARED\n#endif'):
+            self.assertEqual(rewrite(text), text)
+
+    def test_malformed(self):
+        for text in ('void k() { HIP_DYNAMIC_SHARED(float); }', 'void k() { HIP_DYNAMIC_SHARED(float, s[4]); }'):
+            with self.assertRaises(rw.RewriteError):
+                rewrite(text)
+
 
 class Errors(unittest.TestCase):
     def test_launch_without_arguments(self):
@@ -219,7 +254,7 @@ class Headers(unittest.TestCase):
 
             with open(out) as f:
                 main = f.read()
-            self.assertTrue(main.startswith(rw.PROLOGUE + f'#line 1 "{os.path.join(src, "main.cu")}"'))
+            self.assertTrue(main.startswith(rw.PROLOGUES['cuda'] + f'#line 1 "{os.path.join(src, "main.cu")}"'))
             shadow_a = os.path.join(out + '.headers', src.lstrip(os.sep), 'sub', 'a.cuh')
             shadow_b = os.path.join(out + '.headers', src.lstrip(os.sep), 'sub', 'b.cuh')
             self.assertIn(f'#include "{shadow_a}"', main)
@@ -237,6 +272,22 @@ class Headers(unittest.TestCase):
                 deps = f.read()
             for name in ('main.cu', 'a.cuh', 'b.cuh'):
                 self.assertIn(name, deps)
+
+    def test_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, args, language in (('a.cu', [], 'cuda'), ('a.hip', [], 'hip'),
+                                         ('a.cpp', ['--language', 'hip'], 'hip'),
+                                         ('b.hip', ['--language', 'cuda'], 'cuda')):
+                path = os.path.join(tmp, name)
+                with open(path, 'w') as f:
+                    f.write('k<<<1, 1>>>();\n')
+                out = os.path.join(tmp, 'out', name + '.cpp')
+                self.assertEqual(rw.main([path, '-o', out] + args), 0)
+                with open(out) as f:
+                    self.assertTrue(f.read().startswith(rw.PROLOGUES[language] + '#line 1'), name)
+            self.assertIn('#define __HIPCC__', rw.PROLOGUES['hip'])
+            self.assertIn('#define __CUDACC__', rw.PROLOGUES['hip'])
+            self.assertNotIn('__HIPCC__', rw.PROLOGUES['cuda'])
 
     def test_error_reports_file_and_line(self):
         with tempfile.TemporaryDirectory() as tmp:

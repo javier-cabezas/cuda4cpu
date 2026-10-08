@@ -9,6 +9,9 @@ CUDA syntax that C++ can't express (`kernel<<<...>>>(...)` launches and
 `extern __shared__` arrays), so `.cu` files compile unchanged. A library and
 headers then provide the kernel language and the runtime API.
 
+HIP programs compile too, as they do on HIP's NVIDIA platform: HIP's runtime
+API and kernel language map onto CUDA's. See [HIP](#hip).
+
 It's useful for debugging kernels with ordinary CPU tools (gdb,
 AddressSanitizer, Valgrind) and checks a GPU can't make, for running CUDA code
 on machines without a GPU, and for prototyping.
@@ -19,8 +22,9 @@ on machines without a GPU, and for prototyping.
 - [Building](#building)
 - [Using cuda4cpu in your project](#using-cuda4cpu-in-your-project)
 - [Porting a CUDA program](#porting-a-cuda-program)
+- [HIP](#hip)
 - [Supported CUDA features](#supported-cuda-features)
-- [Compatibility with real CUDA code](#compatibility-with-real-cuda-code)
+- [Compatibility with real CUDA and HIP code](#compatibility-with-real-cuda-and-hip-code)
 - [How it works](#how-it-works)
 - [Debugging](#debugging)
 - [Limitations](#limitations)
@@ -76,7 +80,7 @@ int main()
 | CMake 3.25+ | Ninja is recommended (the presets use it) |
 | OpenMP | Bundled with GCC; Clang needs `libomp` |
 | Linux / glibc, 64-bit | Fibers use an assembly context switch on x86-64, and `ucontext` with `_setjmp`/`_longjmp` elsewhere |
-| Python 3 | Runs `cuda4cpu-rewrite` when compiling `.cu` files (standard library only) |
+| Python 3 | Runs `cuda4cpu-rewrite` when compiling `.cu` and HIP files (standard library only) |
 | libnuma (optional) | Used for NUMA topology discovery |
 | Valgrind (optional) | Headers needed for `CUDA4CPU_ENABLE_VALGRIND` |
 
@@ -144,8 +148,16 @@ the target against `cuda4cpu::cuda4cpu`, which brings in the include path,
 C++23 and OpenMP. C++ files that use cuda4cpu directly only need
 `target_link_libraries(my_app PRIVATE cuda4cpu::cuda4cpu)`.
 
+HIP sources go through `cuda4cpu_add_hip_sources`, whatever their extension,
+since HIP projects often compile `.cpp` files with hipcc.
+`cuda4cpu_add_cuda_sources` also takes `.hip` files.
+
+```cmake
+cuda4cpu_add_hip_sources(my_app kernels.hip main.cpp)
+```
+
 You can also vendor cuda4cpu as a subdirectory, with `add_subdirectory(cuda4cpu)`
-or `FetchContent`. Both the function and the target are then available.
+or `FetchContent`. The functions and the target are then available.
 
 ### Without CMake
 
@@ -160,7 +172,17 @@ cuda4cpu-c++ -O2 -c kernels.cu        # kernels.o, as with any compiler
 It rewrites the `.cu` files, adds the C++ standard, OpenMP and the cuda4cpu
 include directory, and links `libcuda4cpu` when it links. It runs
 `$CUDA4CPU_CXX`, `$CXX` or `c++`. It takes the compiler's options, not
-nvcc's.
+nvcc's. `.hip` files are HIP sources, and `-x cu` or `-x hip` set the
+language of the files after them, as with clang.
+
+`cuda4cpu-hipcc` is the same driver for HIP projects. Like hipcc, it compiles
+every C++ source file (`.cpp`, `.cc`, `.cu`, `.hip`, ...) as HIP. It drops
+hipcc's options for AMD GPUs, such as `--offload-arch=gfx90a`, `-fgpu-rdc`
+and `-D__HIP_PLATFORM_AMD__`, so build scripts written for hipcc work unchanged:
+
+```sh
+cuda4cpu-hipcc -O2 --offload-arch=gfx90a -o my_app main.cpp kernels.cpp
+```
 
 To run the rewriter on its own: `cuda4cpu-rewrite kernels.cu -o kernels.cpp`.
 
@@ -215,6 +237,57 @@ your kernels use it.
   deviceQuery, the unified-memory program from NVIDIA's introduction to CUDA,
   and a softmax kernel.
 
+## HIP
+
+cuda4cpu compiles HIP code the way HIP's NVIDIA platform does: on top of the
+CUDA runtime API, with 32-lane warps. HIP sources define
+`__HIP_PLATFORM_NVIDIA__` and `__HIPCC__`, so code that tells the platforms
+apart takes its NVIDIA branch. That branch uses CUDA features cuda4cpu
+implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
+builtins.
+
+- **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`,
+  `hip/hip_cooperative_groups.h`, `hip/hip_vector_types.h`,
+  `hip/hip_version.h` (HIP 7.2) and `hip/hip_common.h`.
+- **Runtime API:** every CUDA function, type and constant that cuda4cpu
+  implements has its HIP name. `hipMalloc`, `hipStream_t` and
+  `hipMemcpyHostToDevice` are macros for the CUDA names, as many HIP names
+  are on the NVIDIA platform. So they keep CUDA's overloads and default
+  arguments, and compiler errors mention the CUDA names.
+- **HIP's own additions:**
+  - `hipDeviceProp_t` (with `gcnArchName`, the CPU's architecture, and `arch`)
+  - `hipDeviceGetAttribute` with HIP's attributes
+  - HIP's error names (`hipErrorOutOfMemory`, ...) in `hipGetErrorName`
+  - `hipHostMalloc` and its flags, `hipExtMallocWithFlags`
+  - the device and memory functions of HIP's driver API: `hipInit`,
+    `hipDeviceGet`, `hipDeviceGetName`, `hipDeviceComputeCapability`,
+    `hipDeviceTotalMem`, `hipMemcpyHtoD`/`DtoH`/`DtoD` (and `Async`),
+    `hipMemsetD8`/`D16`/`D32` (and `Async`)
+  - `hipMemcpyWithStream`, `hipChooseDevice`, `HIP_SYMBOL`
+- **Kernel language:** CUDA's, plus:
+  - launches with `hipLaunchKernelGGL`, `HIP_KERNEL_NAME`, and the function
+    template form with `HIP_TEMPLATE_KERNEL_LAUNCH`
+  - `HIP_DYNAMIC_SHARED`
+  - `hipThreadIdx_x` and the other `hip*Idx_*`/`hip*Dim_*` names
+  - the warp functions without a mask (`__shfl`, `__shfl_up`, `__shfl_down`,
+    `__shfl_xor`, `__ballot`, `__any`, `__all`) and `__lane_id`
+  - `__bitextract_u32`/`u64`, `__bitinsert_u32`/`u64`
+  - `wall_clock64` and `__clock64`
+  - `unsafeAtomicAdd`, `safeAtomicAdd`, `atomicAddNoRet`
+  - the `__HIP_ARCH_HAS_*` feature macros
+- **Not implemented:** what CUDA lacks here too (textures, half precision,
+  ...), plus `hip/hip_complex.h`, HIPRTC, the module API (`hipModuleLoad`,
+  ...), contexts, virtual memory management, `hipPointerGetAttributes` and
+  `hipMemRangeGetAttribute`.
+
+As in clang's HIP mode, HIP sources get the kernel language implicitly
+(`cuda_runtime.h`), and include `hip/hip_runtime.h` themselves. So macros
+that configure it, such as `HIP_TEMPLATE_KERNEL_LAUNCH`, work when defined
+before the `#include`. `hipLaunchKernelGGL` is a macro, as in HIP. Like a
+`<<<...>>>` launch, it deduces template arguments and applies default
+arguments. A kernel name whose template arguments contain commas goes in
+`HIP_KERNEL_NAME(...)`.
+
 ## Supported CUDA features
 
 **Kernel language**
@@ -268,10 +341,10 @@ your kernels use it.
 |---|---|
 | Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes |
 | Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaSetDeviceFlags`, `cudaGetDeviceFlags`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only), `cudaDeviceGetStreamPriorityRange`, `cudaDeviceCanAccessPeer`, and the deprecated `cudaThreadSynchronize` and `cudaThreadExit` |
-| Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost`, `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
+| Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost`, `cudaMemGetInfo` (the host's available and physical memory), `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
 | 2D and 3D memory | `cudaMallocPitch`, `cudaMalloc3D`, `cudaMemcpy2D`, `cudaMemcpy2DAsync`, `cudaMemcpy3D`, `cudaMemcpy3DAsync`, `cudaMemset2D`, `cudaMemset2DAsync`, `cudaMemset3D`, `cudaMemcpyToSymbolAsync`, `cudaMemcpyFromSymbolAsync`; CUDA arrays aren't implemented |
-| More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
-| Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc` |
+| More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool, `cudaMemPoolCreate`, `cudaMemPoolDestroy`), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
+| Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc`, and the default streams `cudaStreamLegacy` and `cudaStreamPerThread` (one per OS thread) |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
 | Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
 | Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
@@ -279,9 +352,10 @@ your kernels use it.
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
 | Events | `cudaEventCreate`, `cudaEventCreateWithFlags`, `cudaEventDestroy`, `cudaEventRecord`, `cudaEventQuery`, `cudaEventSynchronize`, `cudaEventElapsedTime` |
 
-## Compatibility with real CUDA code
+## Compatibility with real CUDA and HIP code
 
-`compat/` builds and runs real CUDA programs, unmodified, with `cuda4cpu-c++`:
+`compat/` builds and runs real CUDA programs, unmodified, with `cuda4cpu-c++`,
+and HIP programs with `cuda4cpu-hipcc`:
 
 - **cuda-samples:** a curated set of NVIDIA's CUDA samples, those that use
   only the runtime API and the kernel language. Samples that need graphics
@@ -290,6 +364,11 @@ your kernels use it.
 - **Rodinia:** the Rodinia benchmarks that generate their own inputs. Except
   `lud`, they don't check their results, so for them "passing" means they run
   to completion.
+- **rocm-examples:** AMD's HIP examples: HIP-Basic, the examples of the HIP
+  documentation, and the reduction tutorial, excluding those that need
+  graphics interop, the module API, HIPRTC, ROCm libraries or several GPUs.
+  Most check their results, or print results that the suite checks. Many
+  of the documentation's examples only check for API errors.
 
 The suites are fetched at the revisions pinned in `compat/suites.json`. CI runs
 them and fails if a program that passes in `compat/baseline.json` stops
@@ -299,20 +378,32 @@ passing. Today:
 |---|---|---|
 | cuda-samples | 42 of 61 (1 more waives itself, and 2 are skipped as too slow) | 16 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
+| rocm-examples | 72 of 82 | 10 |
 
 Most of what's missing is a few features:
 
 | Programs | Missing |
 |---|---|
-| 9 | Textures and surfaces |
+| 10 | Textures and surfaces |
+| 3 | Half precision and 8-bit floats (`cuda_fp16.h`, `hip/hip_fp16.h`, `hip/hip_fp8.h`) |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
-| 1 each | Half precision (`cuda_fp16.h`), libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, inline PTX, OpenGL |
+| 2 | Inline PTX |
+| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, complex numbers (`hip/hip_complex.h`), virtual memory management, `hipPointerGetAttributes`, `hipMemRangeGetAttribute` |
+
+Two more, versions 5 and 6 of the reduction tutorial, have a race:
+their last warp reduces through shared memory without `__syncwarp()` between
+steps. That relies on the lanes of a warp running in lockstep, as AMD's do.
+CUDA doesn't promise it, and on cuda4cpu each lane runs to its next barrier,
+so the result is wrong.
 
 To run the programs yourself (they need git and network access):
 
 ```sh
 compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --report report.md
 ```
+
+HIP programs are built with the `cuda4cpu-hipcc` next to `--driver`
+(`--hipcc` chooses another).
 
 ## How it works
 
@@ -482,11 +573,15 @@ errors in the context switch.
   that doesn't go through the rewriter names the dimension fields
   `cuda4cpu_gridDim` and `cuda4cpu_blockDim`. Graphs can't be launched into a
   stream being captured.
+- **HIP runs as on HIP's NVIDIA platform.** Warps have 32 lanes, and
+  `__ballot` returns 64-bit masks whose high half is zero. Code that only
+  supports AMD GPUs doesn't compile: AMD builtins (`__builtin_amdgcn_*`),
+  `__HIP_PLATFORM_AMD__` branches, and code that assumes 64-lane wavefronts.
 - **Not implemented yet:** textures and surfaces, dynamic parallelism, half
   precision, `__reduce_*_sync`, `memcpy_async`, 16-bit atomics, inline PTX,
-  and the driver API. [Compatibility with real CUDA
-  code](#compatibility-with-real-cuda-code) shows which programs each one
-  blocks.
+  and the driver API. [Compatibility with real CUDA and HIP
+  code](#compatibility-with-real-cuda-and-hip-code) shows which programs each
+  one blocks.
 
 ## License
 
