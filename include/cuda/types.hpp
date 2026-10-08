@@ -21,6 +21,8 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
+#include <vector>
 
 namespace cuda4cpu {
 
@@ -39,14 +41,24 @@ enum cudaError {
     cudaErrorInvalidSymbol          = 13,
     cudaErrorInvalidDevicePointer   = 17,
     cudaErrorInvalidMemcpyDirection = 21,
+    cudaErrorInvalidDeviceFunction  = 98,
     cudaErrorNoDevice               = 100,
     cudaErrorInvalidDevice          = 101,
     cudaErrorInvalidResourceHandle  = 400,
+    cudaErrorIllegalState           = 401,
     cudaErrorNotReady               = 600,
     cudaErrorAssert                 = 710,
     cudaErrorLaunchFailure          = 719,
     cudaErrorCooperativeLaunchTooLarge = 720,
     cudaErrorNotSupported           = 801,
+    cudaErrorStreamCaptureUnsupported = 900,
+    cudaErrorStreamCaptureInvalidated = 901,
+    cudaErrorStreamCaptureMerge       = 902,
+    cudaErrorStreamCaptureUnmatched   = 903,
+    cudaErrorStreamCaptureUnjoined    = 904,
+    cudaErrorStreamCaptureIsolation   = 905,
+    cudaErrorStreamCaptureImplicit    = 906,
+    cudaErrorGraphExecUpdateFailure   = 910,
     cudaErrorUnknown                = 999
 };
 
@@ -101,9 +113,30 @@ VECTOR_TYPE(ulonglong, unsigned long long)
 VECTOR_TYPE(float, float)
 VECTOR_TYPE(double, double)
 
+}
+
+namespace detail {
+
+struct stream_capture;
+struct capture_session;
+
+}
+
+inline namespace cuda_api {
+
+struct cudaGraph__;
+struct cudaGraphNode__;
+struct cudaGraphExec__;
+
+using cudaGraph_t     = cudaGraph__ *;
+using cudaGraphNode_t = cudaGraphNode__ *;
+using cudaGraphExec_t = cudaGraphExec__ *;
+
 struct cudaStream__ {
     int flags;
     int priority;
+    //! Set while the stream is being captured into a graph
+    detail::stream_capture *capture = nullptr;
 };
 
 using cudaStream_t = cudaStream__ *;
@@ -111,11 +144,25 @@ using cudaStream_t = cudaStream__ *;
 struct cudaEvent__ {
     std::chrono::time_point<std::chrono::system_clock> tstamp;
     cudaStream_t stream;
+    // When recorded in a stream being captured: the capture, and the nodes that
+    // work waiting for the event depends on
+    std::shared_ptr<detail::capture_session> capture;
+    std::vector<cudaGraphNode_t> capture_deps;
 };
 
 using cudaEvent_t = cudaEvent__ *;
 
 using cudaStreamCallback_t = void(*)(cudaStream_t stream, cudaError_t status, void *userData);
+
+}
+
+namespace detail {
+
+//! Whether work issued to stream is captured into a graph instead of running
+inline bool capturing(cudaStream_t stream)
+{
+    return stream != nullptr && stream->capture != nullptr;
+}
 
 }
 

@@ -18,14 +18,9 @@
  * limitations under the License.
  */
 
+
+// The NVTX header of CUDA before 12, which moved it to nvtx3/
+
 #pragma once
 
-#include "types.hpp"
-#include "error.hpp"
-#include "device.hpp"
-#include "memory.hpp"
-#include "streams.hpp"
-#include "events.hpp"
-#include "graphs.hpp"
-#include "atomics.hpp"
-#include "math.hpp"
+#include "nvtx3/nvToolsExt.h"

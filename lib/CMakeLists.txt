@@ -1,4 +1,4 @@
-add_library(cuda4cpu cuda4cpu.cpp)
+add_library(cuda4cpu cuda4cpu.cpp graphs.cpp)
 add_library(cuda4cpu::cuda4cpu ALIAS cuda4cpu)
 
 set(CUDA4CPU_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
@@ -13,6 +13,8 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/reduce.h
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/scan.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda.h
+            ${CUDA4CPU_INCLUDE_DIR}/nvToolsExt.h
+            ${CUDA4CPU_INCLUDE_DIR}/nvtx3/nvToolsExt.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime_api.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_profiler_api.h
@@ -26,6 +28,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda/device.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/error.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/events.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/graphs.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/math.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/memory.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/mycuda.hpp
