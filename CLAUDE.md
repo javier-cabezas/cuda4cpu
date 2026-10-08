@@ -7,7 +7,8 @@ Guidance for Claude Code (and other AI assistants) working in this repository.
 cuda4cpu runs CUDA kernels on the CPU with a plain C++23 compiler. Kernels are
 compiled unchanged; CUDA keywords and built-ins are redefined as macros, and the
 `<<<grid, block>>>` launch syntax becomes `launch(kernel, grid, block).call(args...)`.
-See README.md for the user-facing description.
+HIP code compiles too, as on HIP's NVIDIA platform: a thin layer of HIP names
+over the CUDA implementation. See README.md for the user-facing description.
 
 ## Commands
 
@@ -62,6 +63,24 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the `detail::capture_*` functions of the library.
 - `include/nvtx3/nvToolsExt.h` (and `nvToolsExt.h`): NVTX stand-ins that do
   nothing.
+- `include/hip/`: HIP, on top of the CUDA API.
+  - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
+    name with another prefix is a `#define` for it (`hipMalloc` →
+    `cudaMalloc`), listed by the CUDA header that defines it. Add the HIP
+    macro when you add a CUDA function, type or constant that HIP has.
+    `hipError_t` is `cudaError_t`: HIP's codes have CUDA's values.
+  - What HIP does differently lives in the inline namespace
+    `cuda4cpu::hip_api`, which the header exports like `cuda_api`:
+    `hipDeviceProp_t` (derived from `cudaDeviceProp`),
+    `hipDeviceAttribute_t`, `hipGetErrorName`, `hipHostMalloc`, and HIP's
+    driver-API copies and memsets. Helpers go in `cuda4cpu::detail`: a
+    `detail` namespace inside `hip_api` would hide it.
+  - `hip_runtime.h` adds the kernel language: the mask-less warp functions,
+    `hipLaunchKernelGGL` (a macro, or a function template with
+    `HIP_TEMPLATE_KERNEL_LAUNCH`), `HIP_DYNAMIC_SHARED`, `hipThreadIdx_x`
+    and the like, and the `__HIP_ARCH_HAS_*` macros.
+  - `hip_common.h` defines `__HIP_PLATFORM_NVIDIA__`, and `__HIPCC__` with
+    `__CUDACC__`.
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -80,25 +99,34 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     the name of the `cudaKernelNodeParams` fields
   - turns `clock()` inside `__global__`/`__device__` bodies into
     `cuda4cpu::device_clock()`
+  - rewrites `HIP_DYNAMIC_SHARED(T, name)` like `extern __shared__ T name[];`,
+    and drops the cast in `hipLaunchKernel`/`hipLaunchCooperativeKernel`
 
-  The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does. It
-  uses Python 3, standard library only.
+  The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does.
+  `--language hip` (the default for `.hip` files) also defines `__HIPCC__` and
+  `__HIP_PLATFORM_NVIDIA__`. It uses Python 3, standard library only.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
-  installation, with paths relative to its own directory.
-- `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()`, used in-tree and
-  installed with the package config. It finds the rewriter through the
+  installation, with paths relative to its own directory. The same template
+  also becomes `cuda4cpu-hipcc` (`CUDA4CPU_DRIVER_MODE` is `hip`), which
+  compiles every C++ source as HIP and drops hipcc's options for AMD GPUs.
+  Both handle `.hip` files and `-x cu`/`-x hip`.
+- `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
+  `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
+  with the package config. It finds the rewriter through the
   `CUDA4CPU_REWRITE` global property.
 - `compat/`: the compatibility suite. `suites.json` lists programs from
-  cuda-samples and Rodinia, pinned by revision, with their sources, include
-  directories, arguments and checks: `expect` and `reject` are output
-  regexes, `verified: false` marks programs that don't check their results,
-  `skip` gives a reason not to run one, and `timeout` gives a long program
-  more time (such programs start first). `run.py` fetches the suites,
-  builds each program with `cuda4cpu-c++` (`.c` files with the C compiler),
-  runs it, and reports. `baseline.json` holds the expected status of each
+  cuda-samples, Rodinia and rocm-examples (HIP), pinned by revision, with
+  their sources, include directories, arguments and checks: `expect` and
+  `reject` are output regexes, `verified: false` marks programs that don't
+  check their results, `skip` gives a reason not to run one, and `timeout`
+  gives a long program more time (such programs start first). `run.py`
+  fetches the suites, builds each program with `cuda4cpu-c++`, or
+  `cuda4cpu-hipcc` for suites with `"driver": "hipcc"` (`.c` files with the
+  C compiler), runs it, and reports. `baseline.json` holds the expected status of each
   program: CI fails if a passing program regresses. When a change makes
-  programs pass, update the baseline in the same PR with `--update-baseline`.
+  programs pass, update the baseline in the same PR with `--update-baseline`
+  (with `--filter`, the other programs keep their status).
   Run it locally with
   `compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --filter 'rodinia/*'`.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
@@ -147,6 +175,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
     `cuda4cpu-c++`, in one step and with separate compile and link.
+    `driver_hipcc` and `driver_x_hip` build a HIP `.cpp` file with
+    `cuda4cpu-hipcc` (and an AMD-only option) and with `cuda4cpu-c++ -x hip`.
+  - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):
+    `hip_runtime` (errors and their names, device queries and attributes,
+    host memory, driver-API copies and memsets, symbols, `hipStreamDefault`
+    and `hipStreamPerThread`, pools, `hipLaunchKernel`, capture),
+    `hip_kernels` (every `hipLaunchKernelGGL` form, `HIP_DYNAMIC_SHARED` in a
+    kernel and at namespace scope, mask-less warp functions with widths,
+    cooperative groups, bit, clock and atomic intrinsics, the platform
+    macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
+    `.cpp` file).
 
 ## How execution works (read before touching `launch.hpp`)
 
@@ -306,6 +345,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `cudaErrorInvalidConfiguration`.
 - Don't define `__noinline__` as a macro: libstdc++ uses
   `__attribute__((__noinline__))`.
+- `cudaStreamDefault` (and `cudaStreamNonBlocking`) are macros for `0x00`,
+  as in CUDA: code passes `cudaStreamDefault`/`hipStreamDefault` where a
+  stream goes, which needs a null pointer constant. An enumerator doesn't
+  convert to a pointer. `cudaStreamPerThread` is a `thread_local` stream per
+  OS thread, which `cudaStreamDestroy` refuses.
+- HIP sources get `-include cuda_runtime.h`, like `.cu` files, not
+  `hip/hip_runtime.h`: programs define `HIP_TEMPLATE_KERNEL_LAUNCH` before
+  their own `#include <hip/hip_runtime.h>`, which an implicit include would
+  preempt. Clang's HIP mode doesn't include it either.
 
 - Debugging settings come from the environment, read once in `settings`:
   `CUDA4CPU_SCHEDULE` (forward, reverse, random[:seed]) and

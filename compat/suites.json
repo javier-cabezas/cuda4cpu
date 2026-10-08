@@ -373,6 +373,400 @@
           ]
         }
       ]
+    },
+    "rocm-examples": {
+      "url": "https://github.com/ROCm/rocm-examples.git",
+      "revision": "rocm-7.2.4",
+      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
+      "defaults": {
+        "driver": "hipcc",
+        "sources": [
+          "*.hip",
+          "*.cpp"
+        ],
+        "include": [
+          "Common",
+          "External"
+        ]
+      },
+      "programs": [
+        {
+          "dir": "HIP-Basic/assembly_to_executable"
+        },
+        {
+          "dir": "HIP-Basic/bandwidth",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Basic/bit_extract"
+        },
+        {
+          "dir": "HIP-Basic/cooperative_groups"
+        },
+        {
+          "dir": "HIP-Basic/device_globals"
+        },
+        {
+          "dir": "HIP-Basic/device_query",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Basic/dynamic_shared"
+        },
+        {
+          "dir": "HIP-Basic/events"
+        },
+        {
+          "dir": "HIP-Basic/gpu_arch"
+        },
+        {
+          "dir": "HIP-Basic/hello_world",
+          "expect": "Hello world from device kernel block 1 thread 1!"
+        },
+        {
+          "dir": "HIP-Basic/hello_world_cuda",
+          "expect": "Hello, World!"
+        },
+        {
+          "dir": "HIP-Basic/hipify",
+          "sources": [
+            "main.cu"
+          ]
+        },
+        {
+          "dir": "HIP-Basic/inline_assembly"
+        },
+        {
+          "dir": "HIP-Basic/llvm_ir_to_executable"
+        },
+        {
+          "dir": "HIP-Basic/matrix_multiplication"
+        },
+        {
+          "dir": "HIP-Basic/moving_average"
+        },
+        {
+          "dir": "HIP-Basic/occupancy",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Basic/saxpy",
+          "expect": "First 10 elements of the results: \\[ 3, 5, 7, 9, 11, 13, 15, 17, 19, 21 \\]"
+        },
+        {
+          "dir": "HIP-Basic/shared_memory"
+        },
+        {
+          "dir": "HIP-Basic/static_device_library",
+          "sources": [
+            "main.hip",
+            "library/library.hip"
+          ],
+          "include": [
+            "Common",
+            "HIP-Basic/static_device_library/library"
+          ]
+        },
+        {
+          "dir": "HIP-Basic/static_host_library",
+          "sources": [
+            "main.cpp",
+            "library/library.hip"
+          ],
+          "include": [
+            "Common",
+            "HIP-Basic/static_host_library/library"
+          ]
+        },
+        {
+          "dir": "HIP-Basic/streams",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Basic/texture_management"
+        },
+        {
+          "dir": "HIP-Basic/warp_shuffle"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/calling_global_functions",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/extern_shared_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/launch_bounds",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/set_constant_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/template_warp_size_reduction",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/timer",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-C++-Language-Extensions/warp_size_reduction",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-Porting-Guide/device_code_feature_identification",
+          "expect": "Device has double-precision support"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-Porting-Guide/host_code_feature_identification",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-Porting-Guide/identifying_compilation_target_platform",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/HIP-Porting-Guide/identifying_host_device_compilation_pass",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Introduction-to-the-HIP-Programming-Model/add_kernel",
+          "expect": "First 10 elements of the results: \\[ 1\\.04858e\\+06, 1\\.04858e\\+06"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Porting-CUDA-Driver-API/per_thread_default_stream",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Porting-CUDA-Driver-API/pointer_memory_type"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Asynchronous-Concurrent-Execution/async_kernel_execution",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Asynchronous-Concurrent-Execution/event_based_synchronization",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Asynchronous-Concurrent-Execution/sequential_kernel_execution",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Call-Stack/call_stack_management",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Call-Stack/device_recursion",
+          "expect": "10! = 55"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Error-Handling/error_handling",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/HIP-Graphs/graph_capture"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/HIP-Graphs/graph_creation"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Initialization/simple_device_query",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Device-Memory/constant_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Device-Memory/dynamic_shared_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Device-Memory/explicit_copy",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Device-Memory/kernel_memory_allocation",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Device-Memory/static_shared_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Host-Memory/pageable_host_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Host-Memory/pinned_host_memory",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/memory_pool",
+          "expect": "Element 1023: 2046"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/memory_pool_threshold",
+          "expect": "Element 1023: 2046"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/ordinary_memory_allocation",
+          "expect": "Element 1023: 2046"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/stream_ordered_memory_allocation",
+          "expect": "Element 1023: 2046"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/memory_pool_resource_usage_statistics",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/SOMA/memory_pool_trim",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/data_prefetching",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/dynamic_unified_memory",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/explicit_memory",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/standard_unified_memory",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/static_unified_memory",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/unified_memory_advice",
+          "expect": "1 \\+ 2 = 3"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/memory_range_attributes"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Virtual-Memory-Management/virtual_memory"
+        },
+        {
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Multi-Device-Management/device_enumeration",
+          "verified": false
+        },
+        {
+          "dir": "HIP-Doc/Reference/HIP-Complex-Math-API/complex_math"
+        },
+        {
+          "dir": "HIP-Doc/Reference/HIP-Math-API/math",
+          "expect": "Max Error Values -> Got: 0, Expected: 0"
+        },
+        {
+          "dir": "HIP-Doc/Reference/Low-Precision-Floating-Point-Types/low_precision_float_fp16"
+        },
+        {
+          "dir": "HIP-Doc/Reference/Low-Precision-Floating-Point-Types/low_precision_float_fp8"
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v1",
+          "sources": [
+            "example/v1.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v2",
+          "sources": [
+            "example/v2.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v3",
+          "sources": [
+            "example/v3.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v4",
+          "sources": [
+            "example/v4.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v5",
+          "sources": [
+            "example/v5.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v6",
+          "sources": [
+            "example/v6.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v7",
+          "sources": [
+            "example/v7.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v8",
+          "sources": [
+            "example/v8.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        },
+        {
+          "dir": "Tutorials/reduction",
+          "name": "reduction_v9",
+          "sources": [
+            "example/v9.hip"
+          ],
+          "include": [
+            "Tutorials/reduction/include"
+          ]
+        }
+      ]
     }
   }
 }

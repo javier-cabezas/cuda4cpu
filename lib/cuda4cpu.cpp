@@ -1173,6 +1173,14 @@ void *detail::allocate_aligned(size_t size)
                               (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment);
 }
 
+void detail::memory_info(size_t &free, size_t &total)
+{
+    const long page = sysconf(_SC_PAGESIZE);
+    const long available = sysconf(_SC_AVPHYS_PAGES), physical = sysconf(_SC_PHYS_PAGES);
+    free  = page > 0 && available > 0 ? size_t(available) * size_t(page) : 0;
+    total = page > 0 && physical > 0 ? size_t(physical) * size_t(page) : 0;
+}
+
 void detail::get_device_properties(cudaDeviceProp &prop)
 {
     // Computed once: none of this changes while the process runs

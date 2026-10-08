@@ -88,9 +88,12 @@ enum cudaMemoryAdvise {
 inline constexpr int cudaCpuDeviceId = -1;
 
 //! Memory pools, for stream-ordered allocation. Allocations come from the
-//! process heap, so there is one pool and its attributes have no effect.
+//! process heap, so pools differ only by their handles, and their properties
+//! and attributes have no effect.
 struct cudaMemPool__ {};
 using cudaMemPool_t = cudaMemPool__ *;
+
+struct cudaMemPoolProps;
 
 enum cudaMemPoolAttr {
     cudaMemPoolReuseFollowEventDependencies   = 1,
@@ -184,6 +187,10 @@ inline constexpr size_t allocation_alignment = 256;
 //! library, where the compiler can't elide the allocation: it may assume that
 //! an inline allocation whose result is never dereferenced succeeds.
 void *allocate_aligned(size_t size);
+
+//! The memory available to allocations and the device's total memory: the
+//! host's free and physical memory (defined in the library)
+void memory_info(size_t &free, size_t &total);
 
 inline cudaError_t allocate(void **ptr, size_t size)
 {
@@ -398,6 +405,27 @@ cudaError_t cudaDeviceGetMemPool(cudaMemPool_t *memPool, int device)
 }
 
 static inline
+cudaError_t cudaMemPoolCreate(cudaMemPool_t *memPool, const cudaMemPoolProps *poolProps)
+{
+    if (memPool == nullptr || poolProps == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *memPool = new cudaMemPool__;
+    return cudaSuccess;
+}
+
+//! Allocations from the pool stay valid: they come from the heap
+static inline
+cudaError_t cudaMemPoolDestroy(cudaMemPool_t memPool)
+{
+    cudaMemPool_t default_pool;
+    cudaDeviceGetDefaultMemPool(&default_pool, 0);
+    if (memPool == nullptr || memPool == default_pool)
+        return detail::record_error(cudaErrorInvalidValue);
+    delete memPool;
+    return cudaSuccess;
+}
+
+static inline
 cudaError_t cudaMemPoolSetAttribute(cudaMemPool_t /* memPool */, cudaMemPoolAttr /* attr */,
                                     void * /* value */)
 {
@@ -501,6 +529,16 @@ static inline
 cudaError_t cudaFreeHost(void *ptr)
 {
     std::free(ptr);
+    return cudaSuccess;
+}
+
+//! Device memory is host memory: the host's available and physical memory
+static inline
+cudaError_t cudaMemGetInfo(size_t *free, size_t *total)
+{
+    if (free == nullptr || total == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    detail::memory_info(*free, *total);
     return cudaSuccess;
 }
 

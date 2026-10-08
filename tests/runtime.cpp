@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <thread>
 
 #include <cuda.h>
 #include <cuda_profiler_api.h>
@@ -286,10 +287,68 @@ int main()
         int value = 0;
         EXPECT(cudaDeviceGetAttribute(&value, cudaDevAttrMemoryPoolsSupported, 0) == cudaSuccess && value == 1);
 
+        cudaMemPoolProps props{};
+        props.allocType = cudaMemAllocationTypePinned;
+        props.location = {cudaMemLocationTypeDevice, 0};
+        cudaMemPool_t created = nullptr;
+        EXPECT(cudaMemPoolCreate(&created, &props) == cudaSuccess && created != nullptr && created != pool);
+        EXPECT(cudaMallocFromPoolAsync(&p, 1000, created, stream) == cudaSuccess && p != nullptr);
+        EXPECT(cudaFreeAsync(p, stream) == cudaSuccess);
+        EXPECT(cudaMemPoolDestroy(created) == cudaSuccess);
+        EXPECT(cudaMemPoolDestroy(pool) == cudaErrorInvalidValue);    // the default pool can't be destroyed
+        cudaGetLastError();
+
         bool called = false;
         EXPECT(cudaLaunchHostFunc(stream, [](void *flag) { *static_cast<bool *>(flag) = true; }, &called) == cudaSuccess);
         EXPECT(called);
         cudaStreamDestroy(stream);
+    }
+
+    // The host's memory is the device's
+    {
+        size_t free = 0, total = 0;
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, 0);
+        EXPECT(cudaMemGetInfo(&free, &total) == cudaSuccess);
+        EXPECT(total == prop.totalGlobalMem && free > 0 && free <= total);
+        EXPECT(cudaMemGetInfo(nullptr, &total) == cudaErrorInvalidValue);
+        cudaGetLastError();
+    }
+
+    // cudaStreamDefault is a null pointer constant, as in CUDA, so code passes
+    // it where a stream goes. cudaStreamPerThread is each thread's own stream.
+    {
+        int flag = 0;
+        cudaEvent_t event;
+        cudaEventCreate(&event);
+        EXPECT(cudaEventRecord(event, cudaStreamDefault) == cudaSuccess);
+        EXPECT(cudaMemsetAsync(&flag, 0, sizeof(flag), cudaStreamDefault) == cudaSuccess);
+        cuda4cpu::launch(set_flag, 1, 1, 0, cudaStreamDefault).call(&flag);
+        EXPECT(flag == 1);
+        EXPECT(cudaStreamSynchronize(cudaStreamLegacy) == cudaSuccess);
+        cudaEventDestroy(event);
+
+        cudaStream_t other = nullptr;
+        std::thread([&] { other = cudaStreamPerThread; }).join();
+        EXPECT(cudaStreamPerThread != nullptr && cudaStreamPerThread == cudaStreamPerThread);
+        EXPECT(other != nullptr && other != cudaStreamPerThread);
+
+        // Work issued to it is captured like any stream's
+        cudaGraph_t graph = nullptr;
+        EXPECT(cudaStreamBeginCapture(cudaStreamPerThread, cudaStreamCaptureModeGlobal) == cudaSuccess);
+        flag = 0;
+        cuda4cpu::launch(set_flag, 1, 1, 0, cudaStreamPerThread).call(&flag);
+        EXPECT(cudaStreamEndCapture(cudaStreamPerThread, &graph) == cudaSuccess && flag == 0);
+        size_t nodes = 0;
+        EXPECT(cudaGraphGetNodes(graph, nullptr, &nodes) == cudaSuccess && nodes == 1);
+        cudaGraphExec_t exec = nullptr;
+        EXPECT(cudaGraphInstantiate(&exec, graph) == cudaSuccess);
+        EXPECT(cudaGraphLaunch(exec, cudaStreamPerThread) == cudaSuccess && flag == 1);
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+
+        EXPECT(cudaStreamDestroy(cudaStreamPerThread) == cudaErrorInvalidResourceHandle);
+        cudaGetLastError();
     }
 
     // Device queries and configuration that have no effect on a CPU

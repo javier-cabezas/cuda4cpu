@@ -27,8 +27,10 @@
   extern __shared__ T name[];
       -> T *name = cuda4cpu::dynamic_shared<T>();               (in a function)
       -> static cuda4cpu::dynamic_shared_array<T> name;         (at namespace scope)
+  HIP_DYNAMIC_SHARED(T, name), HIP's macro for that declaration, likewise
 
-  cudaLaunchKernel((void *)kernel, ...), and cudaLaunchCooperativeKernel
+  cudaLaunchKernel((void *)kernel, ...), cudaLaunchCooperativeKernel, and
+  their HIP names hipLaunchKernel and hipLaunchCooperativeKernel
       -> cudaLaunchKernel(kernel, ...)
       The cast to void * would hide the kernel's parameter types, which
       cuda4cpu needs to unpack the argument array.
@@ -59,6 +61,10 @@ directory, and the #include directives point to the rewritten copies.
 The rewritten .cu file defines __CUDACC__ first, as nvcc does, so that code
 that tells CUDA compilation apart from host compilation (for instance the
 host fallbacks in the CUDA samples' helper_math.h) takes the CUDA branch.
+
+HIP sources (.hip files, or any file with --language hip) are rewritten the
+same way. They also define __HIPCC__ and __HIP_PLATFORM_NVIDIA__, as hipcc
+does on HIP's NVIDIA platform, which is how cuda4cpu compiles HIP code.
 """
 
 import argparse
@@ -66,8 +72,16 @@ import os
 import re
 import sys
 
-# Prepended to the rewritten .cu file, before its #line directive
-PROLOGUE = '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
+# Prepended to the rewritten file, before its #line directive, by language
+PROLOGUES = {
+    'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n',
+    'hip': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
+           '#ifndef __HIPCC__\n#define __HIPCC__ 1\n#endif\n'
+           '#ifndef __HIP_PLATFORM_NVIDIA__\n#define __HIP_PLATFORM_NVIDIA__ 1\n#endif\n',
+}
+
+# Extensions of the files that are HIP sources by default
+HIP_EXTENSIONS = ('.hip',)
 
 LAUNCH_PREFIX = 'cuda4cpu::launch([&](const auto &...cuda4cpu_args) { '
 LAUNCH_INFIX = '(cuda4cpu_args...); }, '
@@ -355,8 +369,9 @@ def config_end(tokens, i):
 
 
 def find_extern_shared(tokens):
-    """Returns (first, last, type_text_ranges, name, namespace_scope) for every
-    `extern __shared__ T name[];` declaration."""
+    """Returns (first, last, type_tokens, name, namespace_scope) for every
+    `extern __shared__ T name[];` declaration, and every
+    HIP_DYNAMIC_SHARED(T, name), whose last token is its ')'."""
     found = []
     scopes = []                                     # True for namespace scopes
     for i, t in enumerate(tokens):
@@ -365,6 +380,14 @@ def find_extern_shared(tokens):
         elif t.text == '}':
             if scopes:
                 scopes.pop()
+        elif t.text == 'HIP_DYNAMIC_SHARED' and i + 1 < len(tokens) and tokens[i + 1].text == '(' and \
+                (i == 0 or tokens[i - 1].text != 'define'):
+            close = match_forward(tokens, i + 1)
+            # The name follows the last comma: the type may contain commas
+            if close is None or close - i < 5 or tokens[close - 2].text != ',' or \
+                    tokens[close - 1].kind != 'id':
+                raise RewriteError(line_of(t), 'unsupported HIP_DYNAMIC_SHARED declaration')
+            found.append((i, close, tokens[i + 2:close - 2], tokens[close - 1].text, all(scopes)))
         elif t.text == 'extern' and i + 1 < len(tokens) and tokens[i + 1].kind != 'string':
             semi = i
             while semi < len(tokens) and tokens[semi].text not in (';', '{', '}'):
@@ -403,7 +426,8 @@ def find_extern_shared(tokens):
 
 
 # Launch functions whose kernel argument is commonly cast to void *
-LAUNCH_FUNCTIONS = frozenset(('cudaLaunchKernel', 'cudaLaunchCooperativeKernel'))
+LAUNCH_FUNCTIONS = frozenset(('cudaLaunchKernel', 'cudaLaunchCooperativeKernel',
+                              'hipLaunchKernel', 'hipLaunchCooperativeKernel'))
 
 
 def find_void_casts(tokens):
@@ -631,7 +655,9 @@ def rewrite_text(text, path, include_hook=None, kernels=None):
             new = f'static cuda4cpu::dynamic_shared_array<{type_text}> {name};'
         else:
             new = f'{type_text} *{name} = cuda4cpu::dynamic_shared<{type_text}>();'
-        replacements.append((tokens[first].start, tokens[semi].end, new))
+        # Keep the newlines the declaration may span, so that line numbers don't change
+        newlines = text.count('\n', tokens[first].start, tokens[semi].end)
+        replacements.append((tokens[first].start, tokens[semi].end, new + '\n' * newlines))
 
     launch_casts = set()
     for first, last in find_void_casts(tokens):
@@ -720,13 +746,18 @@ def write_depfile(path, target, dependencies):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description='Rewrites CUDA launches (kernel<<<...>>>(...)) and extern __shared__ '
-                    'declarations so that cuda4cpu can compile a .cu file.')
-    parser.add_argument('input', help='CUDA source file')
+                    'declarations so that cuda4cpu can compile a .cu or .hip file.')
+    parser.add_argument('input', help='CUDA or HIP source file')
     parser.add_argument('-o', '--output', help='rewritten file (default: standard output)')
     parser.add_argument('--shadow-dir',
                         help='directory for the rewritten local headers (default: OUTPUT.headers)')
     parser.add_argument('--depfile', help='write a Makefile-style dependency file')
+    parser.add_argument('--language', choices=sorted(PROLOGUES),
+                        help='language of the input: hip for .hip files, cuda otherwise (default)')
     args = parser.parse_args(argv)
+
+    if args.language is None:
+        args.language = 'hip' if args.input.endswith(HIP_EXTENSIONS) else 'cuda'
 
     if args.shadow_dir is None:
         if args.output is None:
@@ -743,7 +774,7 @@ def main(argv=None):
         print(f'cuda4cpu-rewrite: {e}', file=sys.stderr)
         return 1
 
-    result = PROLOGUE + result
+    result = PROLOGUES[args.language] + result
     if args.output is None:
         sys.stdout.write(result)
     else:

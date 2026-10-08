@@ -18,16 +18,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A C++ compiler driver that compiles CUDA source files with cuda4cpu.
+"""A C++ compiler driver that compiles CUDA and HIP source files with cuda4cpu.
 
-Use it like the C++ compiler, with .cu files among the inputs:
+Use it like the C++ compiler, with .cu or .hip files among the inputs:
 
     cuda4cpu-c++ -O2 -o app main.cpp kernels.cu
 
 Each .cu file is rewritten by cuda4cpu-rewrite and compiled as C++ with
-cuda_runtime.h included implicitly, as nvcc does. The driver adds the C++
-standard, OpenMP and the cuda4cpu include directory, and links libcuda4cpu
-when it links. The compiler is $CUDA4CPU_CXX, $CXX or c++.
+cuda_runtime.h included implicitly, as nvcc does. .hip files are rewritten
+as HIP sources, and also get cuda_runtime.h, which has the kernel language:
+they include hip/hip_runtime.h themselves, as they do with hipcc, after
+macros such as HIP_TEMPLATE_KERNEL_LAUNCH that configure it. -x cu and
+-x hip choose the language of the files that follow them, as with clang.
+
+Installed as cuda4cpu-hipcc, it treats every C++ source file as a HIP
+source, as hipcc does, and drops hipcc's options for AMD GPUs
+(--offload-arch=..., -fgpu-rdc, ...).
+
+The driver adds the C++ standard, OpenMP and the cuda4cpu include directory,
+and links libcuda4cpu when it links. The compiler is $CUDA4CPU_CXX, $CXX or
+c++.
 """
 
 import os
@@ -41,6 +51,9 @@ INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@
 LIBRARY_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_LIBRARY_DIR@'))
 REWRITE = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_REWRITE@'))
 
+# 'hip' for cuda4cpu-hipcc, which compiles C++ sources as HIP, as hipcc does
+MODE = '@CUDA4CPU_DRIVER_MODE@'
+
 # Compiler options whose value is the next argument
 OPTIONS_WITH_VALUE = {
     '-o', '-x', '-include', '-imacros', '-isystem', '-iquote', '-idirafter', '-iprefix',
@@ -52,30 +65,74 @@ OPTIONS_WITH_VALUE = {
 # Options that stop before linking
 NO_LINK = {'-c', '-S', '-E', '-M', '-MM', '-fsyntax-only'}
 
+# Languages of -x, and the extensions of each language's files
+LANGUAGES = ('cuda', 'hip')
+X_LANGUAGES = {'cu': 'cuda', 'cuda': 'cuda', 'hip': 'hip'}
+EXTENSIONS = {'.cu': 'cuda', '.hip': 'hip'}
+CXX_EXTENSIONS = ('.cpp', '.cc', '.cxx', '.c++', '.cp', '.CPP', '.C', '.cu', '.hip')
+
+# hipcc's options for AMD GPUs, which cuda4cpu-hipcc drops: those that start
+# with one of these prefixes, and the macros that select HIP's AMD platform
+HIPCC_DROPPED_PREFIXES = ('--offload-arch=', '--amdgpu-target=', '--cuda-gpu-arch=', '--rocm-path=',
+                          '--hip-path=', '--hip-device-lib', '--rocm-device-lib-path=', '-fgpu-', '-fno-gpu-',
+                          '-mcode-object-version=', '-munsafe-fp-atomics', '-mno-unsafe-fp-atomics',
+                          '-mwavefrontsize64', '-mno-wavefrontsize64', '-mcumode', '-mno-cumode')
+HIPCC_DROPPED = {'--hip-link', '--offload-device-only', '--offload-host-only', '-fhip-new-launch-api',
+                 '-D__HIP_PLATFORM_AMD__', '-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__',
+                 '-D__HIP_PLATFORM_HCC__=1'}
+
+
+def source_language(path, x_language):
+    """The language of an input file: 'cuda', 'hip', or None for other files."""
+    if path.startswith('-'):
+        return None
+    if x_language is not None:
+        return x_language if x_language in LANGUAGES else None
+    if MODE == 'hip' and path.endswith(CXX_EXTENSIONS):
+        return 'hip'
+    return EXTENSIONS.get(os.path.splitext(path)[1])
+
 
 def main(argv):
     compiler = os.environ.get('CUDA4CPU_CXX') or os.environ.get('CXX') or 'c++'
     work = tempfile.mkdtemp(prefix='cuda4cpu-')
     try:
         args = []
-        has_cuda = False
+        rewritten = False
+        x_language = None                   # set by -x: a language, 'other', or None (by extension)
         i = 0
         while i < len(argv):
             arg = argv[i]
+            if MODE == 'hip' and (arg in HIPCC_DROPPED or arg.startswith(HIPCC_DROPPED_PREFIXES)):
+                i += 1
+                continue
+            if arg == '-x' and i + 1 < len(argv) or arg.startswith('-x') and len(arg) > 2:
+                value = argv[i + 1] if arg == '-x' else arg[2:]
+                i += 2 if arg == '-x' else 1
+                # The compiler doesn't know cu and hip: their files are passed
+                # as rewritten C++ files, each with its own -x
+                if value in X_LANGUAGES:
+                    x_language = X_LANGUAGES[value]
+                    args += ['-x', 'none']
+                else:
+                    x_language = None if value == 'none' else 'other'
+                    args += ['-x', value]
+                continue
             if arg in OPTIONS_WITH_VALUE and i + 1 < len(argv):
                 args += [arg, argv[i + 1]]
                 i += 2
                 continue
-            if not arg.startswith('-') and arg.endswith('.cu'):
+            language = source_language(arg, x_language)
+            if language is not None:
                 # Keep the file name, so that the default object name stays the same
                 out = os.path.join(work, str(i), os.path.basename(arg))
                 os.makedirs(os.path.dirname(out))
-                status = subprocess.call([sys.executable, REWRITE, arg, '-o', out,
+                status = subprocess.call([sys.executable, REWRITE, arg, '-o', out, '--language', language,
                                           '--shadow-dir', os.path.join(work, str(i), 'headers')])
                 if status != 0:
                     return status
                 args += ['-x', 'c++', out, '-x', 'none']
-                has_cuda = True
+                rewritten = True
             else:
                 args.append(arg)
             i += 1
@@ -85,7 +142,7 @@ def main(argv):
             front.append('-std=c++23')
         if '-fopenmp' not in args:
             front.append('-fopenmp')
-        if has_cuda:
+        if rewritten:
             front += ['-include', 'cuda_runtime.h']
 
         back = []

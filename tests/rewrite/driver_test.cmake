@@ -17,9 +17,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Builds a .cu file with the cuda4cpu-c++ driver, in one step and with
-# separate compilation and linking, and runs the results.
-# Usage: cmake -DDRIVER=... -DSOURCE=... -DWORK=... -P driver_test.cmake
+# Builds a .cu file with the cuda4cpu-c++ driver (or a HIP file with
+# cuda4cpu-hipcc), in one step and with separate compilation and linking, and
+# runs the results. FLAGS, if given, are options for the steps that compile,
+# separated by |.
+# Usage: cmake -DDRIVER=... -DSOURCE=... -DWORK=... [-DFLAGS=...] -P driver_test.cmake
 
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
@@ -31,10 +33,12 @@ function(run)
     endif()
 endfunction()
 
-run("${DRIVER}" -O2 -o "${WORK}/one_step" "${SOURCE}")
+string(REPLACE "|" ";" flags "${FLAGS}")
+
+run("${DRIVER}" ${flags} -O2 -o "${WORK}/one_step" "${SOURCE}")
 run("${WORK}/one_step")
 
-run("${DRIVER}" -O2 -c "${SOURCE}")
+run("${DRIVER}" ${flags} -O2 -c "${SOURCE}")
 cmake_path(GET SOURCE STEM stem)
 run("${DRIVER}" -o "${WORK}/two_steps" "${WORK}/${stem}.o")
 run("${WORK}/two_steps")
