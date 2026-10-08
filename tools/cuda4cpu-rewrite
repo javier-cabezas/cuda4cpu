@@ -33,6 +33,21 @@
       The cast to void * would hide the kernel's parameter types, which
       cuda4cpu needs to unpack the argument array.
 
+  (void *)kernel, for any __global__ function of the file or its local headers
+      -> cuda4cpu::kernel_address(kernel)
+      Registers the kernel's parameter types under its address, for graph
+      kernel nodes (params.func = (void *)kernel) and cudaLaunchKernel.
+
+  clock(), in the body of a __global__ or __device__ function
+      -> cuda4cpu::device_clock()
+      The device clock counts at the device's clock rate; the C library's
+      clock() measures processor time.
+
+  params.gridDim, params->blockDim
+      -> params.cuda4cpu_gridDim, params->cuda4cpu_blockDim
+      gridDim and blockDim are macros for the built-in variables, so the fields
+      of cudaKernelNodeParams have other names.
+
 The kernel, the launch configuration and the arguments are copied verbatim, so
 the result behaves like the CUDA launch: template arguments are deduced from the
 arguments and default arguments apply. Line numbers are preserved and a #line
@@ -410,6 +425,132 @@ def find_void_casts(tokens):
                 break
 
 
+# Casts to void *, as token texts; the operand follows
+VOID_CASTS = (['(', 'void', '*', ')'], ['(', 'const', 'void', '*', ')'])
+VOID_REINTERPRET_CASTS = (['reinterpret_cast', '<', 'void', '*', '>', '('],
+                          ['reinterpret_cast', '<', 'const', 'void', '*', '>', '('])
+
+# Words that can come between __global__ and the kernel's name
+DECLARATION_WORDS = frozenset(('void', 'static', 'inline', 'extern', '__forceinline__', '__noinline__',
+                               '__host__', '__device__', 'constexpr'))
+
+
+def find_kernels(tokens):
+    """Yields the names of the __global__ functions declared in tokens."""
+    for i, t in enumerate(tokens):
+        if t.text != '__global__':
+            continue
+        k = i + 1
+        while k < len(tokens):
+            u = tokens[k]
+            if u.text in ('__launch_bounds__', '__attribute__', 'alignas') and \
+                    k + 1 < len(tokens) and tokens[k + 1].text == '(':
+                close = match_forward(tokens, k + 1)    # skip its arguments
+                if close is None:
+                    break
+                k = close + 1
+            elif u.kind == 'id' and u.text in DECLARATION_WORDS or u.kind == 'string':
+                k += 1
+            elif u.kind == 'id' and k + 1 < len(tokens) and tokens[k + 1].text in ('(', '<'):
+                yield u.text
+                break
+            else:
+                break
+
+
+def kernel_operand(tokens, k, kernels):
+    """If tokens[k:] is a kernel name (with an optional &, qualification and
+    template arguments), returns the index of its last token."""
+    if k < len(tokens) and tokens[k].text == '&':
+        k += 1
+    while k + 2 < len(tokens) and tokens[k].kind == 'id' and tokens[k + 1].text == '::':
+        k += 2
+    if k >= len(tokens) or tokens[k].kind != 'id' or tokens[k].text not in kernels:
+        return None
+    if k + 1 < len(tokens) and tokens[k + 1].text == '<':
+        depth = 0
+        for j in range(k + 1, len(tokens)):
+            if tokens[j].text == '<':
+                depth += 1
+            elif tokens[j].text == '>':
+                depth -= 1
+                if depth == 0:
+                    return j
+            elif tokens[j].text == '>>':
+                depth -= 2
+                if depth <= 0:
+                    return j
+            elif tokens[j].text in (';', '{', '}'):
+                return None
+        return None
+    return k
+
+
+def find_kernel_casts(tokens, kernels, skip):
+    """Yields (first, last, operand_first, operand_last) for each cast of a
+    kernel to void *, except the casts starting at the indices in skip."""
+    for i in range(len(tokens)):
+        if i in skip:
+            continue
+        texts = [u.text for u in tokens[i:i + 7]]
+        for form in VOID_CASTS:
+            if texts[:len(form)] == form:
+                last = kernel_operand(tokens, i + len(form), kernels)
+                if last is not None:
+                    yield i, last, i + len(form), last
+                break
+        else:
+            for form in VOID_REINTERPRET_CASTS:
+                if texts[:len(form)] == form:
+                    last = kernel_operand(tokens, i + len(form), kernels)
+                    if last is not None and last + 1 < len(tokens) and tokens[last + 1].text == ')':
+                        yield i, last + 1, i + len(form), last
+                    break
+
+
+def device_bodies(tokens):
+    """Yields (open, close) token indices of the bodies of the __global__ and
+    __device__ functions in tokens."""
+    i = 0
+    while i < len(tokens):
+        if tokens[i].text not in ('__global__', '__device__'):
+            i += 1
+            continue
+        # The body is the first '{' outside parentheses, before any ';' or '='
+        # (which make it a variable)
+        k = i + 1
+        while k < len(tokens) and tokens[k].text not in ('{', ';', '='):
+            if tokens[k].text in ('(', '['):
+                close = match_forward(tokens, k)
+                if close is None:
+                    break
+                k = close
+            k += 1
+        if k < len(tokens) and tokens[k].text == '{':
+            close = match_forward(tokens, k)
+            if close is not None:
+                yield k, close
+                i = close + 1
+                continue
+        i = k + 1
+
+
+def find_device_clocks(tokens):
+    """Yields the indices of calls to clock() in device functions."""
+    for open_, close in device_bodies(tokens):
+        for k in range(open_ + 1, close - 2):
+            if tokens[k].text == 'clock' and tokens[k + 1].text == '(' and tokens[k + 2].text == ')' and \
+                    tokens[k - 1].text not in ('.', '->', '::'):
+                yield k
+
+
+def find_dim_fields(tokens):
+    """Yields the indices of gridDim and blockDim used as member names."""
+    for i in range(1, len(tokens)):
+        if tokens[i].text in ('gridDim', 'blockDim') and tokens[i - 1].text in ('.', '->'):
+            yield i
+
+
 def opens_namespace(tokens, i):
     """True if the '{' at tokens[i] opens a namespace or an extern "C" block."""
     k = i - 1
@@ -429,6 +570,7 @@ class Rewriter:
         self.shadow_dir = shadow_dir
         self.read_files = []                        # every file read, for depfiles
         self.done = {}                              # original path -> shadow path
+        self.kernels = set()                        # __global__ functions seen so far
 
     def shadow_path(self, path):
         return os.path.join(self.shadow_dir, path.lstrip(os.sep))
@@ -440,7 +582,7 @@ class Rewriter:
         with open(path, encoding='utf-8', errors='surrogateescape') as f:
             text = f.read()
         try:
-            return rewrite_text(text, path, self.include_hook(path))
+            return rewrite_text(text, path, self.include_hook(path), self.kernels)
         except RewriteError as e:
             line, message = e.args
             raise RewriteError(line, f'{path}:{line}: error: {message}') from None
@@ -460,9 +602,12 @@ class Rewriter:
         return hook
 
 
-def rewrite_text(text, path, include_hook=None):
-    """Rewrites the CUDA syntax of text, which comes from path."""
+def rewrite_text(text, path, include_hook=None, kernels=None):
+    """Rewrites the CUDA syntax of text, which comes from path. kernels is the
+    set of __global__ functions known so far, to which this file's are added."""
     tokens = lex(text)
+    kernels = set() if kernels is None else kernels
+    kernels.update(find_kernels(tokens))
     line, pos = 1, 0
     for t in tokens:
         line += text.count('\n', pos, t.start)
@@ -488,10 +633,26 @@ def rewrite_text(text, path, include_hook=None):
             new = f'{type_text} *{name} = cuda4cpu::dynamic_shared<{type_text}>();'
         replacements.append((tokens[first].start, tokens[semi].end, new))
 
+    launch_casts = set()
     for first, last in find_void_casts(tokens):
         # Keep the newlines the cast may span, so that line numbers don't change
         replacements.append((tokens[first].start, tokens[last].end,
                              '\n' * text.count('\n', tokens[first].start, tokens[last].end)))
+        launch_casts.add(first)
+
+    # Kernels are known once the includes above have been rewritten
+    for first, last, op_first, op_last in find_kernel_casts(tokens, kernels, launch_casts):
+        operand = text[tokens[op_first].start:tokens[op_last].end]
+        newlines = text.count('\n', tokens[first].start, tokens[op_first].start) + \
+            text.count('\n', tokens[op_last].end, tokens[last].end)
+        replacements.append((tokens[first].start, tokens[last].end,
+                             f'cuda4cpu::kernel_address({operand}){chr(10) * newlines}'))
+
+    for i in find_device_clocks(tokens):
+        replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu::device_clock'))
+
+    for i in find_dim_fields(tokens):
+        replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu_' + tokens[i].text))
 
     replacements.sort()
     launches = find_launches(tokens)                # sorted by position
