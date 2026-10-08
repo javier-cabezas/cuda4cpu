@@ -65,7 +65,7 @@ jobs:
           ctest --preset debug
 
   # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
-  # test suite must run clean. (The driver test builds a program without the
+  # test suite must run clean. (The driver tests build programs without the
   # sanitizer flags against the instrumented library.)
   sanitizers:
     name: gcc-14 / AddressSanitizer and UBSan
@@ -86,7 +86,7 @@ jobs:
         run: |
           cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           cmake --build --preset debug
-          ctest --preset debug -E '^driver$'
+          ctest --preset debug -E '^driver'
 
   # With CUDA4CPU_ENABLE_VALGRIND, the fiber stacks are registered with
   # Valgrind, which must report no errors. The slowest tests are left out.
