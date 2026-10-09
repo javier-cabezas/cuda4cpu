@@ -1181,6 +1181,128 @@ void detail::memory_info(size_t &free, size_t &total)
     total = page > 0 && physical > 0 ? size_t(physical) * size_t(page) : 0;
 }
 
+namespace {
+
+//! Bytes that each OS thread copies or fills at least. Waking the OpenMP
+//! threads costs about as much as copying a few megabytes, so smaller copies
+//! use fewer threads, or only the calling one.
+constexpr size_t min_bytes_per_thread = size_t(2) << 20;
+
+//! OS threads that copy or fill bytes bytes
+size_t memory_threads(size_t bytes)
+{
+    if (bytes < 2 * min_bytes_per_thread || omp_in_parallel())
+        return 1;
+    return std::min(size_t(omp_get_max_threads()), bytes / min_bytes_per_thread);
+}
+
+//! Calls f(begin, end) on threads parts of [0, count), each on its own OS thread
+template <typename F>
+void split(size_t count, size_t threads, F f)
+{
+    threads = std::min(threads, count);
+    if (threads <= 1) {
+        f(size_t(0), count);
+        return;
+    }
+
+    #pragma omp parallel num_threads(int(threads))
+    {
+        const size_t n = size_t(omp_get_num_threads()), t = size_t(omp_get_thread_num());
+        auto bound = [&](size_t i) { return count / n * i + std::min(i, count % n); };
+        f(bound(t), bound(t + 1));
+    }
+}
+
+//! Whether [a, a + a_size) and [b, b + b_size) share any byte
+bool overlap(const void *a, size_t a_size, const void *b, size_t b_size)
+{
+    const auto x = reinterpret_cast<uintptr_t>(a), y = reinterpret_cast<uintptr_t>(b);
+    return x < y + b_size && y < x + a_size;
+}
+
+//! Fills n elements of element_size bytes with the low bytes of value
+void fill_elements(char *dst, unsigned value, size_t element_size, size_t n)
+{
+    switch (element_size) {
+    case 1:
+        std::memset(dst, int(value & 0xff), n);
+        break;
+    case 2: {
+        const auto v = uint16_t(value);
+        for (size_t i = 0; i < n; ++i)
+            std::memcpy(dst + 2 * i, &v, 2);
+        break;
+    }
+    default: {
+        const auto v = uint32_t(value);
+        for (size_t i = 0; i < n; ++i)
+            std::memcpy(dst + 4 * i, &v, 4);
+        break;
+    }
+    }
+}
+
+}
+
+void detail::copy_bytes(void *dst, const void *src, size_t count)
+{
+    const size_t threads = memory_threads(count);
+    if (threads == 1 || overlap(dst, count, src, count)) {
+        std::memmove(dst, src, count);
+        return;
+    }
+    split(count, threads, [&](size_t begin, size_t end) {
+        std::memcpy(static_cast<char *>(dst) + begin, static_cast<const char *>(src) + begin, end - begin);
+    });
+}
+
+void detail::copy_rows(char *dst, size_t dst_pitch, size_t dst_slice, const char *src, size_t src_pitch,
+                       size_t src_slice, size_t width, size_t height, size_t depth)
+{
+    if (width == 0 || height == 0 || depth == 0)
+        return;
+    // Rows that follow each other are one contiguous copy
+    if (width == dst_pitch && width == src_pitch && (depth == 1 || (dst_slice == width * height &&
+                                                                   src_slice == width * height))) {
+        copy_bytes(dst, src, width * height * depth);
+        return;
+    }
+
+    const size_t rows = height * depth;
+    auto copy = [&](size_t begin, size_t end) {
+        for (size_t r = begin; r < end; ++r) {
+            const size_t z = r / height, y = r % height;
+            std::memmove(dst + z * dst_slice + y * dst_pitch, src + z * src_slice + y * src_pitch, width);
+        }
+    };
+    // Overlapping rows must be copied in order, like one memmove after another
+    const size_t dst_span = (depth - 1) * dst_slice + (height - 1) * dst_pitch + width;
+    const size_t src_span = (depth - 1) * src_slice + (height - 1) * src_pitch + width;
+    if (overlap(dst, dst_span, src, src_span))
+        copy(0, rows);
+    else
+        split(rows, memory_threads(width * rows), copy);
+}
+
+void detail::fill_rows(void *dst, size_t pitch, unsigned value, size_t element_size, size_t width, size_t height)
+{
+    auto *bytes = static_cast<char *>(dst);
+    const size_t row_bytes = width * element_size;
+    // Rows that follow each other are one contiguous fill
+    if (height == 1 || pitch == row_bytes) {
+        const size_t n = width * height;
+        split(n, memory_threads(n * element_size), [&](size_t begin, size_t end) {
+            fill_elements(bytes + begin * element_size, value, element_size, end - begin);
+        });
+        return;
+    }
+    split(height, memory_threads(row_bytes * height), [&](size_t begin, size_t end) {
+        for (size_t y = begin; y < end; ++y)
+            fill_elements(bytes + y * pitch, value, element_size, width);
+    });
+}
+
 void detail::get_device_properties(cudaDeviceProp &prop)
 {
     // Computed once: none of this changes while the process runs

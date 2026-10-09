@@ -196,7 +196,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `detail::kernel_call<F, Stored...>`. That type provides the two thread loops
   instantiated for it, `run_direct` and `run_one`, and `detail::run_grid`
   runs the blocks in an `omp for schedule(dynamic, chunk)` loop, with about 8
-  contiguous chunks per OS thread. With a lambda, the kernel is known at
+  contiguous chunks per OS thread. The parallel region has at most one OS
+  thread per block, and a single-block grid runs on the calling thread
+  without one: waking the OpenMP threads costs about 2 µs, 5x an empty
+  256-thread block. With a lambda, the kernel is known at
   compile time and gets inlined into the loop: rewritten vecadd matches a
   plain OpenMP loop, while launching through a function pointer costs about
   1.3x.
@@ -336,6 +339,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `clock()` can't be overloaded (it's the C function, and `std::clock` must
   keep working), so the rewriter replaces device calls. `clock64()` and
   `device_clock()` count at `clockRate`, from `steady_clock`.
+- Copies and memsets go through `detail::copy_bytes`, `copy_rows` and
+  `fill_rows` in the library, which split those of 4 MB or more across the
+  OpenMP threads (at least 2 MB each, and none inside a parallel region).
+  Copying into a fresh allocation is bound by page faults, which threads
+  take in parallel: 256 MB goes from about 180 ms to 30 ms. Overlapping
+  copies stay one `memmove`.
 - Allocations go through `detail::allocate_aligned` in the library. When
   inline, GCC may elide an allocation whose result is never dereferenced,
   and treat it as successful.
