@@ -22,7 +22,8 @@
           "dir": "cpp/0_Introduction/cudaOpenMP"
         },
         {
-          "dir": "cpp/0_Introduction/fp16ScalarProduct"
+          "dir": "cpp/0_Introduction/fp16ScalarProduct",
+          "expect": "fp16ScalarProduct PASSED"
         },
         {
           "dir": "cpp/0_Introduction/matrixMul"

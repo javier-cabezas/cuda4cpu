@@ -63,6 +63,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the `detail::capture_*` functions of the library.
 - `include/nvtx3/nvToolsExt.h` (and `nvToolsExt.h`): NVTX stand-ins that do
   nothing.
+- `include/cuda_fp16.h`: `__half`/`__half2` and their intrinsics, in
+  `cuda_api`. A `__half` holds the binary16 bits. `detail::to_half_bits`
+  rounds a double to half in any of the four modes, and every operation is
+  "compute in double, round once", which is correctly rounded for half (see
+  the comments on `__hfma`'s exactness). `hip/hip_fp16.h` includes it.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -153,6 +158,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `symbol_address_rejected`: a compile-only test. Passing `&symbol` to
     `cudaMemcpyToSymbol` must fail with the static_assert message.
   - `events`: event timing
+  - `fp16` (`fp16.cu`): half precision against an exact reference, a table
+    of every half decoded independently of the header. Every half's round
+    trip, float conversions in all four modes around every rounding
+    boundary, a million random add/sub/mul/fma (exact as `__int128`
+    multiples of 2^-48) and div/sqrt (through 64-bit `long double`), the
+    special values, and kernels with `half2`, shuffles and atomics.
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
   - `samples/*.cu`: ten unmodified CUDA programs, built with
