@@ -127,6 +127,11 @@ jobs:
     env:
       CXX: g++-14
       CC: gcc-14
+      # Four programs share the runner's four cores. OpenMP threads that spin
+      # after a parallel region take the CPU from the threads that the next
+      # launch waits for: a program with many small launches ran 60 times
+      # slower than alone. Spinning briefly cut the job by about a third.
+      GOMP_SPINCOUNT: 1000
     steps:
       - uses: actions/checkout@v4
 
