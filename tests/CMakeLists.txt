@@ -54,6 +54,12 @@ foreach(sample IN ITEMS async_api device_query histogram managed_add matmul nbod
     add_test(NAME sample_${sample} COMMAND sample_${sample})
 endforeach()
 
+# Half precision against an exact reference, and in kernels
+add_executable(fp16)
+set_target_properties(fp16 PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(fp16 fp16.cu)
+add_test(NAME fp16 COMMAND fp16)
+
 # CUDA graphs: capture, explicit graphs, conditionals and graph memory. A .cu
 # file, so that (void *)kernel and params.gridDim go through the rewriter.
 add_executable(graphs)

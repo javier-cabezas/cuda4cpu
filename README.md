@@ -247,7 +247,7 @@ implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
 builtins.
 
 - **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`,
-  `hip/hip_cooperative_groups.h`, `hip/hip_vector_types.h`,
+  `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_vector_types.h`,
   `hip/hip_version.h` (HIP 7.2) and `hip/hip_common.h`.
 - **Runtime API:** every CUDA function, type and constant that cuda4cpu
   implements has its HIP name. `hipMalloc`, `hipStream_t` and
@@ -275,8 +275,8 @@ builtins.
   - `wall_clock64` and `__clock64`
   - `unsafeAtomicAdd`, `safeAtomicAdd`, `atomicAddNoRet`
   - the `__HIP_ARCH_HAS_*` feature macros
-- **Not implemented:** what CUDA lacks here too (textures, half precision,
-  ...), plus `hip/hip_complex.h`, HIPRTC, the module API (`hipModuleLoad`,
+- **Not implemented:** what CUDA lacks here too (textures, bfloat16, ...),
+  plus 8-bit floats (`hip/hip_fp8.h`), `hip/hip_complex.h`, HIPRTC, the module API (`hipModuleLoad`,
   ...), contexts, virtual memory management, `hipPointerGetAttributes` and
   `hipMemRangeGetAttribute`.
 
@@ -316,6 +316,22 @@ arguments. A kernel name whose template arguments contain commas goes in
   `__threadfence_system`
 - `dim3`, the built-in vector types (`float4`, `int2`, `uchar3`, ...) and their
   `make_<type>` functions
+- Half precision (`cuda_fp16.h`): `__half` and `__half2` (`half`, `half2`),
+  with CUDA's layout, implicit conversions and operators, and their
+  intrinsics:
+  - conversions to and from float, double and integers in every rounding
+    mode, bit reinterpretation, and `half2` packing (`__floats2half2_rn`,
+    `__low2float`, `__halves2half2`, ...)
+  - arithmetic (`__hadd`, `__hfma`, `__hmul2`, `__h2div`, ... and the `_sat`
+    and `_relu` forms), comparisons (ordered, unordered, `__hb*2` and
+    `_mask`), `__hmax`/`__hmin`, `__hisnan`, `__hisinf`
+  - math (`hsqrt`, `hrcp`, `hexp`, `hsin`, `hfloor`, ... and their `h2`
+    forms), shuffles, `__ldg`, and `atomicAdd` on `__half` and `__half2`
+
+  Arithmetic (including `__hfma`), `hsqrt`, `hrcp` and conversions are
+  correctly rounded, subnormals included, and conversions honor their
+  `_rn`/`_rz`/`_rd`/`_ru` suffix. The other math functions round their
+  double precision result, so they are at least as accurate as CUDA's.
 - Math: the C++ standard library, plus `rsqrtf`, `rsqrt` and the fast
   intrinsics `__expf`, `__exp10f`, `__logf`, `__log2f`, `__log10f`, `__sinf`,
   `__cosf`, `__tanf`, `__sincosf`, `__powf`, `__fdividef` and `__saturatef`.
@@ -346,7 +362,7 @@ arguments. A kernel name whose template arguments contain commas goes in
 | More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool, `cudaMemPoolCreate`, `cudaMemPoolDestroy`), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`). All memory is host memory, so the hints and pool settings have no effect. |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc`, and the default streams `cudaStreamLegacy` and `cudaStreamPerThread` (one per OS thread) |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
-| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cuda_fp16.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
 | Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
 | Stream capture | `cudaStreamBeginCapture`, `cudaStreamBeginCaptureToGraph`, `cudaStreamEndCapture`, `cudaStreamIsCapturing`, `cudaStreamGetCaptureInfo`, `cudaStreamUpdateCaptureDependencies`, and fork and join through events. Kernel launches, async copies and memsets, `cudaLaunchHostFunc`, `cudaMallocAsync` and `cudaFreeAsync` are captured. |
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
@@ -376,19 +392,18 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 42 of 61 (1 more waives itself, and 2 are skipped as too slow) | 16 |
+| cuda-samples | 43 of 61 (1 more waives itself, and 2 are skipped as too slow) | 15 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
-| rocm-examples | 72 of 82 | 10 |
+| rocm-examples | 73 of 82 | 9 |
 
 Most of what's missing is a few features:
 
 | Programs | Missing |
 |---|---|
 | 10 | Textures and surfaces |
-| 3 | Half precision and 8-bit floats (`cuda_fp16.h`, `hip/hip_fp16.h`, `hip/hip_fp8.h`) |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
-| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, complex numbers (`hip/hip_complex.h`), virtual memory management, `hipPointerGetAttributes`, `hipMemRangeGetAttribute` |
+| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, 8-bit floats (`hip/hip_fp8.h`), complex numbers (`hip/hip_complex.h`), virtual memory management, `hipPointerGetAttributes`, `hipMemRangeGetAttribute` |
 
 Two more, versions 5 and 6 of the reduction tutorial, have a race:
 their last warp reduces through shared memory without `__syncwarp()` between
@@ -577,9 +592,9 @@ errors in the context switch.
   `__ballot` returns 64-bit masks whose high half is zero. Code that only
   supports AMD GPUs doesn't compile: AMD builtins (`__builtin_amdgcn_*`),
   `__HIP_PLATFORM_AMD__` branches, and code that assumes 64-lane wavefronts.
-- **Not implemented yet:** textures and surfaces, dynamic parallelism, half
-  precision, `__reduce_*_sync`, `memcpy_async`, 16-bit atomics, inline PTX,
-  and the driver API. [Compatibility with real CUDA and HIP
+- **Not implemented yet:** textures and surfaces, dynamic parallelism,
+  bfloat16 and 8-bit floats, `__reduce_*_sync`, `memcpy_async`, 16-bit
+  integer atomics, inline PTX, and the driver API. [Compatibility with real CUDA and HIP
   code](#compatibility-with-real-cuda-and-hip-code) shows which programs each
   one blocks.
 

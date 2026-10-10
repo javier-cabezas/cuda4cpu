@@ -23,12 +23,13 @@
 // hipLaunchKernelGGL (with HIP_KERNEL_NAME, deduced template arguments and no
 // arguments), launches with <<<...>>>, HIP's names of the built-in variables,
 // HIP_DYNAMIC_SHARED in a kernel and at namespace scope, the warp functions
-// without masks, bit manipulation, clocks, atomics, cooperative groups, and
-// the platform and feature macros.
+// without masks, bit manipulation, clocks, atomics, cooperative groups, half
+// precision (hip_fp16.h), and the platform and feature macros.
 //
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_cooperative_groups.h>
+#include <hip/hip_fp16.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -150,6 +151,15 @@ __global__ void atomics(float *sum, int *count)
     atomicAddNoRet(count, 1);
 }
 
+//! Half precision: a + b, and a * b + a with half2
+__global__ void half_math(const __half *a, const __half *b, float *sum, __half2 *fused)
+{
+    const unsigned i = threadIdx.x;
+    sum[i] = __half2float(a[i] + b[i]);
+    const __half2 v = __halves2half2(a[i], b[i]);
+    fused[i] = __hfma2(v, v, v);
+}
+
 __global__ void clocks(long long *ticks)
 {
     const long long wall = wall_clock64(), clock = __clock64();
@@ -261,6 +271,25 @@ int main()
         hipLaunchKernelGGL(tile_sums, 1, 64, 0, 0, in, out);
         for (int i = 0; i < 4; ++i)
             EXPECT(out[i] == std::accumulate(in + 16 * i, in + 16 * (i + 1), 0));
+    }
+
+    // Half precision, with small integers and halves, which are exact
+    {
+        __half a[32], b[32];
+        float sum[32];
+        __half2 fused[32];
+        for (int i = 0; i < 32; ++i) {
+            a[i] = __float2half(float(i));
+            b[i] = __float2half(0.5f * float(i));
+        }
+        hipLaunchKernelGGL(half_math, 1, 32, 0, 0, a, b, sum, fused);
+        int wrong = 0;
+        for (int i = 0; i < 32; ++i) {
+            wrong += sum[i] != 1.5f * float(i);
+            wrong += __low2float(fused[i]) != float(i * i + i);
+            wrong += __high2float(fused[i]) != 0.25f * float(i * i) + 0.5f * float(i);
+        }
+        EXPECT(wrong == 0);
     }
 
     // Atomics, clocks and bit manipulation
