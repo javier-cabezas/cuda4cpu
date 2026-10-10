@@ -192,6 +192,22 @@ void *allocate_aligned(size_t size);
 //! host's free and physical memory (defined in the library)
 void memory_info(size_t &free, size_t &total);
 
+// Copies and fills, defined in the library. Large ones are split across the
+// OpenMP threads: copying into fresh allocations is bound by page faults,
+// which several threads take in parallel.
+
+//! Copies count bytes, like memmove
+void copy_bytes(void *dst, const void *src, size_t count);
+
+//! Copies depth slices of height rows of width bytes, each row pitch bytes
+//! after the previous one, and each slice slice bytes after the previous one
+void copy_rows(char *dst, size_t dst_pitch, size_t dst_slice, const char *src, size_t src_pitch, size_t src_slice,
+               size_t width, size_t height, size_t depth);
+
+//! Fills height rows of width elements of element_size (1, 2 or 4) bytes
+//! with the low bytes of value, each row pitch bytes after the previous one
+void fill_rows(void *dst, size_t pitch, unsigned value, size_t element_size, size_t width, size_t height);
+
 inline cudaError_t allocate(void **ptr, size_t size)
 {
     if (ptr == nullptr)
@@ -216,7 +232,7 @@ inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind
     if (count > 0 && (dst == nullptr || src == nullptr))
         return record_error(cudaErrorInvalidValue);
 
-    std::memmove(dst, src, count);
+    copy_bytes(dst, src, count);
     return cudaSuccess;
 }
 
@@ -241,11 +257,7 @@ inline cudaError_t copy_3d(const cudaMemcpy3DParms &p)
                       p.srcPos.y * p.srcPtr.pitch + p.srcPos.x;
     auto *dst = static_cast<char *>(p.dstPtr.ptr) + p.dstPos.z * dst_slice + p.dstPos.y * p.dstPtr.pitch +
                 p.dstPos.x;
-    for (size_t z = 0; z < e.depth; ++z) {
-        for (size_t y = 0; y < e.height; ++y)
-            std::memmove(dst + z * dst_slice + y * p.dstPtr.pitch, src + z * src_slice + y * p.srcPtr.pitch,
-                         e.width);
-    }
+    copy_rows(dst, p.dstPtr.pitch, dst_slice, src, p.srcPtr.pitch, src_slice, e.width, e.height, e.depth);
     return cudaSuccess;
 }
 
@@ -259,11 +271,7 @@ inline cudaError_t fill(const cudaMemsetParams &p)
     if (p.dst == nullptr || (p.height > 1 && p.pitch < p.width * p.elementSize))
         return record_error(cudaErrorInvalidValue);
 
-    for (size_t y = 0; y < p.height; ++y) {
-        auto *row = static_cast<char *>(p.dst) + y * p.pitch;
-        for (size_t x = 0; x < p.width; ++x)
-            std::memcpy(row + x * p.elementSize, &p.value, p.elementSize);   // little-endian: the low bytes
-    }
+    fill_rows(p.dst, p.pitch, p.value, p.elementSize, p.width, p.height);
     return cudaSuccess;
 }
 
@@ -623,7 +631,7 @@ cudaError_t cudaMemset(void *devPtr, int value, size_t count)
     if (count > 0 && devPtr == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
 
-    std::memset(devPtr, value, count);
+    detail::fill_rows(devPtr, count, unsigned(value) & 0xff, 1, count, 1);
     return cudaSuccess;
 }
 
