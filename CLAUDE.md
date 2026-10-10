@@ -137,7 +137,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
-  - `barriers`: early exits and divergent-block barrier semantics
+  - `barriers`: early exits and divergent-block barrier semantics, and 3D
+    blocks that reach a barrier or a shuffle in the middle of direct mode
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
   - `stacks`: deep stacks, `cudaLimitStackSize`, and the guard page (forks a
     child that must die with `SIGSEGV`)
@@ -225,8 +226,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   captured once at creation through `makecontext`.
 - `execute` runs one block. It always starts in **direct mode**: `fiber_main`
   runs on fiber 0's stack and calls `run_direct`, which loops over the
-  threads calling the kernel directly. `next_direct_thread()` moves to the
-  next thread. With no barriers there are no switches at all.
+  threads calling the kernel directly. With no barriers there are no switches
+  at all. In the default order the loop iterates over z, y and x, and stores
+  only `threadIdx`: `cur_`, `pos_` and the lane aren't kept up to date, and
+  `promote()` and `lane_id()` compute them from `threadIdx`
+  (`direct_thread()`). That made a CUDA thread that only checks bounds go from
+  2.3 to 0.9 ns. With `CUDA4CPU_SCHEDULE`, `next_direct_thread()` moves to
+  the next thread in the order and sets them all.
 - The first `__syncthreads()` or warp function calls `promote()`: threads
   before `cur_` are finished, and the current thread stays on fiber 0's stack
   (its own stack is unused for that block).
@@ -266,9 +272,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   barrier, or (for `__activemask()`) at any warp operation. That is why
   early returns don't block barriers, and why no barrier can deadlock.
   `deadlock()` is an internal consistency check.
-- `threadIdx`, `blockIdx`, `blockDim`, `gridDim` and the lane are stored in
-  `thread_block::Vars_`, which `set_current_thread()` and `execute()` keep up
-  to date. The getters return `dim3` by value.
+- `threadIdx`, `blockIdx`, `blockDim` and `gridDim` are stored in
+  `thread_block::Vars_`, which `set_current_thread()`, `execute()` and the
+  direct-mode loop keep up to date. The getters return `dim3` by value. The
+  lane is computed from `threadIdx` and `blockDim`, and so is gdb's
+  `$laneid()`.
 - `__shared__` is `static thread_local`. That's correct only because a block
   always runs to completion on one OS thread.
 

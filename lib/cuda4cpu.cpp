@@ -775,6 +775,10 @@ void thread_block::fiber_main()
 //! returned, and threads after it have not started yet.
 void thread_block::promote()
 {
+    // In the default order, direct mode keeps only threadIdx up to date
+    if (order_ == nullptr)
+        cur_ = pos_ = direct_thread();
+
     auto &f = *fibers_;
     for (size_t w = 0; w < f.warps.size(); ++w) {
         const size_t base = w * warp_size;
@@ -929,7 +933,7 @@ unsigned thread_block::warp_live_mask(size_t base) const
     const size_t end = std::min(base + warp_size, nthreads_);
     unsigned mask = 0;
     if (order_ == nullptr) {
-        for (size_t t = std::max(base, cur_); t < end; ++t)
+        for (size_t t = std::max(base, direct_thread()); t < end; ++t)
             mask |= lane_bit(t);
     } else {
         for (size_t t = base; t < end; ++t)
@@ -940,6 +944,14 @@ unsigned thread_block::warp_live_mask(size_t base) const
         }
     }
     return mask;
+}
+
+//! The running CUDA thread in direct mode, in the default order, where only
+//! threadIdx is kept up to date
+size_t thread_block::direct_thread() const
+{
+    const dim3 &b = conf_.block;
+    return (size_t(Vars_.thread_idx.z) * b.y + Vars_.thread_idx.y) * b.x + Vars_.thread_idx.x;
 }
 
 void thread_block::release_block()

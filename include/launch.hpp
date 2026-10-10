@@ -209,7 +209,8 @@ public:
     static inline unsigned
     lane_id()
     {
-        return Vars_.lane;
+        const builtin_vars &v = Vars_;
+        return ((v.thread_idx.z * v.block_dim.y + v.thread_idx.y) * v.block_dim.x + v.thread_idx.x) % 32;
     }
 
     //! Dynamic shared memory of the calling thread block
@@ -276,6 +277,7 @@ private:
     void try_release_converge(size_t w);
     void try_release_tile(size_t w);
     unsigned warp_live_mask(size_t base) const;
+    size_t direct_thread() const;
     uint64_t warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane);
     void reserve_shared(size_t bytes);
 
@@ -284,8 +286,8 @@ private:
     dim3 block_id_;
     size_t nthreads_;
     size_t stack_size_;
-    size_t cur_;    //!< CUDA thread being executed
-    size_t pos_;    //!< Position of cur_ in the running order (direct mode only)
+    size_t cur_;    //!< CUDA thread being executed (in direct mode, only with order_)
+    size_t pos_;    //!< Position of cur_ in the running order (direct mode with order_ only)
     const unsigned *order_;   //!< Running order of the threads, or nullptr for 0, 1, 2, ...
     bool direct_;   //!< No CUDA thread has reached a barrier in this block yet
     void *shared_mem_;
@@ -301,13 +303,14 @@ private:
     };
 
     //! Built-in variables of the CUDA thread running on this OS thread, kept
-    //! up to date by the scheduler so that reading one is a single load
+    //! up to date by the scheduler so that reading one is a single load. In
+    //! direct mode, in the default order, threadIdx is the only state that
+    //! changes from one CUDA thread to the next.
     struct builtin_vars {
         raw_dim3 thread_idx;
         raw_dim3 block_idx;
         raw_dim3 block_dim;
         raw_dim3 grid_dim;
-        unsigned lane;
     };
 
     //! Makes tid the running CUDA thread
@@ -315,7 +318,6 @@ private:
     {
         cur_ = tid;
         Vars_.thread_idx.set(ids_[tid]);
-        Vars_.lane = unsigned(tid % 32);
     }
 
     //! Called in direct mode when a CUDA thread returns. Moves to the next
@@ -386,9 +388,32 @@ struct kernel_call : kernel_closure {
     static void run_direct_impl(const kernel_closure &closure)
     {
         const auto &call = static_cast<const kernel_call &>(closure);
-        do {
-            std::apply(call.func, call.args);
-        } while (thread_block::next_direct_thread());
+        thread_block &block = *thread_block::Current_;
+        if (block.order_ != nullptr) [[unlikely]] {
+            // A debugging order (CUDA4CPU_SCHEDULE)
+            do {
+                std::apply(call.func, call.args);
+            } while (thread_block::next_direct_thread());
+            return;
+        }
+
+        // In the default order, each CUDA thread costs a store to threadIdx
+        // and a check that it didn't reach a barrier: promote() computes the
+        // running thread from threadIdx. If it did, the block is in fiber
+        // mode now, and the thread finishes as a fiber.
+        const dim3 b = block.conf_.block;
+        for (unsigned z = 0; z < b.z; ++z) {
+            thread_block::Vars_.thread_idx.z = z;
+            for (unsigned y = 0; y < b.y; ++y) {
+                thread_block::Vars_.thread_idx.y = y;
+                for (unsigned x = 0; x < b.x; ++x) {
+                    thread_block::Vars_.thread_idx.x = x;
+                    std::apply(call.func, call.args);
+                    if (!block.direct_) [[unlikely]]
+                        block.finish_current();
+                }
+            }
+        }
     }
 
     static void run_one_impl(const kernel_closure &closure)

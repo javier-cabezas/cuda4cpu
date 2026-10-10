@@ -78,6 +78,14 @@ __global__ void vecadd(float *C, const float *A, const float *B, size_t n)
         C[i] = A[i] + B[i];
 }
 
+// Most threads of a launch with more threads than elements only check bounds
+__global__ void bounds_check(float *out, size_t n)
+{
+    size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n)
+        out[i] = 1.f;
+}
+
 // Block b does work proportional to b, like a triangular loop nest
 __global__ void triangular(float *out, int scale)
 {
@@ -144,6 +152,36 @@ int main()
         row("vecadd 16M floats", ms, "ms");
         row("  launched as rewritten from vecadd<<<...>>>", ms_rewritten, "ms");
         row("  same loop with OpenMP", omp, "ms");
+    }
+
+    // Per-thread cost of barrier-free kernels: threads that only check bounds,
+    // and vecadd on data that fits in the caches
+    {
+        const unsigned blocks = 16384, threads = 1024;
+        auto run = [&] {
+            launch([&](const auto &...a) { bounds_check(a...); }, blocks, threads).call(nullptr, size_t(0));
+        };
+        run();
+        double ms = median_ms(run);
+        row("CUDA thread that only checks bounds, per thread and core", ms * 1e6 * omp_get_max_threads() /
+                                                                         (double(blocks) * threads), "ns");
+
+        const size_t n = size_t(1) << 20;
+        const int reps = 50;
+        std::vector<float> A(n, 1.f), B(n, 2.f), C(n);
+        double cached = median_ms([&] {
+            for (int r = 0; r < reps; ++r)
+                launch([&](const auto &...a) { vecadd(a...); }, unsigned(n / 256), 256)
+                    .call(C.data(), A.data(), B.data(), n);
+        });
+        double omp = median_ms([&] {
+            for (int r = 0; r < reps; ++r) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < n; ++i) C[i] = A[i] + B[i];
+            }
+        });
+        row("vecadd 1M floats (in cache), as rewritten", cached / reps, "ms");
+        row("  same loop with OpenMP", omp / reps, "ms");
     }
 
     // Uneven blocks, against an OpenMP loop with dynamic scheduling
