@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cerrno>
 #include <cstdint>
 #include <climits>
@@ -215,6 +216,7 @@ struct settings {
     order schedule = order::forward;            //!< CUDA4CPU_SCHEDULE
     uint64_t seed = 0;
     divergence barriers = divergence::warn;     //!< CUDA4CPU_DIVERGENT_BARRIERS
+    unsigned interleave = 0;                    //!< CUDA4CPU_INTERLEAVE: 0 tunes per kernel, ~0u is off
 
     static const settings &get()
     {
@@ -255,6 +257,20 @@ private:
             else
                 std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_DIVERGENT_BARRIERS=%s: expected "
                                      "warn, error or ignore\n", v);
+        }
+        if (const char *v = std::getenv("CUDA4CPU_INTERLEAVE"); v != nullptr && *v != '\0') {
+            std::string value = v;
+            char *end = nullptr;
+            const unsigned long n = std::strtoul(v, &end, 10);
+            if (value == "auto")
+                s.interleave = 0;
+            else if (value == "off")
+                s.interleave = ~0u;
+            else if (*end == '\0' && n > 0 && n < ~0u)
+                s.interleave = unsigned(n);
+            else
+                std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_INTERLEAVE=%s: expected auto, off or a "
+                                     "number of loop iterations\n", v);
         }
         return s;
     }
@@ -608,6 +624,7 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
     pos_{0},
     order_{nullptr},
     direct_{true},
+    slice_{~0u},
     shared_mem_{nullptr},
     ids_(nthreads_),
     fibers_{std::make_unique<fibers>(nthreads_, stack_size)}
@@ -693,6 +710,21 @@ void thread_block::reserve_shared(size_t bytes)
     shared_mem_ = ptr;
 }
 
+namespace {
+
+//! Loop iterations each thread runs before the next one, for each candidate
+//! of interleave_tuner: never switch, every 4 and every 16. In a grid-stride
+//! loop of 256 threads, switching every 4 iterations ran 10 times faster than
+//! never: past 16, the block's lines no longer fit in L1 before the next
+//! thread reuses them.
+constexpr unsigned interleave_slices[detail::interleave_tuner::candidates] = {~0u, 4, 16};
+
+//! Blocks timed with each candidate before choosing. The fastest of them
+//! counts, so the first ones, which touch fresh fiber stacks, don't decide.
+constexpr unsigned interleave_trials = 3;
+
+}
+
 void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
 {
     kernel_   = &kernel;
@@ -716,16 +748,72 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     const size_t first = order_ ? order_[0] : 0;
     f.direct_stack = first;
 
+    // The kernel's interleaving, or a trial of one while it is being chosen
+    detail::interleave_tuner *tuner = kernel.tuner;
+    int trial = -1;
+    slice_ = settings::get().interleave;
+    if (slice_ == 0 && tuner != nullptr) {
+        const int choice = tuner->choice.load(std::memory_order_relaxed);
+        if (choice >= 0) {
+            slice_ = interleave_slices[choice];
+        } else {
+            trial  = int(tuner->trials.fetch_add(1, std::memory_order_relaxed) % detail::interleave_tuner::candidates);
+            slice_ = interleave_slices[trial];
+        }
+    }
+    if (slice_ == 0)
+        slice_ = ~0u;
+    const auto start = trial >= 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+
     thread_block *prev = Current_;
     builtin_vars prev_vars = Vars_;
     Current_ = this;
     Vars_.block_idx.set(block_id);
     Vars_.block_dim.set(conf_.block);
     Vars_.grid_dim.set(conf_.grid);
+    Vars_.tick = slice_;
     set_current_thread(first);
     f.start_fiber(f.caller, first);
     Current_ = prev;
     Vars_    = prev_vars;
+
+    if (trial >= 0)
+        record_trial(*tuner, trial, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - start).count()));
+}
+
+//! Records the time of a block run with candidate trial, and chooses the
+//! fastest candidate once each has run interleave_trials blocks
+void thread_block::record_trial(detail::interleave_tuner &tuner, int trial, uint64_t nanoseconds)
+{
+    auto &fastest = tuner.fastest[trial];
+    for (uint64_t seen = fastest.load(std::memory_order_relaxed); nanoseconds < seen &&
+         !fastest.compare_exchange_weak(seen, nanoseconds, std::memory_order_relaxed); ) {
+    }
+    tuner.blocks[trial].fetch_add(1, std::memory_order_relaxed);
+
+    int best = 0;
+    for (int c = 0; c < detail::interleave_tuner::candidates; ++c) {
+        if (tuner.blocks[c].load(std::memory_order_relaxed) < interleave_trials)
+            return;
+        if (tuner.fastest[c].load(std::memory_order_relaxed) < tuner.fastest[best].load(std::memory_order_relaxed))
+            best = c;
+    }
+    tuner.choice.store(best, std::memory_order_relaxed);
+}
+
+void thread_block::interleave()
+{
+    thread_block *block = Current_;
+    if (block == nullptr) {
+        // Host code, in a __host__ __device__ function
+        Vars_.tick = ~0u;
+        return;
+    }
+    Vars_.tick = block->slice_;
+    if (block->direct_)
+        block->promote();
+    block->switch_from_current();
 }
 
 #if CUDA4CPU_ASM_CONTEXT

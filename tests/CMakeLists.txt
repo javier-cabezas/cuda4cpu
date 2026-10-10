@@ -60,6 +60,16 @@ set_target_properties(fp16 PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(fp16 fp16.cu)
 add_test(NAME fp16 COMMAND fp16)
 
+# Loops with interleaved threads (loop ticks inserted by the rewriter), with
+# the interleaving chosen per kernel, off, and fixed
+add_executable(interleave)
+set_target_properties(interleave PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(interleave interleave.cu)
+foreach(mode IN ITEMS auto off 1 3)
+    add_test(NAME interleave_${mode} COMMAND interleave)
+    set_tests_properties(interleave_${mode} PROPERTIES ENVIRONMENT "CUDA4CPU_INTERLEAVE=${mode}")
+endforeach()
+
 # CUDA graphs: capture, explicit graphs, conditionals and graph memory. A .cu
 # file, so that (void *)kernel and params.gridDim go through the rewriter.
 add_executable(graphs)
