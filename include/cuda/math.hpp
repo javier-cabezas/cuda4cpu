@@ -26,6 +26,10 @@
 #include <cstdint>
 #include <limits>
 
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 // glibc 2.41 and later declare the C23 rsqrt functions in the global namespace
 #if defined(__GLIBC__)
 #if __GLIBC_PREREQ(2, 41) && __GLIBC_USE(IEC_60559_FUNCS_EXT_C23)
@@ -138,17 +142,46 @@ inline unsigned int __umul24(unsigned int x, unsigned int y)
 
 namespace detail {
 
-//! Evaluates op(args...) with the floating-point rounding mode set to Mode.
-//! The operands and the result go through volatile variables, so that the
-//! compiler doesn't move the operation outside the change of mode.
+//! Evaluates op(args...) with the floating-point rounding mode set to Mode,
+//! through fesetround. The operands and the result go through volatile
+//! variables, so that the compiler doesn't move the operation outside the
+//! change of mode.
 template <int Mode, typename T, typename Op, typename... Args>
-inline T rounded(Op op, Args... args)
+inline T rounded_fenv(Op op, Args... args)
 {
     const int previous = std::fegetround();
     std::fesetround(Mode);
     volatile T result = op(static_cast<const volatile Args &>(args)...);
     std::fesetround(previous);
     return result;
+}
+
+#if defined(__x86_64__)
+//! The rounding control bits of MXCSR for a <cfenv> rounding mode
+constexpr unsigned mxcsr_rounding(int mode)
+{
+    return mode == FE_DOWNWARD ? 0x2000u : mode == FE_UPWARD ? 0x4000u : mode == FE_TOWARDZERO ? 0x6000u : 0u;
+}
+#endif
+
+//! Evaluates op(args...) with the floating-point rounding mode set to Mode.
+//! On x86-64, float and double arithmetic uses SSE, so it sets only the
+//! rounding mode of MXCSR: about 8 ns, where fesetround, which also sets the
+//! x87 control word, takes over 100 (interval, from the CUDA samples, spent
+//! 95% of its time in it). Restoring MXCSR drops the exception flags that the
+//! operation raised, which CUDA doesn't have.
+template <int Mode, typename T, typename Op, typename... Args>
+inline T rounded(Op op, Args... args)
+{
+#if defined(__x86_64__)
+    const unsigned previous = _mm_getcsr();
+    _mm_setcsr((previous & ~0x6000u) | mxcsr_rounding(Mode));
+    volatile T result = op(static_cast<const volatile Args &>(args)...);
+    _mm_setcsr(previous);
+    return result;
+#else
+    return rounded_fenv<Mode, T>(op, args...);
+#endif
 }
 
 }
@@ -160,11 +193,12 @@ inline namespace cuda_api {
 // (toward zero), _ru (up) and _rd (down), as in CUDA
 //
 
-#define CUDA4CPU_ROUNDED(name, T, op, PARAMS, ARGS)                                         \
-    inline T name##_rn PARAMS { return detail::rounded<FE_TONEAREST, T>(op, ARGS); }        \
-    inline T name##_rz PARAMS { return detail::rounded<FE_TOWARDZERO, T>(op, ARGS); }       \
-    inline T name##_ru PARAMS { return detail::rounded<FE_UPWARD, T>(op, ARGS); }           \
-    inline T name##_rd PARAMS { return detail::rounded<FE_DOWNWARD, T>(op, ARGS); }
+#define CUDA4CPU_ROUNDED_BY(rounder, name, T, op, PARAMS, ...)                                    \
+    inline T name##_rn PARAMS { return detail::rounder<FE_TONEAREST, T>(op, __VA_ARGS__); }       \
+    inline T name##_rz PARAMS { return detail::rounder<FE_TOWARDZERO, T>(op, __VA_ARGS__); }      \
+    inline T name##_ru PARAMS { return detail::rounder<FE_UPWARD, T>(op, __VA_ARGS__); }          \
+    inline T name##_rd PARAMS { return detail::rounder<FE_DOWNWARD, T>(op, __VA_ARGS__); }
+#define CUDA4CPU_ROUNDED(name, T, op, PARAMS, ARGS) CUDA4CPU_ROUNDED_BY(rounded, name, T, op, PARAMS, ARGS)
 
 #define CUDA4CPU_X x
 #define CUDA4CPU_XY x, y
@@ -181,12 +215,21 @@ CUDA4CPU_ROUNDED(__frcp, float, ([](float a) { return 1.0f / a; }), (float x), C
 CUDA4CPU_ROUNDED(__fsqrt, float, ([](float a) { return std::sqrt(a); }), (float x), CUDA4CPU_X)
 CUDA4CPU_ROUNDED(__drcp, double, ([](double a) { return 1.0 / a; }), (double x), CUDA4CPU_X)
 CUDA4CPU_ROUNDED(__dsqrt, double, ([](double a) { return std::sqrt(a); }), (double x), CUDA4CPU_X)
-CUDA4CPU_ROUNDED(__fmaf, float, ([](float a, float b, float c) { return std::fma(a, b, c); }), (float x, float y, float z), CUDA4CPU_XYZ)
-CUDA4CPU_ROUNDED(__fma, double, ([](double a, double b, double c) { return std::fma(a, b, c); }), (double x, double y, double z), CUDA4CPU_XYZ)
+// Without FMA instructions, std::fma is glibc's software fma, which reads the
+// rounding mode from the x87 control word: only fesetround sets it
+#if defined(__FMA__)
+#define CUDA4CPU_FMA_ROUNDER rounded
+#else
+#define CUDA4CPU_FMA_ROUNDER rounded_fenv
+#endif
+CUDA4CPU_ROUNDED_BY(CUDA4CPU_FMA_ROUNDER, __fmaf, float, ([](float a, float b, float c) { return std::fma(a, b, c); }), (float x, float y, float z), CUDA4CPU_XYZ)
+CUDA4CPU_ROUNDED_BY(CUDA4CPU_FMA_ROUNDER, __fma, double, ([](double a, double b, double c) { return std::fma(a, b, c); }), (double x, double y, double z), CUDA4CPU_XYZ)
+#undef CUDA4CPU_FMA_ROUNDER
 #undef CUDA4CPU_X
 #undef CUDA4CPU_XY
 #undef CUDA4CPU_XYZ
 #undef CUDA4CPU_ROUNDED
+#undef CUDA4CPU_ROUNDED_BY
 
 //
 // min and max, as CUDA declares them for host and device code. The names are

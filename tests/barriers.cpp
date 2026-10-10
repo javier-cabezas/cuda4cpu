@@ -19,6 +19,7 @@
  */
 
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -114,6 +115,40 @@ __global__ void lone_barrier(int *out)
     out[blockIdx.x] = 7;
 }
 
+// In a 3D block, the threads before `first` (in index order) return early, so
+// the block reaches the barrier in the middle of direct mode, at a thread
+// whose y and z are not 0. Every other thread must get past it with its own
+// index, and the threads that returned must not run again: they count their
+// runs.
+__global__ void barrier_in_3d_block(int *out, unsigned first)
+{
+    const unsigned t = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    if (t < first) {
+        out[t] += 1;
+        return;
+    }
+    out[t] = 0;
+    __syncthreads();
+    out[t] = int(threadIdx.x + 10 * threadIdx.y + 100 * threadIdx.z);
+}
+
+// The same with a shuffle as the first warp operation: the lanes of a 3D
+// block must come out right in direct mode too. Lanes before `first` aren't
+// in the mask.
+__global__ void shuffle_in_3d_block(int *out, unsigned first)
+{
+    const unsigned threads = blockDim.x * blockDim.y * blockDim.z;
+    const unsigned t = (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    if (t < first) {
+        out[t] += 1;
+        return;
+    }
+    const unsigned warp = t / 32 * 32;
+    const unsigned begin = first > warp ? first - warp : 0, end = threads - warp < 32 ? threads - warp : 32;
+    const unsigned mask = (end == 32 ? ~0u : (1u << end) - 1) & ~((1u << begin) - 1);
+    out[t] = __shfl_xor_sync(mask, int(t), 1);
+}
+
 int main()
 {
     std::atexit(fail_if_unfinished);
@@ -151,6 +186,22 @@ int main()
         std::vector<int> out(blocks, 0), expected(blocks, 7);
         launch(lone_barrier, blocks, N).call(out.data());
         check("lone_barrier", out, expected);
+    }
+
+    // 60 threads: a full warp and one of 28 lanes. Thread 46 is (2, 2, 3).
+    for (unsigned first : {0u, 46u}) {
+        const dim3 block(4, 3, 5);
+        std::vector<int> out(60, 0), expected(60, 1);
+        for (unsigned t = first; t < 60; ++t)
+            expected[t] = int(t % 4 + 10 * (t / 4 % 3) + 100 * (t / 12));
+        launch(barrier_in_3d_block, 1, block).call(out.data(), first);
+        check("barrier_in_3d_block", out, expected);
+
+        std::fill(out.begin(), out.end(), 0);
+        for (unsigned t = first; t < 60; ++t)
+            expected[t] = int(t ^ 1);
+        launch(shuffle_in_3d_block, 1, block).call(out.data(), first);
+        check("shuffle_in_3d_block", out, expected);
     }
 
     finished = true;

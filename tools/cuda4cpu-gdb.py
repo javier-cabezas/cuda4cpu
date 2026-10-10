@@ -56,14 +56,31 @@ class Builtin(gdb.Function):
         if component is None:
             return value
         name = component.string()
-        if name not in ('x', 'y', 'z') or self.field == 'lane':
+        if name not in ('x', 'y', 'z'):
             raise gdb.GdbError(f'cuda4cpu: no component "{name}"')
         return value[name]
 
 
 for name, field in (('threadIdx', 'thread_idx'), ('blockIdx', 'block_idx'),
-                    ('blockDim', 'block_dim'), ('gridDim', 'grid_dim'), ('laneid', 'lane')):
+                    ('blockDim', 'block_dim'), ('gridDim', 'grid_dim')):
     Builtin(name, field)
+
+
+def lane(v):
+    """The lane of the CUDA thread, from its index in the block, as lane_id() computes it."""
+    t, b = v['thread_idx'], v['block_dim']
+    return ((int(t['z']) * int(b['y']) + int(t['y'])) * int(b['x']) + int(t['x'])) % 32
+
+
+class Laneid(gdb.Function):
+    def __init__(self):
+        super().__init__('laneid')
+
+    def invoke(self):
+        return lane(builtins())
+
+
+Laneid()
 
 
 def dim(value):
@@ -79,7 +96,7 @@ class Cuda4cpuCommand(gdb.Command):
     def invoke(self, argument, from_tty):
         v = builtins()
         print(f"thread {dim(v['thread_idx'])} of block {dim(v['block_idx'])}, "
-              f"lane {int(v['lane'])}; blocks of {dim(v['block_dim'])} threads, "
+              f"lane {lane(v)}; blocks of {dim(v['block_dim'])} threads, "
               f"grid of {dim(v['grid_dim'])} blocks")
 
 
