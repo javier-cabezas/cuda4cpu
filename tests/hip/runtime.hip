@@ -158,6 +158,27 @@ int main()
         hipFree(b);
     }
 
+    // Large memsets of 2- and 4-byte elements, which several OS threads share
+    {
+        const size_t count = size_t(4) << 20;
+        hipDeviceptr_t a = nullptr;
+        EXPECT(hipMalloc(&a, (count + 1) * sizeof(int)) == hipSuccess);
+        auto *words = static_cast<int *>(a);
+        words[count] = 3;
+        EXPECT(hipMemsetD32(a, -7, count) == hipSuccess);
+        bool all = true;
+        for (size_t i = 0; i < count; ++i)
+            all = all && words[i] == -7;
+        EXPECT(all && words[count] == 3);
+        EXPECT(hipMemsetD16(a, 0x1234, 2 * count - 1) == hipSuccess);
+        auto *halves = static_cast<unsigned short *>(a);
+        all = true;
+        for (size_t i = 0; i < 2 * count - 1; ++i)
+            all = all && halves[i] == 0x1234;
+        EXPECT(all && halves[2 * count - 1] == 0xffff);
+        hipFree(a);
+    }
+
     // Symbols, named directly or with HIP_SYMBOL
     {
         const int host[4] = {1, 2, 3, 4};

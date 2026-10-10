@@ -441,14 +441,23 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
     const size_t nblocks = conf.nblocks();
     const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
 
+    // A single block runs on the calling OS thread: waking the other OpenMP
+    // threads would cost several times more than an empty block. Grids with
+    // fewer blocks than OS threads wake only as many as they have blocks.
+    if (nblocks == 1) {
+        thread_block::acquire(conf, stack_size).execute(kernel, conf.block_id(0));
+        return;
+    }
+    const size_t threads = std::min(nblocks, size_t(omp_get_max_threads()));
+
     // Contiguous chunks of blocks, handed out dynamically so that blocks of
     // uneven cost balance across OS threads. About 8 chunks per OS thread
     // keeps neighboring blocks together and the scheduling overhead low.
     // Only the OS threads that get blocks acquire (and, the first time,
     // create) fibers.
-    const size_t chunk = std::max<size_t>(1, nblocks / (size_t(omp_get_max_threads()) * 8));
+    const size_t chunk = std::max<size_t>(1, nblocks / (threads * 8));
 
-    #pragma omp parallel
+    #pragma omp parallel num_threads(int(threads))
     {
         thread_block *block = nullptr;
 

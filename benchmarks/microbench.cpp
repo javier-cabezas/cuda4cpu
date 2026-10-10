@@ -49,6 +49,25 @@ double median_ms(F &&f, int runs = 7)
     return times[times.size() / 2];
 }
 
+//! Median time of op(ptr) on a fresh allocation of bytes, as programs copy
+//! their inputs into memory they just allocated
+template <typename F>
+double fresh_ms(size_t bytes, F &&op, int runs = 7)
+{
+    std::vector<double> times;
+    for (int r = 0; r < runs; ++r) {
+        void *ptr = nullptr;
+        cudaMalloc(&ptr, bytes);
+        auto start = std::chrono::steady_clock::now();
+        op(ptr);
+        auto end = std::chrono::steady_clock::now();
+        cudaFree(ptr);
+        times.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+    std::sort(times.begin(), times.end());
+    return times[times.size() / 2];
+}
+
 void row(const char *name, double value, const char *unit)
 {
     std::printf("%-58s %10.2f %s\n", name, value, unit);
@@ -109,6 +128,14 @@ int main()
         row("launch, 1 block x 256 threads, empty kernel", ms * 1e3 / reps, "us");
     }
 
+    // Fewer blocks than OS threads
+    {
+        launch(empty_kernel, 4, 256).call(nullptr);
+        const int reps = 1000;
+        double ms = median_ms([&] { for (int r = 0; r < reps; ++r) launch(empty_kernel, 4, 256).call(nullptr); });
+        row("launch, 4 blocks x 256 threads, empty kernel", ms * 1e3 / reps, "us");
+    }
+
     // A new block shape each time, so that every OS thread creates its fibers
     {
         unsigned shape = 1000;
@@ -132,6 +159,22 @@ int main()
         double ms   = median_ms([&] { launch(shuffles, blocks, threads).call(&out, n); });
         double per_core = double(blocks) * threads * n / omp_get_max_threads();
         row("__shfl_xor_sync, per lane", (ms - base) * 1e6 / per_core, "ns");
+    }
+
+    // Copies and memsets, into fresh allocations (bound by page faults) and
+    // into memory already touched (bound by memory bandwidth)
+    {
+        const size_t bytes = size_t(256) << 20;
+        std::vector<char> host(bytes, 1);
+        std::vector<char> touched(bytes, 0);
+        double fresh_copy = fresh_ms(bytes, [&](void *dev) {
+            cudaMemcpy(dev, host.data(), bytes, cudaMemcpyHostToDevice);
+        });
+        double fresh_set = fresh_ms(bytes, [&](void *dev) { cudaMemset(dev, 0, bytes); });
+        double copy = median_ms([&] { cudaMemcpy(touched.data(), host.data(), bytes, cudaMemcpyHostToDevice); });
+        row("cudaMemcpy 256 MB into a new allocation", fresh_copy, "ms");
+        row("cudaMemset 256 MB of a new allocation", fresh_set, "ms");
+        row("cudaMemcpy 256 MB into touched memory", copy, "ms");
     }
 
     // Barrier-free kernel against the equivalent OpenMP loop

@@ -34,6 +34,7 @@
 #include <limits>
 #include <random>
 #include <thread>
+#include <vector>
 
 #include <cuda.h>
 #include <cuda_profiler_api.h>
@@ -266,6 +267,43 @@ int main()
         EXPECT(cudaMemcpyAsync(dst, src, sizeof(src), cudaMemcpyDefault) == cudaSuccess);
         EXPECT(cudaMemset(dst, 0xff, sizeof(dst)) == cudaSuccess && dst[3] == -1);
         EXPECT(cudaMemsetAsync(dst, 0, sizeof(dst)) == cudaSuccess && dst[0] == 0);
+    }
+
+    // Large copies and memsets, which several OS threads share: unaligned,
+    // overlapping (as memmove), and of pitched rows
+    {
+        const size_t n = size_t(8) << 20, pitch = 1024, width = 1000, height = n / pitch;
+        unsigned char *a = nullptr, *b = nullptr;
+        EXPECT(cudaMalloc(&a, n + 64) == cudaSuccess && cudaMalloc(&b, n + 64) == cudaSuccess);
+        for (size_t i = 0; i < n + 64; ++i)
+            a[i] = (unsigned char)(i * 7 + i / 4093);
+        std::vector<unsigned char> ref(a, a + n + 64);
+
+        b[0] = 1;
+        EXPECT(cudaMemcpy(b + 3, a + 5, n, cudaMemcpyDefault) == cudaSuccess);
+        EXPECT(b[0] == 1 && std::memcmp(b + 3, a + 5, n) == 0);
+
+        std::memmove(ref.data() + 1, ref.data(), n);
+        EXPECT(cudaMemcpy(a + 1, a, n, cudaMemcpyDefault) == cudaSuccess);
+        EXPECT(std::memcmp(a, ref.data(), n + 64) == 0);
+
+        const unsigned char after = b[n + 1];
+        EXPECT(cudaMemset(b + 1, 0x5a, n) == cudaSuccess);
+        EXPECT(b[0] == 1 && b[1] == 0x5a && b[n] == 0x5a && b[n + 1] == after);
+
+        EXPECT(cudaMemcpy2D(b, pitch, a, pitch, width, height, cudaMemcpyDefault) == cudaSuccess);
+        bool rows = true;
+        for (size_t y = 0; y < height; ++y)
+            rows = rows && std::memcmp(b + y * pitch, a + y * pitch, width) == 0 && b[y * pitch + width] == 0x5a;
+        EXPECT(rows);
+
+        EXPECT(cudaMemset2D(b, pitch, 0, width, height) == cudaSuccess);
+        rows = true;
+        for (size_t y = 0; y < height; ++y)
+            rows = rows && b[y * pitch] == 0 && b[y * pitch + width - 1] == 0 && b[y * pitch + width] == 0x5a;
+        EXPECT(rows);
+        cudaFree(a);
+        cudaFree(b);
     }
 
     // Symbols are passed by name
