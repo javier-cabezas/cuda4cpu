@@ -24,6 +24,7 @@
 // management, symbols and intrinsics. Uses only cuda_runtime.h, like CUDA code.
 //
 
+#include <bit>
 #include <cfenv>
 #include <cmath>
 #include <cstdint>
@@ -31,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <thread>
 
 #include <cuda.h>
@@ -75,6 +77,124 @@ static bool launch_rejected(dim3 grid, dim3 block)
     int flag = 0;
     cuda4cpu::launch(set_flag, grid, block).call(&flag);
     return flag == 0 && cudaGetLastError() == cudaErrorInvalidConfiguration;
+}
+
+//! f() computed in the rounding mode that fesetround sets: the reference for
+//! the intrinsics with an explicit rounding mode
+template <typename T, typename F>
+static T with_rounding(int mode, F f)
+{
+    const int previous = std::fegetround();
+    std::fesetround(mode);
+    volatile T result = f();
+    std::fesetround(previous);
+    return result;
+}
+
+template <typename T>
+static bool same_bits(T a, T b)
+{
+    return (std::isnan(a) && std::isnan(b)) || std::memcmp(&a, &b, sizeof(T)) == 0;
+}
+
+//! Checks every intrinsic with an explicit rounding mode against the same
+//! operation under fesetround, on random and special operands, and returns
+//! the number of results that differ
+static unsigned rounding_mismatches()
+{
+    std::mt19937_64 random(2026);
+    // Random bit patterns (NaN, infinity, subnormals and every exponent), and
+    // values whose operations are usually inexact
+    auto any_float = [&]() -> float {
+        const uint64_t r = random();
+        if (r % 3 == 0)
+            return std::bit_cast<float>(uint32_t(r >> 32));
+        return std::ldexp(float(int32_t(r >> 32)) / 2147483648.0f * 4.0f, int(r % 61) - 30);
+    };
+    auto any_double = [&]() -> double {
+        const uint64_t r = random();
+        if (r % 3 == 0)
+            return std::bit_cast<double>(random());
+        return std::ldexp(double(int64_t(random())) / 9223372036854775808.0 * 4.0, int(r % 61) - 30);
+    };
+    auto any_integer = [&] { const uint64_t r = random(); return r >> (r % 64); };
+
+    const int modes[4] = {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
+    const char *mode_names[4] = {"rn", "rz", "ru", "rd"};
+    unsigned mismatches = 0;
+    auto report = [&](const char *name, int m, double x, double y, double z, double got, double want) {
+        if (mismatches++ == 0)
+            std::printf("runtime: %s_%s(%a, %a, %a) = %a, expected %a\n", name, mode_names[m], x, y, z, got, want);
+    };
+
+    // fns are the _rn, _rz, _ru and _rd variants; op computes the same in the current mode
+    auto check1 = [&](const char *name, auto gen, auto op, auto... fns) {
+        for (int i = 0; i < 20000; ++i) {
+            const auto x = gen();
+            using T = decltype(op(x));
+            const T got[4] = {fns(x)...};
+            for (int m = 0; m < 4; ++m) {
+                volatile auto vx = x;
+                const T want = with_rounding<T>(modes[m], [&] { return op(vx); });
+                if (!same_bits(got[m], want))
+                    report(name, m, double(x), 0, 0, double(got[m]), double(want));
+            }
+        }
+    };
+    auto check2 = [&](const char *name, auto gen, auto op, auto... fns) {
+        for (int i = 0; i < 20000; ++i) {
+            const auto x = gen(), y = gen();
+            using T = decltype(op(x, y));
+            const T got[4] = {fns(x, y)...};
+            for (int m = 0; m < 4; ++m) {
+                volatile auto vx = x, vy = y;
+                const T want = with_rounding<T>(modes[m], [&] { return op(vx, vy); });
+                if (!same_bits(got[m], want))
+                    report(name, m, double(x), double(y), 0, double(got[m]), double(want));
+            }
+        }
+    };
+    auto check3 = [&](const char *name, auto gen, auto op, auto... fns) {
+        for (int i = 0; i < 20000; ++i) {
+            const auto x = gen(), y = gen(), z = gen();
+            using T = decltype(op(x, y, z));
+            const T got[4] = {fns(x, y, z)...};
+            for (int m = 0; m < 4; ++m) {
+                volatile auto vx = x, vy = y, vz = z;
+                const T want = with_rounding<T>(modes[m], [&] { return op(vx, vy, vz); });
+                if (!same_bits(got[m], want))
+                    report(name, m, double(x), double(y), double(z), double(got[m]), double(want));
+            }
+        }
+    };
+
+#define VARIANTS(name) name##_rn, name##_rz, name##_ru, name##_rd
+    check2("__fadd", any_float, [](float a, float b) { return a + b; }, VARIANTS(__fadd));
+    check2("__fsub", any_float, [](float a, float b) { return a - b; }, VARIANTS(__fsub));
+    check2("__fmul", any_float, [](float a, float b) { return a * b; }, VARIANTS(__fmul));
+    check2("__fdiv", any_float, [](float a, float b) { return a / b; }, VARIANTS(__fdiv));
+    check1("__frcp", any_float, [](float a) { return 1.0f / a; }, VARIANTS(__frcp));
+    check1("__fsqrt", any_float, [](float a) { return std::sqrt(a); }, VARIANTS(__fsqrt));
+    check3("__fmaf", any_float, [](float a, float b, float c) { return std::fma(a, b, c); }, VARIANTS(__fmaf));
+    check2("__dadd", any_double, [](double a, double b) { return a + b; }, VARIANTS(__dadd));
+    check2("__dsub", any_double, [](double a, double b) { return a - b; }, VARIANTS(__dsub));
+    check2("__dmul", any_double, [](double a, double b) { return a * b; }, VARIANTS(__dmul));
+    check2("__ddiv", any_double, [](double a, double b) { return a / b; }, VARIANTS(__ddiv));
+    check1("__drcp", any_double, [](double a) { return 1.0 / a; }, VARIANTS(__drcp));
+    check1("__dsqrt", any_double, [](double a) { return std::sqrt(a); }, VARIANTS(__dsqrt));
+    check3("__fma", any_double, [](double a, double b, double c) { return std::fma(a, b, c); }, VARIANTS(__fma));
+    check1("__int2float", [&] { return int(any_integer()); }, [](int a) { return float(a); }, VARIANTS(__int2float));
+    check1("__uint2float", [&] { return unsigned(any_integer()); }, [](unsigned a) { return float(a); },
+           VARIANTS(__uint2float));
+    check1("__ll2float", [&] { return (long long)any_integer(); }, [](long long a) { return float(a); },
+           VARIANTS(__ll2float));
+    check1("__ull2float", any_integer, [](uint64_t a) { return float(a); }, VARIANTS(__ull2float));
+    check1("__ll2double", [&] { return (long long)any_integer(); }, [](long long a) { return double(a); },
+           VARIANTS(__ll2double));
+    check1("__ull2double", any_integer, [](uint64_t a) { return double(a); }, VARIANTS(__ull2double));
+    check1("__double2float", any_double, [](double a) { return float(a); }, VARIANTS(__double2float));
+#undef VARIANTS
+    return mismatches;
 }
 
 int main()
@@ -227,13 +347,15 @@ int main()
     {
         const float one = 1.0f, tiny = 1e-8f;
         // Valgrind ignores the SSE rounding mode, so arithmetic always rounds to nearest under it.
-        const bool honors_rounding_mode = __fadd_ru(one, tiny) > 1.0f;
+        volatile float vone = one, vtiny = tiny;
+        const bool honors_rounding_mode = with_rounding<float>(FE_UPWARD, [&] { return vone + vtiny; }) > 1.0f;
         if (honors_rounding_mode) {
             EXPECT(__fadd_rd(one, tiny) == 1.0f && __fadd_ru(one, tiny) > 1.0f && __fadd_rn(one, tiny) == 1.0f);
             EXPECT(__fadd_rz(-one, -tiny) == -1.0f && __fadd_rd(-one, -tiny) < -1.0f);
             EXPECT(__fdiv_rd(1.0f, 3.0f) < __fdiv_ru(1.0f, 3.0f));
             EXPECT(__dmul_rd(0.1, 3.0) < __dmul_ru(0.1, 3.0));
             EXPECT(__fsqrt_rd(2.0f) < __fsqrt_ru(2.0f));
+            EXPECT(rounding_mismatches() == 0);
         } else {
             std::printf("runtime: the FPU ignores the rounding mode here (Valgrind?); skipping directed rounding checks\n");
         }

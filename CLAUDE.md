@@ -327,6 +327,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `extern "C" inline` at global scope, which completes those declarations.
   Defining them in a namespace instead would make unqualified calls ambiguous.
   The same applies to `rsqrtf` with glibc 2.41+.
+- The intrinsics with a rounding mode (`__dadd_rd`, `__float2int_ru`, ...)
+  set only the SSE rounding mode in MXCSR on x86-64 (`detail::rounded`):
+  `fesetround` also sets the x87 control word and cost over 100 ns per
+  call, 95% of `interval`'s run time. The fma variants still use
+  `fesetround` unless `__FMA__` is defined, because glibc's software fma
+  reads the x87 mode. `tests/runtime` checks every variant against
+  `fesetround` on random operands.
 - `gridDim` and `blockDim` are object-like macros, so any struct field with
   those names breaks. CUDA's `cudaKernelNodeParams` has them: ours are named
   `cuda4cpu_gridDim`/`cuda4cpu_blockDim`, and the rewriter renames member
