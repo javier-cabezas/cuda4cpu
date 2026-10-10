@@ -261,8 +261,10 @@ private:
 };
 
 //! Reports threads of a block that reached different __syncthreads() calls,
-//! once for each pair of calls
-void report_divergent_barrier(const char *file1, int line1, const char *file2, int line2, dim3 block)
+//! once for each pair of calls. Out of line and cold: inlined, its strings,
+//! mutex and set gave check_barrier_site, which runs at every barrier, a
+//! 200-byte frame with a stack protector, 15% of a barrier's instructions.
+[[gnu::noinline, gnu::cold]] void report_divergent_barrier(const char *file1, int line1, const char *file2, int line2, dim3 block)
 {
     static std::mutex lock;
     static std::set<std::pair<std::string, std::string>> reported;
@@ -1101,6 +1103,18 @@ void thread_block::switch_to_thread(size_t from, size_t to)
     context &save = from == no_thread ? f.discarded : f.ctx[from];
     set_current_thread(to);
 
+#if CUDA4CPU_ASM_CONTEXT
+    // The thread that probably runs after to is the next one. Its saved
+    // registers and frames are rarely in L1 (a block's fibers rotate through
+    // far more stack than L1 holds), so fetch them while to runs: 10-20%
+    // fewer cycles in barrier-heavy programs.
+    if (order_ == nullptr && to + 1 < nthreads_ && (f.warps[(to + 1) / warp_size].started & lane_bit(to + 1)) != 0) {
+        const auto *sp = static_cast<const char *>(f.ctx[to + 1].sp);
+        for (int line = 0; line < 4; ++line)
+            __builtin_prefetch(sp + line * cache_line);
+    }
+#endif
+
     uint32_t &started = f.warps[to / warp_size].started;
     if ((started & lane_bit(to)) == 0) {
         started |= lane_bit(to);
@@ -1110,21 +1124,22 @@ void thread_block::switch_to_thread(size_t from, size_t to)
     }
 }
 
-//! Returns the first thread at or after from, wrapping around, that can run.
-//! There always is one: barriers are released as soon as nothing else can
-//! arrive at them.
+//! Returns the first thread at or after from (at most nthreads_), wrapping
+//! around, that can run. There always is one: barriers are released as soon
+//! as nothing else can arrive at them. No division: a 64-bit one was the
+//! costliest instruction of every switch.
 size_t thread_block::next_runnable(size_t from) const
 {
     const auto &f = *fibers_;
     const size_t nwarps = f.warps.size();
-    const size_t first  = from % nthreads_;
+    const size_t first  = from < nthreads_ ? from : from - nthreads_;
     const size_t w0     = first / warp_size;
     const uint32_t from_lane = ~0u << (first % warp_size);
 
     if (uint32_t m = f.runnable(w0) & from_lane)
         return w0 * warp_size + size_t(std::countr_zero(m));
     for (size_t k = 1; k < nwarps; ++k) {
-        size_t w = (w0 + k) % nwarps;
+        size_t w = w0 + k < nwarps ? w0 + k : w0 + k - nwarps;
         if (uint32_t m = f.runnable(w))
             return w * warp_size + size_t(std::countr_zero(m));
     }

@@ -295,6 +295,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   thread_local` from another file call a TLS initialization check, which
   more than doubled the cost of reading `threadIdx`. Check the kernel's
   assembly after touching them.
+- A barrier costs about 200 instructions per thread, and `perf annotate` is
+  the way to find waste in it. Keep error paths out of the scheduler's frames
+  (`report_divergent_barrier` is `[[gnu::noinline, gnu::cold]]`; inlined, it
+  gave `check_barrier_site` a 200-byte frame with a stack protector), and
+  divisions out of `next_runnable`. `switch_to_thread` prefetches the saved
+  frames of the thread after `to`: a block's stacks rotate through more memory
+  than L1 holds, and the resumed fiber's first loads missed.
 - Change `cuda4cpu_switch_context` and `start_fiber` together, because they
   share the frame layout. Test both context implementations (CI has a
   `portable context` job).
