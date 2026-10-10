@@ -104,6 +104,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     the name of the `cudaKernelNodeParams` fields
   - turns `clock()` inside `__global__`/`__device__` bodies into
     `cuda4cpu::device_clock()`
+  - inserts `cuda4cpu::loop_tick();` after the `{` of the outermost loops of
+    `__global__`/`__device__` bodies (`find_loop_bodies`). Inner loops and
+    bodies that aren't blocks are left alone, so that inner loops still
+    vectorize.
   - rewrites `HIP_DYNAMIC_SHARED(T, name)` like `extern __shared__ T name[];`,
     and drops the cast in `hipLaunchKernel`/`hipLaunchCooperativeKernel`
 
@@ -137,6 +141,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
+  - `interleave_{auto,off,1,3}` (`interleave.cu`, through the rewriter):
+    loops with barriers, shuffles and early exits give the same results with
+    any interleaving, and a thread that spins on another thread of its block
+    finishes when they take turns
   - `barriers`: early exits and divergent-block barrier semantics, and 3D
     blocks that reach a barrier or a shuffle in the middle of direct mode
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
@@ -270,6 +278,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   block on its own OS thread (OpenMP, or `std::jthread` when OpenMP can't
   promise one thread per block), and a block that returns drops out of the
   barrier.
+- `loop_tick()` decrements `Vars_.tick`; at 0, `interleave()` promotes the
+  block if needed and switches to the next runnable thread, which runs
+  `slice_` iterations before the next switch. `execute()` sets `slice_` per
+  block from the kernel's `interleave_tuner` (a static member of each
+  `kernel_call` instantiation, so one per launch site): the first blocks try
+  `interleave_slices` (off, 4, 16) in turn, three each, and the fastest block
+  of each candidate decides. A grid-stride copy went from 199 to 35 ms, and
+  page walks per thousand instructions from 297 to 1 in
+  `cuda-samples/alignedTypes`. `CUDA4CPU_INTERLEAVE` fixes the slice.
 - Releases are rechecked whenever the set of lanes being waited for shrinks:
   when a thread returns, or starts waiting at `__syncthreads()`, at a tile
   barrier, or (for `__activemask()`) at any warp operation. That is why
@@ -398,8 +415,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   preempt. Clang's HIP mode doesn't include it either.
 
 - Debugging settings come from the environment, read once in `settings`:
-  `CUDA4CPU_SCHEDULE` (forward, reverse, random[:seed]) and
-  `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore).
+  `CUDA4CPU_SCHEDULE` (forward, reverse, random[:seed]),
+  `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore) and
+  `CUDA4CPU_INTERLEAVE` (auto, off, or a number of loop iterations).
 - Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
   to a permutation (`fibers::order`, inverse in `position`). It's reversed once
   per thread_block, or shuffled per block from the seed and the block index.

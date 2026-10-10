@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <barrier>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +50,17 @@ struct fiber_access;
 template <typename F, typename... Stored>
 struct kernel_call;
 
+//! How the CUDA threads of a block take turns in a kernel's loops (see
+//! loop_tick()): run each one to completion, or switch every few
+//! iterations. One per kernel launch site, chosen by timing its first blocks.
+struct interleave_tuner {
+    static constexpr int candidates = 3;
+    std::atomic<unsigned> trials{0};
+    std::atomic<uint64_t> fastest[candidates] = {~uint64_t(0), ~uint64_t(0), ~uint64_t(0)};  //!< Nanoseconds
+    std::atomic<unsigned> blocks[candidates] = {};
+    std::atomic<int> choice{-1};
+};
+
 //!
 //! Type-erased kernel launch: the loops that run the CUDA threads of a block,
 //! instantiated for the kernel's signature so that each thread is a direct
@@ -63,6 +75,8 @@ struct kernel_closure {
     //! Barrier of all the blocks of a cooperative launch (cudaLaunchCooperativeKernel),
     //! whose blocks all run at the same time; nullptr otherwise
     std::barrier<> *grid = nullptr;
+    //! The kernel's choice of interleaving
+    interleave_tuner *tuner = nullptr;
 };
 
 }
@@ -199,6 +213,23 @@ public:
     //! __syncthreads() whose release waits for every block of the grid
     static void sync_grid(const char *file = nullptr, int line = 0);
 
+    //! Called at the top of every iteration of the outermost loops of device
+    //! functions (cuda4cpu-rewrite inserts the calls). Every few iterations,
+    //! if that made the kernel faster, it lets the next CUDA thread run.
+    //! GPU code is written so that the threads of a warp, which run together,
+    //! touch neighboring addresses: run one after the other, each thread of a
+    //! grid-stride loop touches a new page per iteration, and page walks
+    //! dominate.
+    static inline void
+    loop_tick()
+    {
+        if (--Vars_.tick == 0) [[unlikely]]
+            interleave();
+    }
+
+    //! Lets the next runnable CUDA thread of the block run
+    static void interleave();
+
     //! Whether the running kernel was launched with cudaLaunchCooperativeKernel
     static bool cooperative_launch()
     {
@@ -266,6 +297,7 @@ private:
     [[noreturn]] void finish_current();
     void switch_to_thread(size_t from, size_t to);
     [[noreturn]] void deadlock() const;
+    static void record_trial(detail::interleave_tuner &tuner, int trial, uint64_t nanoseconds);
     void promote();
     void switch_from_current();
     size_t next_runnable(size_t from) const;
@@ -290,6 +322,7 @@ private:
     size_t pos_;    //!< Position of cur_ in the running order (direct mode with order_ only)
     const unsigned *order_;   //!< Running order of the threads, or nullptr for 0, 1, 2, ...
     bool direct_;   //!< No CUDA thread has reached a barrier in this block yet
+    unsigned slice_;    //!< Loop iterations each thread runs before the next one (~0u: no interleaving)
     void *shared_mem_;
     std::vector<dim3> ids_;
     std::unique_ptr<fibers> fibers_;
@@ -311,6 +344,7 @@ private:
         raw_dim3 block_idx;
         raw_dim3 block_dim;
         raw_dim3 grid_dim;
+        unsigned tick;      //!< Loop iterations until loop_tick() lets the next thread run
     };
 
     //! Makes tid the running CUDA thread
@@ -342,6 +376,17 @@ private:
     [[gnu::tls_model("initial-exec")]] static __thread thread_block *Current_;
     [[gnu::tls_model("initial-exec")]] static __thread builtin_vars Vars_;
 };
+
+//! Inserted by cuda4cpu-rewrite at the top of the outermost loops of device
+//! functions: see thread_block::loop_tick(). Does nothing during constant
+//! evaluation, or on the host.
+constexpr void
+loop_tick()
+{
+    if !consteval {
+        thread_block::loop_tick();
+    }
+}
 
 //! Replacement for `extern __shared__ T name[];`, which can't be expressed
 //! in C++: returns the dynamic shared memory of the calling thread block, whose
@@ -379,7 +424,7 @@ template <typename F, typename... Stored>
 struct kernel_call : kernel_closure {
     template <typename... Args>
     kernel_call(F f, Args &&...a) :
-        kernel_closure{&run_direct_impl, &run_one_impl},
+        kernel_closure{&run_direct_impl, &run_one_impl, nullptr, &tuner},
         func(std::move(f)),
         args(std::forward<Args>(a)...)
     {
@@ -424,6 +469,9 @@ struct kernel_call : kernel_closure {
 
     F func;
     std::tuple<Stored...> args;
+
+    //! One per launch site: the rewriter launches through a lambda of its own
+    static inline interleave_tuner tuner;
 };
 
 //! CUDA's limits: launches outside them fail on a GPU, so they fail here too

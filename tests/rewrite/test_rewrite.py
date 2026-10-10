@@ -127,6 +127,34 @@ class Launches(unittest.TestCase):
                      '__host__ void h() { std::clock(); }'):
             self.assertEqual(rewrite(text), text)
 
+    def test_loop_ticks(self):
+        tick = rw.LOOP_TICK
+        self.assertEqual(rewrite('__global__ void k(int *a, int n) { for (int i = 0; i < n; ++i) { a[i] = 0; } }'),
+                         '__global__ void k(int *a, int n) { for (int i = 0; i < n; ++i) {' + tick + ' a[i] = 0; } }')
+        # Only the outermost loops, so that inner loops still vectorize; a
+        # do-while's while is not a loop of its own
+        self.assertEqual(rewrite('__device__ void f() { while (x) { for (;;) { } } do { y(); } while (z); }'),
+                         '__device__ void f() { while (x) {' + tick + ' for (;;) { } } do {' + tick +
+                         ' y(); } while (z); }')
+        # A loop in an if, a range-for, and a loop in a lambda of a kernel
+        self.assertEqual(rewrite('__global__ void k() { if (a) { for (auto &x : v) { x = 0; } } '
+                                 'auto f = [&] { while (b) { } }; }'),
+                         '__global__ void k() { if (a) { for (auto &x : v) {' + tick + ' x = 0; } } '
+                         'auto f = [&] { while (b) {' + tick + ' } }; }')
+        # Bodies that aren't blocks are left alone, with the loops inside them
+        # (up to the end of the statement, else branches included)
+        for text in ('__global__ void k() { for (;;) for (;;) { } }',
+                     '__device__ int g() { while (a) if (b) { for (;;) { } } else c(); return 0; }',
+                     '__device__ void h() { do x(); while (y); }'):
+            self.assertEqual(rewrite(text), text)
+        self.assertEqual(rewrite('__global__ void k() { for (;;) for (;;) { } for (;;) { } }'),
+                         '__global__ void k() { for (;;) for (;;) { } for (;;) {' + tick + ' } }')
+        # Host code, members named like keywords, and newlines are untouched
+        for text in ('void h() { for (;;) { } }', '__host__ void h() { while (a) { } }'):
+            self.assertEqual(rewrite(text), text)
+        text = '__global__ void k() {\n  for (int i = 0;\n       i < 4; ++i) {\n    x();\n  }\n}\n'
+        self.assertEqual(rewrite(text).count('\n'), text.count('\n'))
+
     def test_dim_fields(self):
         self.assertEqual(rewrite('p.gridDim = g; q->blockDim.x = 1; n = gridDim.x * blockDim.x;'),
                          'p.cuda4cpu_gridDim = g; q->cuda4cpu_blockDim.x = 1; n = gridDim.x * blockDim.x;')

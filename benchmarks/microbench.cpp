@@ -105,6 +105,22 @@ __global__ void bounds_check(float *out, size_t n)
         out[i] = 1.f;
 }
 
+// A grid-stride copy, with and without the loop tick that cuda4cpu-rewrite
+// inserts in the outermost loops of device functions
+__global__ void grid_stride(unsigned char *out, const unsigned char *in, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        out[i] = in[i];
+}
+
+__global__ void grid_stride_ticks(unsigned char *out, const unsigned char *in, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        cuda4cpu::loop_tick();
+        out[i] = in[i];
+    }
+}
+
 // Block b does work proportional to b, like a triangular loop nest
 __global__ void triangular(float *out, int scale)
 {
@@ -225,6 +241,21 @@ int main()
         });
         row("vecadd 1M floats (in cache), as rewritten", cached / reps, "ms");
         row("  same loop with OpenMP", omp / reps, "ms");
+    }
+
+    // A grid-stride loop run one thread after another touches a new page per
+    // iteration; with loop ticks, the threads take turns every few iterations
+    {
+        const int n = 50000000 & ~255;
+        std::vector<unsigned char> in(n, 1), out(n);
+        double plain = median_ms([&] {
+            launch([&](const auto &...a) { grid_stride(a...); }, 64, 256).call(out.data(), in.data(), n);
+        });
+        double ticks = median_ms([&] {
+            launch([&](const auto &...a) { grid_stride_ticks(a...); }, 64, 256).call(out.data(), in.data(), n);
+        });
+        row("grid-stride copy 50 MB, <<<64, 256>>>, one thread after another", plain, "ms");
+        row("  threads taking turns (loop ticks)", ticks, "ms");
     }
 
     // Uneven blocks, against an OpenMP loop with dynamic scheduling

@@ -45,6 +45,15 @@
       The device clock counts at the device's clock rate; the C library's
       clock() measures processor time.
 
+  for (...) {, while (...) { and do {, the outermost loops of a __global__
+  or __device__ function whose body is a block
+      -> for (...) { cuda4cpu::loop_tick();
+      Every few iterations, if that makes the kernel faster, the next CUDA
+      thread of the block runs: GPU code expects the threads of a warp to
+      access neighboring addresses together, and a grid-stride loop run one
+      thread after another touches a new page per iteration. Inner loops are
+      left alone, so that they still vectorize.
+
   params.gridDim, params->blockDim
       -> params.cuda4cpu_gridDim, params->cuda4cpu_blockDim
       gridDim and blockDim are macros for the built-in variables, so the fields
@@ -99,6 +108,9 @@ KEYWORDS = frozenset('''
 '''.split())
 
 STRING_PREFIXES = ('u8', 'u', 'U', 'L', '')
+
+
+LOOP_TICK = ' cuda4cpu::loop_tick();'
 
 
 class Token:
@@ -568,6 +580,67 @@ def find_device_clocks(tokens):
                 yield k
 
 
+def statement_end(tokens, k, limit):
+    """Returns the index of the last token of the statement that starts at
+    token k, before limit: up to a ';' or a block outside parentheses,
+    including an else branch."""
+    while k < limit:
+        t = tokens[k].text
+        if t in ('(', '['):
+            close = match_forward(tokens, k)
+            if close is None:
+                return limit - 1
+            k = close
+        elif t == '{':
+            close = match_forward(tokens, k)
+            if close is None:
+                return limit - 1
+            if close + 1 < limit and tokens[close + 1].text == 'else':
+                k = close + 1
+            else:
+                return close
+        elif t == ';':
+            if k + 1 < limit and tokens[k + 1].text == 'else':
+                k += 1
+            else:
+                return k
+        k += 1
+    return limit - 1
+
+
+def find_loop_bodies(tokens):
+    """Yields the index of the '{' that opens the body of each outermost loop
+    (for, while, do) in the __global__ and __device__ functions of tokens.
+    Loops inside them are skipped, and so are loops whose body isn't a block."""
+    for open_, close in device_bodies(tokens):
+        k = open_ + 1
+        while k < close:
+            t = tokens[k].text
+            if tokens[k - 1].text in ('.', '->', '::'):
+                k += 1
+            elif t in ('for', 'while') and tokens[k + 1].text == '(':
+                paren = match_forward(tokens, k + 1)
+                if paren is None or paren + 1 >= close:
+                    k += 1
+                    continue
+                body = paren + 1
+                if t == 'while' and tokens[body].text == ';':          # the end of a do-while
+                    k = body + 1
+                elif tokens[body].text == '{':
+                    yield body
+                    k = (match_forward(tokens, body) or body) + 1
+                else:
+                    k = statement_end(tokens, body, close) + 1
+            elif t == 'do':
+                if tokens[k + 1].text == '{':
+                    yield k + 1
+                    k = (match_forward(tokens, k + 1) or k + 1) + 1
+                else:
+                    k = statement_end(tokens, k + 1, close) + 1
+            else:
+                k += 1
+
+
 def find_dim_fields(tokens):
     """Yields the indices of gridDim and blockDim used as member names."""
     for i in range(1, len(tokens)):
@@ -679,6 +752,9 @@ def rewrite_text(text, path, include_hook=None, kernels=None):
 
     for i in find_dim_fields(tokens):
         replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu_' + tokens[i].text))
+
+    for i in find_loop_bodies(tokens):
+        replacements.append((tokens[i].end, tokens[i].end, LOOP_TICK))
 
     replacements.sort()
     launches = find_launches(tokens)                # sorted by position

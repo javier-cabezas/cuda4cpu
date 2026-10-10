@@ -437,6 +437,14 @@ HIP programs are built with the `cuda4cpu-hipcc` next to `--driver`
   `__syncthreads()` never switch fibers. `threadIdx`, `blockIdx`, `blockDim`
   and `gridDim` are thread-local values that the scheduler keeps up to date,
   so reading one is a single memory load.
+- **Loops → threads take turns.** GPU code expects the threads of a warp to
+  touch neighboring addresses together. Run one after another, each thread of
+  a grid-stride loop touches a new page per iteration, and page walks
+  dominate. cuda4cpu-rewrite inserts a cheap tick at the top of the outermost
+  loops of device functions, and every few iterations the next CUDA thread of
+  the block runs. Each kernel launch site times its first blocks with no
+  turns, with turns every 4 iterations and every 16, and keeps the fastest.
+  A 50 MB grid-stride copy ran 5.7 times faster.
 - **`__syncthreads()` → cooperative switch.** When a CUDA thread first reaches
   a barrier, the block switches to fiber mode. From then on, each CUDA thread
   runs until it reaches a barrier and then yields to the next one. Once every
@@ -513,6 +521,13 @@ at kernel.cu:12 and kernel.cu:15. CUDA requires every thread of a block to reach
 
 `CUDA4CPU_DIVERGENT_BARRIERS` chooses what happens: `warn` (the default), `error`
 (abort, to stop in a debugger) or `ignore`.
+
+**Threads taking turns in loops: `CUDA4CPU_INTERLEAVE`.** `auto` (the default)
+chooses per kernel how often the threads of a block take turns in their loops.
+`off` runs each thread to its next barrier, and a number makes each thread let
+the next one run after that many iterations (`1`: every iteration). Like
+`CUDA4CPU_SCHEDULE`, a different value can expose code that depends on the
+order threads run in.
 
 **AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
