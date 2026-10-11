@@ -119,7 +119,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   installation, with paths relative to its own directory. The same template
   also becomes `cuda4cpu-hipcc` (`CUDA4CPU_DRIVER_MODE` is `hip`), which
   compiles every C++ source as HIP and drops hipcc's options for AMD GPUs.
-  Both handle `.hip` files and `-x cu`/`-x hip`.
+  Both handle `.hip` files and `-x cu`/`-x hip`. The rewritten sources go in
+  `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
+  after the compile: their paths reach the command line and the
+  preprocessed output, so they must be the same on every build for ccache to
+  hit.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -471,4 +475,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - Add a CTest test (in `tests/CMakeLists.txt`) for each new CUDA feature, and
   check results against a host reference.
 - Changes to `main` go through pull requests. CI (`.github/workflows/ci.yml`)
-  builds and tests with GCC and Clang in Debug and Release.
+  builds and tests with GCC and Clang in Debug and Release. Every job sets up
+  with `.github/actions/setup`: packages from a cache of their `.deb` files
+  (installed with `dpkg`, without `apt-get update`, keyed by the runner image)
+  and the job's ccache directory, which `.github/actions/save-ccache` saves
+  at the end. A pull request starts from `main`'s caches. Add a package to a
+  job's `packages`, not with `apt-get`.

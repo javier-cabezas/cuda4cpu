@@ -93,9 +93,24 @@ def source_language(path, x_language):
     return EXTENSIONS.get(os.path.splitext(path)[1])
 
 
+def work_directory(argv):
+    """Where the rewritten sources go: next to the output file when there is
+    one, so that their paths, which reach the compiler's command line and
+    preprocessed output, are the same on every build and compiler caches such
+    as ccache hit; a temporary directory otherwise."""
+    for i, arg in enumerate(argv):
+        output = argv[i + 1] if arg == '-o' and i + 1 < len(argv) else arg[2:] if arg.startswith('-o') and len(arg) > 2 else None
+        if output:
+            work = os.path.abspath(output) + '.cuda4cpu-src'
+            shutil.rmtree(work, ignore_errors=True)
+            os.makedirs(work)
+            return work
+    return tempfile.mkdtemp(prefix='cuda4cpu-')
+
+
 def main(argv):
     compiler = os.environ.get('CUDA4CPU_CXX') or os.environ.get('CXX') or 'c++'
-    work = tempfile.mkdtemp(prefix='cuda4cpu-')
+    work = work_directory(argv)
     try:
         args = []
         rewritten = False

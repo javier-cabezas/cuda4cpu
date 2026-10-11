@@ -1,0 +1,75 @@
+name: Set up
+description: >
+  Installs packages from a cache of their .deb files, which skips apt-get update,
+  and restores the ccache directory of the job
+inputs:
+  packages:
+    description: Packages to install, besides ccache
+    required: true
+  ccache-key:
+    description: Name of the job's compiler cache
+    required: true
+outputs:
+  ccache-key:
+    description: Key under which to save the compiler cache at the end of the job
+    value: ccache-${{ inputs.ccache-key }}-${{ github.sha }}
+runs:
+  using: composite
+  steps:
+    # The .deb files of the packages and their dependencies, for this runner
+    # image: installing them with dpkg takes about a second, where apt-get
+    # update and install took 8 to 14
+    - name: Name the package cache
+      id: name
+      shell: bash
+      run: |
+        packages="${{ inputs.packages }} ccache"
+        echo "key=debs-$ImageOS-$ImageVersion-${packages// /_}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the packages
+      id: debs
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/debs
+        key: ${{ steps.name.outputs.key }}
+
+    - name: Install the packages
+      shell: bash
+      run: |
+        packages="${{ inputs.packages }} ccache"
+        if compgen -G "$HOME/debs/*.deb" > /dev/null && sudo dpkg -i "$HOME"/debs/*.deb > /dev/null; then
+          echo "Installed $(ls "$HOME"/debs | wc -l) cached packages"
+        else
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends --download-only $packages
+          mkdir -p "$HOME/debs"
+          cp /var/cache/apt/archives/*.deb "$HOME/debs/" || true
+          sudo apt-get install -y --no-install-recommends $packages
+        fi
+
+    - name: Save the packages
+      if: steps.debs.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/debs
+        key: ${{ steps.debs.outputs.cache-primary-key }}
+
+    # The latest compiler cache of the job: from this branch, or from main for
+    # a new pull request
+    - name: Restore the compiler cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.ccache
+        key: ccache-${{ inputs.ccache-key }}-${{ github.sha }}
+        restore-keys: ccache-${{ inputs.ccache-key }}-
+
+    - name: Use the compiler cache
+      shell: bash
+      run: |
+        {
+          echo "CCACHE_DIR=$HOME/.ccache"
+          echo "CCACHE_MAXSIZE=500M"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+        } >> "$GITHUB_ENV"
+        CCACHE_DIR="$HOME/.ccache" ccache --zero-stats > /dev/null

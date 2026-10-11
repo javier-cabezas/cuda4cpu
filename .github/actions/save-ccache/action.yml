@@ -1,0 +1,18 @@
+name: Save the compiler cache
+description: Shows how often the job's builds hit the compiler cache, and saves it for the next run
+inputs:
+  key:
+    description: The ccache-key output of the setup action
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Show the compiler cache statistics
+      shell: bash
+      run: ccache --show-stats
+
+    - name: Save the compiler cache
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.ccache
+        key: ${{ inputs.key }}
