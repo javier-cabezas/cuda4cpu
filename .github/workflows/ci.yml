@@ -24,10 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev ${{ matrix.compiler.packages }}
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev ${{ matrix.compiler.packages }}
+          ccache-key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
 
       - name: Configure, build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
@@ -43,6 +45,12 @@ jobs:
       - name: Install
         run: cmake --install build/${{ matrix.preset }} --prefix "${{ runner.temp }}/cuda4cpu"
 
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
+
   # The _setjmp/_longjmp fallback used on architectures without the assembly
   # context switch
   portable-context:
@@ -53,16 +61,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev g++-14
+          ccache-key: portable-context
 
       - name: Configure, build and test
         run: |
           cmake --preset debug -DCUDA4CPU_PORTABLE_CONTEXT=ON
           cmake --build --preset debug
           ctest --preset debug
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
 
   # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
   # test suite must run clean. (The driver tests build programs without the
@@ -77,16 +93,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14 gdb
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev g++-14 gdb
+          ccache-key: sanitizers
 
       - name: Configure, build and test
         run: |
           cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           cmake --build --preset debug
           ctest --preset debug -E '^driver'
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
 
   # With CUDA4CPU_ENABLE_VALGRIND, the fiber stacks are registered with
   # Valgrind, which must report no errors. The slowest tests are left out.
@@ -98,10 +122,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14 valgrind
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev g++-14 valgrind
+          ccache-key: valgrind
 
       - name: Build
         run: |
@@ -116,6 +142,12 @@ jobs:
             OMP_NUM_THREADS=2 valgrind -q --error-exitcode=1 ./$test
             echo "::endgroup::"
           done
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
 
   # Real CUDA and HIP programs, unmodified: a curated set of NVIDIA's
   # cuda-samples, Rodinia and AMD's rocm-examples, fetched at the revisions in
@@ -135,17 +167,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libnuma-dev g++-14 gcc-14
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev g++-14 gcc-14
+          ccache-key: compatibility
 
       - name: Build cuda4cpu
         run: |
           cmake --preset release -DCUDA4CPU_BUILD_TESTS=OFF -DCUDA4CPU_BUILD_BENCHMARKS=OFF
           cmake --build --preset release
 
+      # The programs' builds go through ccache too: the compiler driver puts
+      # the rewritten sources next to the object files, at the same paths on
+      # every run
       - name: Build and run the programs
+        env:
+          CUDA4CPU_CXX: /usr/lib/ccache/g++-14
+          CC: /usr/lib/ccache/gcc-14
         run: |
           python3 compat/run.py --driver build/release/tools/cuda4cpu-c++ --work "${{ runner.temp }}/compat" \
                                 --baseline compat/baseline.json --report "${{ runner.temp }}/compatibility.md" \
@@ -162,3 +202,9 @@ jobs:
           path: |
             ${{ runner.temp }}/compatibility.md
             ${{ runner.temp }}/compatibility.json
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
