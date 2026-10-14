@@ -251,36 +251,45 @@ public:
         return Current_->shared_mem_;
     }
 
-    //! Implementation of the threadIdx special variable.
-    //! Returns a dim3 object with the identifier of the calling thread within the thread block.
-    static inline dim3
+    //! A dim3 as a trivial type, which __thread requires
+    struct raw_dim3 {
+        unsigned x, y, z;
+
+        operator dim3() const { return dim3(x, y, z); }
+        void set(const dim3 &d) { x = d.x; y = d.y; z = d.z; }
+    };
+
+    //! Storage of the threadIdx special variable: the identifier of the
+    //! calling thread within the thread block. threadIdx copies it into a
+    //! detail::builtin_dim3.
+    static inline const raw_dim3 &
     get_thread()
     {
-        return Vars_.thread_idx.get();
+        return Vars_.thread_idx;
     }
 
-    //! Implementation of the blockIdx special variable.
-    //! Returns a dim3 object with the identifier of the calling thread block within the grid.
-    static inline dim3
+    //! Storage of the blockIdx special variable: the identifier of the
+    //! calling thread block within the grid
+    static inline const raw_dim3 &
     get_block()
     {
-        return Vars_.block_idx.get();
+        return Vars_.block_idx;
     }
 
-    //! Implementation of the blockDim special variable.
-    //! Returns a dim3 object with the number of threads in each dimension of the thread block.
-    static inline dim3
+    //! Storage of the blockDim special variable: the number of threads in
+    //! each dimension of the thread block
+    static inline const raw_dim3 &
     get_block_dim()
     {
-        return Vars_.block_dim.get();
+        return Vars_.block_dim;
     }
 
-    //! Implementation of the gridDim special variable.
-    //! Returns a dim3 object with the number of blocks in each dimension of the computation grid.
-    static inline dim3
+    //! Storage of the gridDim special variable: the number of blocks in each
+    //! dimension of the computation grid
+    static inline const raw_dim3 &
     get_grid_dim()
     {
-        return Vars_.grid_dim.get();
+        return Vars_.grid_dim;
     }
 
 private:
@@ -327,14 +336,6 @@ private:
     std::vector<dim3> ids_;
     std::unique_ptr<fibers> fibers_;
 
-    //! A dim3 as a trivial type, which __thread requires
-    struct raw_dim3 {
-        unsigned x, y, z;
-
-        dim3 get() const { return dim3(x, y, z); }
-        void set(const dim3 &d) { x = d.x; y = d.y; z = d.z; }
-    };
-
     //! Built-in variables of the CUDA thread running on this OS thread, kept
     //! up to date by the scheduler so that reading one is a single load. In
     //! direct mode, in the default order, threadIdx is the only state that
@@ -376,6 +377,22 @@ private:
     [[gnu::tls_model("initial-exec")]] static __thread thread_block *Current_;
     [[gnu::tls_model("initial-exec")]] static __thread builtin_vars Vars_;
 };
+
+namespace detail {
+
+//! What threadIdx, blockIdx, blockDim and gridDim evaluate to: a copy of
+//! the built-in variable, made by a constructor. A function returning a dim3
+//! returns it in registers, x and y packed in one: Clang then read both with
+//! a 64-bit load, which didn't match the 32-bit store of threadIdx.x in the
+//! direct-mode loop, and the loop over the CUDA threads didn't vectorize.
+struct builtin_dim3 : dim3 {
+    explicit builtin_dim3(const thread_block::raw_dim3 &v) :
+        dim3(v.x, v.y, v.z)
+    {
+    }
+};
+
+} // namespace detail
 
 //! Inserted by cuda4cpu-rewrite at the top of the outermost loops of device
 //! functions: see thread_block::loop_tick(). Does nothing during constant
@@ -442,10 +459,27 @@ struct kernel_call : kernel_closure {
             return;
         }
 
-        // In the default order, each CUDA thread costs a store to threadIdx
-        // and a check that it didn't reach a barrier: promote() computes the
-        // running thread from threadIdx. If it did, the block is in fiber
-        // mode now, and the thread finishes as a fiber.
+        // A copy of the arguments on the stack: the compiler then knows that
+        // the kernel's stores don't change them, and loads them once per
+        // block instead of once per CUDA thread, which lets Clang vectorize
+        // the loop over the threads. CUDA allows 32 KB of arguments, which
+        // would cost more to copy than a small block takes to run.
+        if constexpr ((std::is_trivially_copyable_v<Stored> && ...) &&
+                      sizeof(std::tuple<Stored...>) <= 256) {
+            const std::tuple<Stored...> args = call.args;
+            run_threads(block, call.func, args);
+        } else {
+            run_threads(block, call.func, call.args);
+        }
+    }
+
+    //! Runs every thread of the block in the default order. Each CUDA thread
+    //! costs a store to threadIdx and a check that it didn't reach a barrier:
+    //! promote() computes the running thread from threadIdx. If it did, the
+    //! block is in fiber mode now, and the thread finishes as a fiber.
+    [[gnu::always_inline]] static void
+    run_threads(thread_block &block, const F &func, const std::tuple<Stored...> &args)
+    {
         const dim3 b = block.conf_.block;
         for (unsigned z = 0; z < b.z; ++z) {
             thread_block::Vars_.thread_idx.z = z;
@@ -453,7 +487,7 @@ struct kernel_call : kernel_closure {
                 thread_block::Vars_.thread_idx.y = y;
                 for (unsigned x = 0; x < b.x; ++x) {
                     thread_block::Vars_.thread_idx.x = x;
-                    std::apply(call.func, call.args);
+                    std::apply(func, args);
                     if (!block.direct_) [[unlikely]]
                         block.finish_current();
                 }

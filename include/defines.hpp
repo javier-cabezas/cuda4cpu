@@ -62,10 +62,10 @@
 // check, and are the same in every copy the compiler inlines
 #define __syncthreads() cuda4cpu::thread_block::syncthreads(__FILE__, __LINE__)
 
-#define threadIdx cuda4cpu::thread_block::get_thread()
-#define blockIdx  cuda4cpu::thread_block::get_block()
+#define threadIdx (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_thread()))
+#define blockIdx  (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_block()))
 
-#define blockDim cuda4cpu::thread_block::get_block_dim()
-#define gridDim  cuda4cpu::thread_block::get_grid_dim()
+#define blockDim (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_block_dim()))
+#define gridDim  (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_grid_dim()))
 
 

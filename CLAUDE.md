@@ -248,6 +248,26 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`direct_thread()`). That made a CUDA thread that only checks bounds go from
   2.3 to 0.9 ns. With `CUDA4CPU_SCHEDULE`, `next_direct_thread()` moves to
   the next thread in the order and sets them all.
+- Clang vectorizes the direct-mode loop over x for kernels without barriers
+  or calls it can't inline, as if the CUDA threads were the iterations of a
+  SIMD loop. The bounds check (`if (i < n)`) needs masked loads and stores,
+  so only with AVX2 or later (`-march=x86-64-v3`, or `native`). In
+  `microbench` built with Clang and `-march=native`, a 2D stencil went from
+  9.9 to 0.56 ns per element, a polynomial from 3.9 to 0.52, and in-cache
+  vecadd from 0.15 to 0.05 ms. Two things make that possible. The built-in
+  variables are copied into a `detail::builtin_dim3` by a constructor,
+  because a function returning a `dim3` returns x and y packed in one
+  register, and Clang read them with a 64-bit load that didn't match the
+  store of `threadIdx.x` (the stencil's 9.9 to 1.3 ns, even without AVX2).
+  And `run_direct_impl` copies small, trivially copyable arguments to its
+  stack, so that the kernel's stores can't change them and they are loaded
+  once per block. GCC doesn't vectorize the loop: it won't move the store of
+  `threadIdx.x` out of the loop, because the kernel's stores might write
+  `Vars_`, and its vectorizer rejects a store to the same address in every
+  iteration. The cost of masked stores: on a Ryzen 8845HS, stores masked off
+  still cost the bandwidth of their cache lines, so a launch with many more
+  threads than elements over a large array is bound by memory bandwidth, and
+  each one to an unmapped page (such as `nullptr`) takes a microcode assist.
 - The first `__syncthreads()` or warp function calls `promote()`: threads
   before `cur_` are finished, and the current thread stays on fiber 0's stack
   (its own stack is unused for that block).
@@ -298,7 +318,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `deadlock()` is an internal consistency check.
 - `threadIdx`, `blockIdx`, `blockDim` and `gridDim` are stored in
   `thread_block::Vars_`, which `set_current_thread()`, `execute()` and the
-  direct-mode loop keep up to date. The getters return `dim3` by value. The
+  direct-mode loop keep up to date. The getters return the storage by
+  reference, and the macros copy it (see vectorization above). The
   lane is computed from `threadIdx` and `blockDim`, and so is gdb's
   `$laneid()`.
 - `__shared__` is `static thread_local`. That's correct only because a block

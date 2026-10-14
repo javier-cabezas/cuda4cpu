@@ -121,6 +121,28 @@ __global__ void grid_stride_ticks(unsigned char *out, const unsigned char *in, i
     }
 }
 
+// Compute-bound: a polynomial per element
+__global__ void poly(float *out, const float *in, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float v = in[i], acc = 0.f;
+        for (int k = 0; k < 16; ++k)
+            acc = acc * v + 0.5f;
+        out[i] = acc;
+    }
+}
+
+// A 2D, 5-point stencil without shared memory
+__global__ void stencil(float *out, const float *in, int w, int h)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x > 0 && y > 0 && x < w - 1 && y < h - 1)
+        out[y * w + x] = 0.2f * (in[y * w + x] + in[y * w + x - 1] + in[y * w + x + 1] +
+                                 in[(y - 1) * w + x] + in[(y + 1) * w + x]);
+}
+
 // Block b does work proportional to b, like a triangular loop nest
 __global__ void triangular(float *out, int scale)
 {
@@ -217,8 +239,16 @@ int main()
     // and vecadd on data that fits in the caches
     {
         const unsigned blocks = 16384, threads = 1024;
+        // A real buffer, although no thread writes it: when the compiler
+        // vectorizes the loop over the threads, it still issues masked
+        // stores. At nullptr, each took a microcode assist (2.3 instead of
+        // 0.1 ns per thread). On a Ryzen 8845HS, stores masked off still
+        // cost the bandwidth of their cache lines: Clang's vectorized loop
+        // runs at 0.14 ns per thread on one core, and doesn't get faster
+        // with more.
+        std::vector<float> out(size_t(blocks) * threads, 1.f);
         auto run = [&] {
-            launch([&](const auto &...a) { bounds_check(a...); }, blocks, threads).call(nullptr, size_t(0));
+            launch([&](const auto &...a) { bounds_check(a...); }, blocks, threads).call(out.data(), size_t(0));
         };
         run();
         double ms = median_ms(run);
@@ -241,6 +271,27 @@ int main()
         });
         row("vecadd 1M floats (in cache), as rewritten", cached / reps, "ms");
         row("  same loop with OpenMP", omp / reps, "ms");
+    }
+
+    // Barrier-free kernels on data that fits in the caches, on one OS thread:
+    // Clang vectorizes the loop over their CUDA threads
+    {
+        const int saved = omp_get_max_threads();
+        omp_set_num_threads(1);
+        const int w = 512, h = 512, n = w * h, reps = 20;
+        std::vector<float> in(n, 1.f), out(n);
+        double poly_ms = median_ms([&] {
+            for (int r = 0; r < reps; ++r)
+                launch([&](const auto &...a) { poly(a...); }, unsigned(n / 256), 256).call(out.data(), in.data(), n);
+        });
+        double stencil_ms = median_ms([&] {
+            for (int r = 0; r < reps; ++r)
+                launch([&](const auto &...a) { stencil(a...); }, dim3(w / 64, h / 4), dim3(64, 4))
+                    .call(out.data(), in.data(), w, h);
+        });
+        omp_set_num_threads(saved);
+        row("polynomial per element, in cache, one OS thread", poly_ms * 1e6 / (double(reps) * n), "ns");
+        row("2D stencil per element, in cache, one OS thread", stencil_ms * 1e6 / (double(reps) * n), "ns");
     }
 
     // A grid-stride loop run one thread after another touches a new page per
