@@ -179,6 +179,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     special values, and kernels with `half2`, shuffles and atomics.
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
+  - `vectorize` (`vectorize.cu`): kernels without barriers (odd block sizes,
+    2D and 3D blocks, bounds checks, early returns, large arguments).
+    `vectorize_vectorized`, and `*_vectorized` copies of a few other tests
+    and samples, build them with `CUDA4CPU_VECTORIZE_THREADS` and
+    `-march=x86-64-v3`, with Clang on a machine with AVX2
+    (`CUDA4CPU_HOST_HAS_AVX2`).
   - `samples/*.cu`: ten unmodified CUDA programs, built with
     `cuda4cpu_add_cuda_sources` and checked against a host reference.
     Five use kernel features (reduction, matmul, histogram, scan, nbody, which
@@ -248,26 +254,36 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`direct_thread()`). That made a CUDA thread that only checks bounds go from
   2.3 to 0.9 ns. With `CUDA4CPU_SCHEDULE`, `next_direct_thread()` moves to
   the next thread in the order and sets them all.
-- Clang vectorizes the direct-mode loop over x for kernels without barriers
-  or calls it can't inline, as if the CUDA threads were the iterations of a
-  SIMD loop. The bounds check (`if (i < n)`) needs masked loads and stores,
-  so only with AVX2 or later (`-march=x86-64-v3`, or `native`). In
-  `microbench` built with Clang and `-march=native`, a 2D stencil went from
-  9.9 to 0.56 ns per element, a polynomial from 3.9 to 0.52, and in-cache
-  vecadd from 0.15 to 0.05 ms. Two things make that possible. The built-in
-  variables are copied into a `detail::builtin_dim3` by a constructor,
-  because a function returning a `dim3` returns x and y packed in one
-  register, and Clang read them with a 64-bit load that didn't match the
-  store of `threadIdx.x` (the stencil's 9.9 to 1.3 ns, even without AVX2).
-  And `run_direct_impl` copies small, trivially copyable arguments to its
-  stack, so that the kernel's stores can't change them and they are loaded
-  once per block. GCC doesn't vectorize the loop: it won't move the store of
-  `threadIdx.x` out of the loop, because the kernel's stores might write
-  `Vars_`, and its vectorizer rejects a store to the same address in every
-  iteration. The cost of masked stores: on a Ryzen 8845HS, stores masked off
-  still cost the bandwidth of their cache lines, so a launch with many more
-  threads than elements over a large array is bound by memory bandwidth, and
-  each one to an unmapped page (such as `nullptr`) takes a microcode assist.
+- With `CUDA4CPU_VECTORIZE_THREADS`, Clang vectorizes the direct-mode loop
+  over x for kernels without barriers or calls it can't inline, as if the
+  CUDA threads were the iterations of a SIMD loop. Otherwise `run_threads`
+  disables it with a pragma. The bounds check (`if (i < n)`) needs masked
+  loads and stores, so only with AVX2 or later (`-march=x86-64-v3`, or
+  `native`). `microbench_vectorized` (Clang, `-march=native`) runs a 2D
+  stencil at 0.56 ns per element instead of 1.25, and a polynomial at 0.52
+  instead of 3.9. It's off by default because of masked accesses: the
+  threads out of bounds still issue them, each one to an unmapped page takes
+  a microcode assist, and on a Ryzen 8845HS those masked off still cost the
+  bandwidth of their cache lines. rocm-examples' sequential_kernel_execution
+  launches 2^30 threads for 2^25 elements, and went from 9.3 s to over 120;
+  no program of the compatibility suite got measurably faster.
+  Three things make the loop vectorizable, and help it without vectorizing
+  too:
+  - The built-in variables are copied into a `detail::builtin_dim3` by a
+    constructor. A function returning a `dim3` returns x and y packed in one
+    register, and Clang read them with a 64-bit load that didn't match the
+    store of `threadIdx.x`: the stencil went from 9.9 to 1.3 ns.
+  - `run_direct_impl` copies small, trivially copyable arguments to its
+    stack, so that the kernel's stores can't change them and they are loaded
+    once per block.
+  - The check for a barrier comes first in the loop over x, and once more
+    after it. At the end of the body, after the kernel's stores, only
+    Clang's `-O3` moved it out of the loop. sequential_kernel_execution went
+    from 9.3 to 6.1 s at `-O2`.
+
+  GCC doesn't vectorize the loop: it won't move the store of `threadIdx.x`
+  out of the loop, because the kernel's stores might write `Vars_`, and its
+  vectorizer rejects a store to the same address in every iteration.
 - The first `__syncthreads()` or warp function calls `promote()`: threads
   before `cur_` are finished, and the current thread stays on fiber 0's stack
   (its own stack is unused for that block).

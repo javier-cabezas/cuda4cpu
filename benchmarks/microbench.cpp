@@ -239,13 +239,12 @@ int main()
     // and vecadd on data that fits in the caches
     {
         const unsigned blocks = 16384, threads = 1024;
-        // A real buffer, although no thread writes it: when the compiler
-        // vectorizes the loop over the threads, it still issues masked
-        // stores. At nullptr, each took a microcode assist (2.3 instead of
-        // 0.1 ns per thread). On a Ryzen 8845HS, stores masked off still
-        // cost the bandwidth of their cache lines: Clang's vectorized loop
-        // runs at 0.14 ns per thread on one core, and doesn't get faster
-        // with more.
+        // A real buffer, although no thread writes it: in
+        // microbench_vectorized, the threads still issue masked stores. At
+        // nullptr, each took a microcode assist (2.3 instead of 0.1 ns per
+        // thread). On a Ryzen 8845HS, stores masked off still cost the
+        // bandwidth of their cache lines: the vectorized loop runs at
+        // 0.14 ns per thread on one core, and doesn't get faster with more.
         std::vector<float> out(size_t(blocks) * threads, 1.f);
         auto run = [&] {
             launch([&](const auto &...a) { bounds_check(a...); }, blocks, threads).call(out.data(), size_t(0));
@@ -273,8 +272,9 @@ int main()
         row("  same loop with OpenMP", omp / reps, "ms");
     }
 
-    // Barrier-free kernels on data that fits in the caches, on one OS thread:
-    // Clang vectorizes the loop over their CUDA threads
+    // Barrier-free kernels on data that fits in the caches, on one OS thread.
+    // In microbench_vectorized, Clang vectorizes the loop over their CUDA
+    // threads.
     {
         const int saved = omp_get_max_threads();
         omp_set_num_threads(1);

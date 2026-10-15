@@ -436,7 +436,14 @@ HIP programs are built with the `cuda4cpu-hipcc` next to `--driver`
   back to back, each one a direct call to the kernel. Kernels that never call
   `__syncthreads()` never switch fibers. `threadIdx`, `blockIdx`, `blockDim`
   and `gridDim` are thread-local values that the scheduler keeps up to date,
-  so reading one is a single memory load.
+  so reading one is a single memory load. With Clang, AVX2 or later
+  (`-march=x86-64-v3`, or `native`) and `-DCUDA4CPU_VECTORIZE_THREADS`, the
+  loop over the CUDA threads of a kernel without barriers vectorizes, as if
+  the threads were the lanes of a SIMD loop: a 2D stencil ran 2.2 times
+  faster on one core. It's off by default, because the threads out of bounds
+  still issue the kernel's loads and stores, masked off: a launch with far
+  more threads than elements ran 13 times slower or worse, when those
+  addresses weren't mapped.
 - **Loops → threads take turns.** GPU code expects the threads of a warp to
   touch neighboring addresses together. Run one after another, each thread of
   a grid-stride loop touches a new page per iteration, and page walks
