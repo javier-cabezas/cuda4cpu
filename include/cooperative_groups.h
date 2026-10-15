@@ -43,26 +43,26 @@ namespace cuda4cpu::detail::cg {
 //! Rank of the calling thread in its block, x fastest
 inline unsigned block_rank()
 {
-    const dim3 t = thread_block::get_thread(), d = thread_block::get_block_dim();
+    const auto &t = thread_block::get_thread(), &d = thread_block::get_block_dim();
     return (t.z * d.y + t.y) * d.x + t.x;
 }
 
 inline unsigned block_size()
 {
-    const dim3 d = thread_block::get_block_dim();
+    const auto &d = thread_block::get_block_dim();
     return d.x * d.y * d.z;
 }
 
 //! Rank of the calling block in the grid, x fastest
 inline unsigned long long grid_block_rank()
 {
-    const dim3 b = thread_block::get_block(), g = thread_block::get_grid_dim();
+    const auto &b = thread_block::get_block(), &g = thread_block::get_grid_dim();
     return (static_cast<unsigned long long>(b.z) * g.y + b.y) * g.x + b.x;
 }
 
 inline unsigned long long grid_blocks()
 {
-    const dim3 g = thread_block::get_grid_dim();
+    const auto &g = thread_block::get_grid_dim();
     return static_cast<unsigned long long>(g.x) * g.y * g.z;
 }
 
