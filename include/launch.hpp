@@ -461,9 +461,10 @@ struct kernel_call : kernel_closure {
 
         // A copy of the arguments on the stack: the compiler then knows that
         // the kernel's stores don't change them, and loads them once per
-        // block instead of once per CUDA thread, which lets Clang vectorize
-        // the loop over the threads. CUDA allows 32 KB of arguments, which
-        // would cost more to copy than a small block takes to run.
+        // block instead of once per CUDA thread (which Clang also needs to
+        // vectorize the loop over the threads, see run_threads). CUDA allows
+        // 32 KB of arguments, which would cost more to copy than a small
+        // block takes to run.
         if constexpr ((std::is_trivially_copyable_v<Stored> && ...) &&
                       sizeof(std::tuple<Stored...>) <= 256) {
             const std::tuple<Stored...> args = call.args;
@@ -474,9 +475,20 @@ struct kernel_call : kernel_closure {
     }
 
     //! Runs every thread of the block in the default order. Each CUDA thread
-    //! costs a store to threadIdx and a check that it didn't reach a barrier:
-    //! promote() computes the running thread from threadIdx. If it did, the
-    //! block is in fiber mode now, and the thread finishes as a fiber.
+    //! costs a store to threadIdx and a check that the previous one didn't
+    //! reach a barrier: promote() computes the running thread from threadIdx.
+    //! If it did, the block is in fiber mode now, and the thread finishes as a
+    //! fiber. The check comes first in the loop, and once more after it: at
+    //! the end of the body, after the kernel's stores, only Clang's -O3 moved
+    //! it out of the loop. A launch of rocm-examples'
+    //! sequential_kernel_execution went from 9.3 to 6.1 s at -O2.
+    //!
+    //! Clang can vectorize the loop over x, but only does so with
+    //! CUDA4CPU_VECTORIZE_THREADS: the bounds check of the kernel becomes
+    //! masked loads and stores, which the threads out of bounds still issue,
+    //! and those to unmapped pages take a microcode assist each.
+    //! sequential_kernel_execution, which launches 2^30 threads for 2^25
+    //! elements, went from 9.3 s to over 120.
     [[gnu::always_inline]] static void
     run_threads(thread_block &block, const F &func, const std::tuple<Stored...> &args)
     {
@@ -485,12 +497,17 @@ struct kernel_call : kernel_closure {
             thread_block::Vars_.thread_idx.z = z;
             for (unsigned y = 0; y < b.y; ++y) {
                 thread_block::Vars_.thread_idx.y = y;
+#if defined(__clang__) && !defined(CUDA4CPU_VECTORIZE_THREADS)
+                _Pragma("clang loop vectorize(disable)")
+#endif
                 for (unsigned x = 0; x < b.x; ++x) {
-                    thread_block::Vars_.thread_idx.x = x;
-                    std::apply(func, args);
                     if (!block.direct_) [[unlikely]]
                         block.finish_current();
+                    thread_block::Vars_.thread_idx.x = x;
+                    std::apply(func, args);
                 }
+                if (!block.direct_) [[unlikely]]
+                    block.finish_current();
             }
         }
     }
