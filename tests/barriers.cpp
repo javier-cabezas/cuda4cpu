@@ -149,6 +149,60 @@ __global__ void shuffle_in_3d_block(int *out, unsigned first)
     out[t] = __shfl_xor_sync(mask, int(t), 1);
 }
 
+// Rounds of exchanges with the next thread through shared memory. The first
+// two warps also shuffle in odd rounds, and threads past them return at
+// different rounds, so that barriers see every kind of arrival: first, last,
+// next thread returned or not started, shuffles pending in the warp.
+__global__ void barrier_rounds(unsigned *out, unsigned rounds)
+{
+    __shared__ unsigned s[1024];
+    const unsigned n = blockDim.x, t = threadIdx.x;
+    unsigned v = t + 1000 * blockIdx.x;
+    for (unsigned r = 0; r < rounds; ++r) {
+        if (t >= 64 && r == 1 + t % (rounds - 1)) {
+            out[blockIdx.x * n + t] = v;
+            return;
+        }
+        s[t] = v;
+        __syncthreads();
+        v = v * 3 + s[(t + 1) % n];
+        if (n >= 64 && t < 64 && (r & 1))
+            v += __shfl_xor_sync(0xffffffff, v, 1);
+        __syncthreads();
+    }
+    out[blockIdx.x * n + t] = v;
+}
+
+//! What barrier_rounds computes
+static std::vector<unsigned> barrier_rounds_reference(unsigned blocks, unsigned n, unsigned rounds)
+{
+    std::vector<unsigned> out(blocks * n);
+    for (unsigned b = 0; b < blocks; ++b) {
+        std::vector<unsigned> v(n), s(n);
+        std::vector<bool> live(n, true);
+        for (unsigned t = 0; t < n; ++t) v[t] = t + 1000 * b;
+        for (unsigned r = 0; r < rounds; ++r) {
+            for (unsigned t = 64; t < n; ++t) {
+                if (live[t] && r == 1 + t % (rounds - 1)) {
+                    out[b * n + t] = v[t];
+                    live[t] = false;
+                }
+            }
+            for (unsigned t = 0; t < n; ++t)
+                if (live[t]) s[t] = v[t];
+            for (unsigned t = 0; t < n; ++t)
+                if (live[t]) v[t] = v[t] * 3 + s[(t + 1) % n];
+            if (n >= 64 && (r & 1)) {
+                std::vector<unsigned> w(v);
+                for (unsigned t = 0; t < 64; ++t) v[t] = w[t] + w[t ^ 1];
+            }
+        }
+        for (unsigned t = 0; t < n; ++t)
+            if (live[t]) out[b * n + t] = v[t];
+    }
+    return out;
+}
+
 int main()
 {
     std::atexit(fail_if_unfinished);
@@ -202,6 +256,21 @@ int main()
             expected[t] = int(t ^ 1);
         launch(shuffle_in_3d_block, 1, block).call(out.data(), first);
         check("shuffle_in_3d_block", out, expected);
+    }
+
+    for (unsigned n : {1u, 2u, 3u, 31u, 32u, 33u, 64u, 100u, 256u, 1024u}) {
+        const unsigned rounds = 9;
+        std::vector<unsigned> out(blocks * n, 0);
+        launch(barrier_rounds, blocks, n).call(out.data(), rounds);
+        const auto expected = barrier_rounds_reference(blocks, n, rounds);
+        for (size_t i = 0; i < out.size(); ++i) {
+            if (out[i] != expected[i]) {
+                std::cout << "barrier_rounds, " << n << " threads: out[" << i << "] = " << out[i]
+                          << ", expected " << expected[i] << "\n";
+                ++errors;
+                break;
+            }
+        }
     }
 
     finished = true;

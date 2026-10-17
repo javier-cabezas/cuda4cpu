@@ -206,6 +206,90 @@ static void test_large_tiles()
     }
 }
 
+// The first warp of each tile of 64 waits at the tile's barrier while the
+// second goes to __syncthreads(), which takes it out of the tile barrier. From
+// the second round on, every thread has started, and the barrier's fast path
+// must leave such arrivals to the general one.
+__global__ void tile_then_barrier(int *out, int rounds)
+{
+    cg::thread_block cta = cg::this_thread_block();
+    auto tile64 = cg::tiled_partition<64>(cta);
+    __shared__ int buf[256];
+    const int t = int(cta.thread_rank());
+    int v = t;
+    for (int r = 0; r < rounds; ++r) {
+        if (tile64.thread_rank() < 32) {
+            buf[t] = v;
+            tile64.sync();
+            v += buf[t ^ 1];
+        }
+        cta.sync();
+    }
+    out[t] = v;
+}
+
+static void test_tile_then_barrier()
+{
+    const int n = 192, rounds = 4;
+    std::vector<int> out(n, -1), expected(n);
+    for (int t = 0; t < n; ++t) expected[t] = t;
+    for (int r = 0; r < rounds; ++r) {
+        std::vector<int> w(expected);
+        for (int t = 0; t < n; ++t)
+            if (t % 64 < 32) expected[t] = w[t] + w[t ^ 1];
+    }
+    cuda4cpu::launch(tile_then_barrier, 2, n).call(out.data(), rounds);
+    check("tile then barrier", out, expected, 1);
+}
+
+// The second warp of each tile of 64 returns a few threads per round while
+// the rest of the tile keeps exchanging values at its barrier. When the
+// tile's last thread returns, that releases the barrier, also on the fast
+// path of a returning thread.
+__global__ void tile_with_returns(int *out, int rounds)
+{
+    cg::thread_block cta = cg::this_thread_block();
+    auto tile64 = cg::tiled_partition<64>(cta);
+    __shared__ int buf[256];
+    const int t = int(cta.thread_rank());
+    int v = t;
+    for (int r = 0; r < rounds; ++r) {
+        if (t % 64 >= 32 && r == 1 + t % 32 % (rounds - 1)) {
+            out[t] = v;
+            return;
+        }
+        buf[t] = v;
+        tile64.sync();
+        v += buf[t ^ 1];
+        tile64.sync();
+    }
+    out[t] = v;
+}
+
+static void test_tile_with_returns()
+{
+    const int n = 192, rounds = 5;
+    std::vector<int> out(n, -1), expected(n), v(n), buf(n);
+    std::vector<bool> live(n, true);
+    for (int t = 0; t < n; ++t) v[t] = t;
+    for (int r = 0; r < rounds; ++r) {
+        for (int t = 0; t < n; ++t) {
+            if (live[t] && t % 64 >= 32 && r == 1 + t % 32 % (rounds - 1)) {
+                expected[t] = v[t];
+                live[t] = false;
+            }
+        }
+        for (int t = 0; t < n; ++t)
+            if (live[t]) buf[t] = v[t];
+        for (int t = 0; t < n; ++t)
+            if (live[t]) v[t] += buf[t ^ 1];
+    }
+    for (int t = 0; t < n; ++t)
+        if (live[t]) expected[t] = v[t];
+    cuda4cpu::launch(tile_with_returns, 2, n).call(out.data(), rounds);
+    check("tile with returns", out, expected, 1);
+}
+
 //
 // Coalesced groups: the lanes that take a branch together
 //
@@ -395,6 +479,8 @@ int main()
 {
     test_small_tiles();
     test_large_tiles();
+    test_tile_then_barrier();
+    test_tile_with_returns();
     test_coalesced();
     test_match();
     test_grid();

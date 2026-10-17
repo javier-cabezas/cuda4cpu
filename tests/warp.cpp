@@ -120,6 +120,23 @@ __global__ void branch_then_barrier(int *out)
     out[t] = v;
 }
 
+// The same in a loop, with a full mask: the lanes at the shuffle wait for
+// those that go to __syncthreads() until all of them have arrived there. From
+// the second round on, every thread has started, and the barrier's fast path
+// must leave such arrivals to the general one.
+__global__ void branch_then_barrier_rounds(int *out, int rounds)
+{
+    int t = threadIdx.x;
+    int lane = t % warpSize;
+    int v = t;
+    for (int r = 0; r < rounds; ++r) {
+        if (lane < 16)
+            v += __shfl_xor_sync(0xffffffff, v, 1);
+        __syncthreads();
+    }
+    out[blockIdx.x * blockDim.x + t] = v;
+}
+
 int main()
 {
     // Two full warps, and a full warp plus a partial one
@@ -152,6 +169,24 @@ int main()
         for (unsigned t = 0; t < nthreads; ++t) expected[t] = (t % 32) < 16 ? int(t ^ 1) : int(t);
         launch(branch_then_barrier, 2, nthreads).call(out.data());
         check("branch_then_barrier", out, expected);
+    }
+
+    {
+        const unsigned nthreads = 96, blocks = 2;
+        const int rounds = 4;
+        std::vector<int> out(blocks * nthreads, -1), expected(blocks * nthreads);
+        for (unsigned b = 0; b < blocks; ++b) {
+            std::vector<int> v(nthreads);
+            for (unsigned t = 0; t < nthreads; ++t) v[t] = int(t);
+            for (int r = 0; r < rounds; ++r) {
+                std::vector<int> w(v);
+                for (unsigned t = 0; t < nthreads; ++t)
+                    if (t % 32 < 16) v[t] = w[t] + w[t ^ 1];
+            }
+            for (unsigned t = 0; t < nthreads; ++t) expected[b * nthreads + t] = v[t];
+        }
+        launch(branch_then_barrier_rounds, blocks, nthreads).call(out.data(), rounds);
+        check("branch_then_barrier_rounds", out, expected);
     }
 
     return errors == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

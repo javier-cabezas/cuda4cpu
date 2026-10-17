@@ -22,6 +22,11 @@ add_test(NAME divergent_barrier_warn COMMAND divergent_barrier)
 set_tests_properties(divergent_barrier_warn PROPERTIES
     PASS_REGULAR_EXPRESSION "warning: threads of block \\([0-9], 0, 0\\) reached different __syncthreads\\(\\) calls, at [^ ]*divergent_barrier.cpp:[0-9]+ and [^ ]*divergent_barrier.cpp:[0-9]+"
     ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=warn")
+# The report names the two calls of divergent_later(), not the barrier before
+add_test(NAME divergent_barrier_later COMMAND divergent_barrier later)
+set_tests_properties(divergent_barrier_later PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning: threads of block \\([0-9], 0, 0\\) reached different __syncthreads\\(\\) calls, at [^ ]*divergent_barrier.cpp:63 and [^ ]*divergent_barrier.cpp:66"
+    ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=warn")
 add_test(NAME divergent_barrier_ignore COMMAND divergent_barrier)
 set_tests_properties(divergent_barrier_ignore PROPERTIES
     FAIL_REGULAR_EXPRESSION "different __syncthreads"

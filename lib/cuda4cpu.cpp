@@ -404,6 +404,20 @@ struct thread_block::fibers {
             sanitizer_resumed(save);
     }
 
+#if CUDA4CPU_ASM_CONTEXT
+    //! Writes the frame that starts fiber i on stack i when
+    //! cuda4cpu_switch_context pops it: r15, r14, r13, r12, rbx, rbp, and
+    //! the return address
+    [[gnu::always_inline]] void *initial_frame(size_t i)
+    {
+        void **sp = reinterpret_cast<void **>(stack(i) + stack_size - stack_offset(i)) - 7;
+        for (int r = 0; r < 6; ++r)
+            sp[r] = nullptr;
+        sp[6] = reinterpret_cast<void *>(cuda4cpu_fiber_trampoline);
+        return sp;
+    }
+#endif
+
     //! Saves the running context in save and starts fiber i from its entry
     //! point, on stack i
     void start_fiber(context &save, size_t i)
@@ -411,12 +425,7 @@ struct thread_block::fibers {
         set_stack(i, i);
         starting_stack = i;
 #if CUDA4CPU_ASM_CONTEXT
-        // The frame that cuda4cpu_switch_context pops: r15, r14, r13, r12, rbx,
-        // rbp, and the return address
-        void **sp = reinterpret_cast<void **>(stack(i) + stack_size - stack_offset(i)) - 7;
-        for (int r = 0; r < 6; ++r)
-            sp[r] = nullptr;
-        sp[6] = reinterpret_cast<void *>(cuda4cpu_fiber_trampoline);
+        void *sp = initial_frame(i);
         if (sanitize) [[unlikely]]
             sanitizer_leave(save, ctx[i]);
         cuda4cpu_switch_context(&save.sp, sp);
@@ -590,6 +599,50 @@ struct thread_block::fibers {
         return warps[w].live & ~warps[w].block_wait & ~warps[w].warp_wait & ~warps[w].tile_wait;
     }
 
+#if CUDA4CPU_ASM_CONTEXT
+    //! The thread that probably runs after to is the next one. Its saved
+    //! registers and frames are rarely in L1 (a block's fibers rotate through
+    //! far more stack than L1 holds), so fetch them while to runs: 10-20%
+    //! fewer cycles in barrier-heavy programs.
+    [[gnu::always_inline]] void prefetch_after(size_t to) const
+    {
+        if (to + 1 < ctx.size() && (warps[(to + 1) / warp_size].started & lane_bit(to + 1)) != 0) {
+            const auto *sp = static_cast<const char *>(ctx[to + 1].sp);
+            for (int line = 0; line < 4; ++line)
+                __builtin_prefetch(sp + line * cache_line);
+        }
+    }
+#endif
+
+    //! Switches can skip the general scheduler: threads run in index order,
+    //! and no sanitizer needs to hear about switches
+    bool fast_switch = false;
+
+    //! The thread after self, if switches can skip the general scheduler and
+    //! it can run: the one next_runnable(self + 1) returns. Otherwise
+    //! no_thread.
+    [[gnu::always_inline]] size_t fast_next(size_t self) const
+    {
+        const size_t next = self + 1;
+        if (!fast_switch || next >= ctx.size())
+            return no_thread;
+        return (runnable(next / warp_size) & lane_bit(next)) != 0 ? next : no_thread;
+    }
+
+#if CUDA4CPU_ASM_CONTEXT
+    //! Where cuda4cpu_switch_context resumes thread t, which starts on its
+    //! own stack if it hasn't started (fast_switch: no sanitizer to tell)
+    [[gnu::always_inline]] void *resume_point(size_t t)
+    {
+        uint32_t &started = warps[t / warp_size].started;
+        if ((started & lane_bit(t)) != 0) [[likely]]
+            return ctx[t].sp;
+        started |= lane_bit(t);
+        starting_stack = t;
+        return initial_frame(t);
+    }
+#endif
+
     // Pending warp-synchronous operation of each thread
     std::vector<unsigned>      warp_mask;
     std::vector<unsigned char> warp_kind;
@@ -640,6 +693,7 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
             f.position[f.order[p]] = unsigned(p);
         order_ = f.order.data();
     }
+    fibers_->fast_switch = order_ == nullptr && !fibers_->sanitize;
 
     for (size_t i = 0; i < nthreads_; ++i) {
         // Precompute thread ids
@@ -811,6 +865,18 @@ void thread_block::interleave()
         return;
     }
     Vars_.tick = block->slice_;
+#if CUDA4CPU_ASM_CONTEXT
+    if (!block->direct_) [[likely]] {
+        auto &f = *block->fibers_;
+        const size_t self = block->cur_, next = f.fast_next(self);
+        if (next != no_thread) {
+            block->set_current_thread(next);
+            f.prefetch_after(next);
+            cuda4cpu_switch_context(&f.ctx[self].sp, f.resume_point(next));
+            return;
+        }
+    }
+#endif
     if (block->direct_)
         block->promote();
     block->switch_from_current();
@@ -903,24 +969,57 @@ void thread_block::promote()
 void thread_block::syncthreads(const char *file, int line)
 {
     thread_block &block = *Current_;
-    if (block.direct_)
-        block.promote();
+#if CUDA4CPU_ASM_CONTEXT
+    // The common case: a thread at the same call as the previous barrier,
+    // with nothing pending in its warp, while the next thread can run. That's
+    // the thread wait_at_barrier() would pick, and since it
+    // hasn't arrived, this one isn't the last. If it's the first, the call
+    // it would record is already there. The switch is a tail call: when this
+    // thread resumes, it returns straight into the kernel.
+    if (!block.direct_) [[likely]] {
+        auto &f = *block.fibers_;
+        const size_t self = block.cur_;
+        auto &warp = f.warps[self / warp_size];
+        size_t next;
+        if (line == f.barrier_line && file == f.barrier_file && (warp.warp_wait | warp.tile_end) == 0 &&
+            (next = f.fast_next(self)) != no_thread) {
+            warp.block_wait |= lane_bit(self);
+            ++f.block_arrived;
+            block.set_current_thread(next);
+            f.prefetch_after(next);
+            cuda4cpu_switch_context(&f.ctx[self].sp, f.resume_point(next));
+            return;
+        }
+    }
+#endif
+    block.wait_at_barrier(file, line);
+}
 
-    auto &f = *block.fibers_;
-    if (settings::get().barriers != settings::divergence::ignore)
-        block.check_barrier_site(file, line);
+[[gnu::noinline]] void thread_block::wait_at_barrier(const char *file, int line)
+{
+    if (direct_)
+        promote();
 
-    const size_t w = block.cur_ / warp_size;
-    f.warps[w].block_wait |= lane_bit(block.cur_);
-    if (++f.block_arrived == f.live_count) {
-        block.release_block();
-    } else {
-        // They no longer wait for this lane
-        block.try_release_warp_waiters(w);
-        block.try_release_tile(w);
+    auto &f = *fibers_;
+    if (settings::get().barriers != settings::divergence::ignore) {
+        check_barrier_site(file, line);
+    } else if (f.block_arrived == 0) {
+        // For the fast path
+        f.barrier_file = file;
+        f.barrier_line = line;
     }
 
-    block.switch_from_current();
+    const size_t w = cur_ / warp_size;
+    f.warps[w].block_wait |= lane_bit(cur_);
+    if (++f.block_arrived == f.live_count) {
+        release_block();
+    } else {
+        // They no longer wait for this lane
+        try_release_warp_waiters(w);
+        try_release_tile(w);
+    }
+
+    switch_from_current();
 }
 
 void thread_block::sync_grid(const char *file, int line)
@@ -986,6 +1085,36 @@ unsigned thread_block::warp_active_mask(uint64_t site)
 //! Publishes the calling thread's part of a warp-synchronous operation, waits
 //! until every participating lane has done the same, and returns its result.
 uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane)
+{
+#if CUDA4CPU_ASM_CONTEXT
+    // The common case, as in syncthreads(): the next lane takes part and can
+    // run, so it hasn't arrived, and it's the thread wait_at_warp_op() would
+    // pick. This lane can't complete the operation, nor an __activemask(),
+    // which waits for every lane that can run.
+    if (!direct_ && kind != fibers::op_converge) [[likely]] {
+        auto &f = *fibers_;
+        const size_t self = cur_;
+        auto &warp = f.warps[self / warp_size];
+        size_t next;
+        if ((self + 1) % warp_size != 0 && (mask & lane_bit(self + 1)) != 0 &&
+            (next = f.fast_next(self)) != no_thread) {
+            f.warp_mask[self]  = mask | lane_bit(self);
+            f.warp_kind[self]  = kind;
+            f.warp_src[self]   = src_lane % warp_size;
+            f.warp_value[self] = value;
+            warp.warp_wait |= lane_bit(self);
+            set_current_thread(next);
+            f.prefetch_after(next);
+            cuda4cpu_switch_context(&f.ctx[self].sp, f.resume_point(next));
+            return f.warp_result[self];
+        }
+    }
+#endif
+    return wait_at_warp_op(kind, mask, value, src_lane);
+}
+
+[[gnu::noinline]] uint64_t thread_block::wait_at_warp_op(unsigned char kind, unsigned mask, uint64_t value,
+                                                          unsigned src_lane)
 {
     if (direct_)
         promote();
@@ -1135,6 +1264,17 @@ void thread_block::finish_current()
     if (f.block_arrived > 0 && f.block_arrived == f.live_count)
         release_block();
 
+#if CUDA4CPU_ASM_CONTEXT
+    // As in syncthreads(): nothing in the warp waits for this thread
+    size_t next;
+    if ((f.warps[w].warp_wait | f.warps[w].tile_end) == 0 && (next = f.fast_next(self)) != no_thread) {
+        set_current_thread(next);
+        f.prefetch_after(next);
+        cuda4cpu_switch_context(&f.discarded.sp, f.resume_point(next));
+        __builtin_unreachable();
+    }
+#endif
+
     try_release_warp_waiters(w);
     try_release_tile(w);
 
@@ -1192,15 +1332,8 @@ void thread_block::switch_to_thread(size_t from, size_t to)
     set_current_thread(to);
 
 #if CUDA4CPU_ASM_CONTEXT
-    // The thread that probably runs after to is the next one. Its saved
-    // registers and frames are rarely in L1 (a block's fibers rotate through
-    // far more stack than L1 holds), so fetch them while to runs: 10-20%
-    // fewer cycles in barrier-heavy programs.
-    if (order_ == nullptr && to + 1 < nthreads_ && (f.warps[(to + 1) / warp_size].started & lane_bit(to + 1)) != 0) {
-        const auto *sp = static_cast<const char *>(f.ctx[to + 1].sp);
-        for (int line = 0; line < 4; ++line)
-            __builtin_prefetch(sp + line * cache_line);
-    }
+    if (order_ == nullptr)
+        f.prefetch_after(to);
 #endif
 
     uint32_t &started = f.warps[to / warp_size].started;

@@ -428,10 +428,10 @@ HIP programs are built with the `cuda4cpu-hipcc` next to `--driver`
   OS thread per CPU core, unless `OMP_NUM_THREADS` says otherwise.
 - **Block → fibers.** Within a block, each CUDA thread is a user-level fiber
   with its own stack. On x86-64, switching fibers takes a dozen instructions
-  that save and restore the callee-saved registers. That's about 12–20 ns per
-  switch on a single core, including scheduling. Each OS thread creates
-  fibers only once per block size, and reuses them for every block and every
-  later launch.
+  that save and restore the callee-saved registers. Including scheduling, a
+  CUDA thread spends about 6.5 ns at a barrier on a single core, and 10 ns at
+  a shuffle. Each OS thread creates fibers only once per block size, and
+  reuses them for every block and every later launch.
 - **No barriers, no switching.** A block starts by running its CUDA threads
   back to back, each one a direct call to the kernel. Kernels that never call
   `__syncthreads()` never switch fibers. `threadIdx`, `blockIdx`, `blockDim`
