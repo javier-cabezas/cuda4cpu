@@ -311,6 +311,7 @@ private:
     void switch_from_current();
     size_t next_runnable(size_t from) const;
     size_t next_runnable_after(size_t tid) const;
+    void wait_at_barrier(const char *file, int line);
     void check_barrier_site(const char *file, int line);
     void release_block();
     void try_release_warp(size_t tid);
@@ -320,6 +321,7 @@ private:
     unsigned warp_live_mask(size_t base) const;
     size_t direct_thread() const;
     uint64_t warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane);
+    uint64_t wait_at_warp_op(unsigned char kind, unsigned mask, uint64_t value, unsigned src_lane);
     void reserve_shared(size_t bytes);
 
     launch_conf conf_;

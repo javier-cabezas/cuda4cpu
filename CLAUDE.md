@@ -149,20 +149,23 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     loops with barriers, shuffles and early exits give the same results with
     any interleaving, and a thread that spins on another thread of its block
     finishes when they take turns
-  - `barriers`: early exits and divergent-block barrier semantics, and 3D
-    blocks that reach a barrier or a shuffle in the middle of direct mode
+  - `barriers`: early exits and divergent-block barrier semantics, 3D
+    blocks that reach a barrier or a shuffle in the middle of direct mode,
+    and rounds of barriers with shuffles and early returns in blocks of 1 to
+    1024 threads
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
   - `stacks`: deep stacks, `cudaLimitStackSize`, and the guard page (forks a
     child that must die with `SIGSEGV`)
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
-    lanes, and lanes that branch to `__syncthreads()`
+    lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
   - `graphs` (`graphs.cu`, through the rewriter): stream capture with fork
     and join, explicit graphs with every node type, `cudaGraphExecUpdate`,
     conditional nodes, graph memory (reallocated at the same address after
     `cudaFree`), 2D/3D copies and the device clock
   - `cooperative_groups`: every group type and operation, including partial
-    warps and tiles, tiles of several warps that sync independently,
+    warps and tiles, tiles of several warps that sync independently, or
+    while some of their threads are at `__syncthreads()` or return,
     `coalesced_threads()` in a branch (warp-aggregated atomics), and
     `grid.sync()` across rounds of a cooperative launch
   - `runtime`: error codes and the last error, launch limits, allocation,
@@ -197,7 +200,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `schedule_{forward,reverse,random}`: a kernel with a missing
     `__syncthreads()` that the default order hides and the others expose
   - `divergent_barrier_{warn,ignore,error}`: the divergent barrier check in
-    each mode (error mode must abort with a single report)
+    each mode (error mode must abort with a single report).
+    `divergent_barrier_later`: one thread diverges after every thread has
+    started, and the report must name its line numbers.
   - `gdb` (`gdb_test.cmake`, if gdb is installed): a breakpoint conditioned on
     `$threadIdx("x")`, the built-in variables, and a backtrace that ends where
     the fiber started
@@ -238,9 +243,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   stack size. Creating one maps its stacks.
 - Contexts (`fibers::context`). On x86-64 a context is just a stack pointer:
   `cuda4cpu_switch_context` pushes rbp, rbx and r12–r15, swaps the stack
-  pointer, and pops. `start_fiber` writes a fresh frame at the top of the
-  stack: six zeroed registers plus `cuda4cpu_fiber_trampoline` as the return
-  address. The trampoline aligns the stack, marks the call stack's end
+  pointer, and pops. `initial_frame` (for `start_fiber` and the fast paths'
+  `resume_point`) writes a fresh frame at the top of the stack: six zeroed
+  registers plus `cuda4cpu_fiber_trampoline` as the return address. The
+  trampoline aligns the stack, marks the call stack's end
   (`.cfi_undefined rip`) and calls `fiber_access::start()` →
   `fiber_main()`. With `CUDA4CPU_PORTABLE_CONTEXT`, or on other
   architectures, a context is a `jmp_buf`, and each fiber's entry point is
@@ -296,6 +302,25 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   when it is live and not waiting. A waiting thread saves itself in `ctx[i]` and jumps to
   the next runnable thread in index order (`next_runnable`). A thread that
   hasn't started begins from `start[j]`.
+- `syncthreads()`, `warp_op()`, `interleave()` and `finish_current()` first
+  try a fast path, when `fibers::fast_next()` finds that the next thread in
+  index order can run (and `fast_switch`: default order, assembly context, no
+  ASan). That's the thread the general path would pick. Since it hasn't
+  arrived, this arrival can't release anything, as long as nothing else
+  waits in the thread's warp (a warp operation or a tile barrier, which leave
+  out lanes at `__syncthreads()`), the barrier is at the same call as the
+  previous one, and for a warp operation, the next lane is in the warp and
+  the mask. The fast path sets one mask bit and `threadIdx`, and calls
+  `cuda4cpu_switch_context` with `fibers::resume_point()`, which writes the
+  initial frame of a thread that hasn't started. `syncthreads()` tail-calls
+  it, so the resumed thread returns straight into the kernel. Everything else
+  goes to the `[[gnu::noinline]]` general paths, `wait_at_barrier()` and
+  `wait_at_warp_op()`, which keep the fast ones free of their prologues. A
+  barrier went from 213 to 120 instructions per thread, and from 24 to 14 ns
+  on 16 OS threads. Each condition has a test that fails without it:
+  `barriers` (`barrier_rounds`), `warp` (`branch_then_barrier_rounds`),
+  `cooperative_groups` (`tile_then_barrier`, `tile_with_returns`) and
+  `divergent_barrier_later`.
 - `__syncthreads()` is released when `block_arrived == live_count`. A warp
   function records its kind, mask, value and source lane, and is released by
   `try_release_warp` once every participating lane is in `warp_wait`. The
@@ -353,15 +378,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   thread_local` from another file call a TLS initialization check, which
   more than doubled the cost of reading `threadIdx`. Check the kernel's
   assembly after touching them.
-- A barrier costs about 200 instructions per thread, and `perf annotate` is
-  the way to find waste in it. Keep error paths out of the scheduler's frames
-  (`report_divergent_barrier` is `[[gnu::noinline, gnu::cold]]`; inlined, it
+- A barrier costs about 120 instructions per thread on the fast path, and
+  `perf annotate` is the way to find waste in it. Keep error paths out of
+  the scheduler's frames (`report_divergent_barrier` is `[[gnu::noinline, gnu::cold]]`; inlined, it
   gave `check_barrier_site` a 200-byte frame with a stack protector), and
   divisions out of `next_runnable`. `switch_to_thread` prefetches the saved
   frames of the thread after `to`: a block's stacks rotate through more memory
   than L1 holds, and the resumed fiber's first loads missed.
-- Change `cuda4cpu_switch_context` and `start_fiber` together, because they
-  share the frame layout. Test both context implementations (CI has a
+- Change `cuda4cpu_switch_context` and `fibers::initial_frame` together,
+  because they share the frame layout. Test both context implementations (CI has a
   `portable context` job).
 - Never resume a fiber that is `finished`. Its kernel frame has returned, and
   its context was saved into `discarded`. With the fallback, resuming it

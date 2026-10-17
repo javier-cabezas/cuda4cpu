@@ -26,6 +26,7 @@
 //
 
 #include <cstdio>
+#include <cstring>
 
 #include "cuda4cpu.hpp"
 
@@ -49,11 +50,31 @@ __global__ void divergent(int *out)
     }
 }
 
-int main()
+// Only thread 1 takes the other call, after a barrier that every thread
+// reaches, which starts each one's fiber (`divergent_barrier later`). The
+// first and last threads to arrive agree. tests/CMakeLists.txt expects the
+// report to name the lines of these two calls.
+__global__ void divergent_later(int *out)
+{
+    out[threadIdx.x] = 0;
+    __syncthreads();
+    if (threadIdx.x != 1) {
+        out[threadIdx.x] = 1;
+        __syncthreads();
+    } else {
+        out[threadIdx.x] = 2;
+        __syncthreads();
+    }
+}
+
+int main(int argc, char **argv)
 {
     int out[64];
     launch(uniform, 4, 64).call(out);
     std::printf("uniform: done\n");
-    launch(divergent, 4, 64).call(out);
+    if (argc > 1 && std::strcmp(argv[1], "later") == 0)
+        launch(divergent_later, 4, 64).call(out);
+    else
+        launch(divergent, 4, 64).call(out);
     std::printf("divergent: done\n");
 }
