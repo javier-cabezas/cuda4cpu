@@ -8,7 +8,8 @@ cuda4cpu runs CUDA kernels on the CPU with a plain C++23 compiler. Kernels are
 compiled unchanged; CUDA keywords and built-ins are redefined as macros, and the
 `<<<grid, block>>>` launch syntax becomes `launch(kernel, grid, block).call(args...)`.
 HIP code compiles too, as on HIP's NVIDIA platform: a thin layer of HIP names
-over the CUDA implementation. See README.md for the user-facing description.
+over the CUDA implementation. README.md is the overview for users, and
+`docs/` the reference.
 
 ## Commands
 
@@ -142,6 +143,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (with `--filter`, the other programs keep their status).
   Run it locally with
   `compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --filter 'rodinia/*'`.
+- `docs/`: the user documentation that the README links to: `usage.md`
+  (building, using it in a project, what the rewriter does), `features.md`,
+  `hip.md`, `compatibility.md`, `how-it-works.md`, `debugging.md` and
+  `limitations.md`. When the compatibility suite's results change, update the
+  table in `docs/compatibility.md`, the count in the README's badge and
+  bullets, and `ROADMAP.md`. `ROADMAP.md` lists planned features and
+  performance work; `CONTRIBUTING.md` is for contributors.
+- `examples/`: `cmake-project` (cuda4cpu through `FetchContent`) and `bugs/`
+  (a missing `__syncthreads()` and an out-of-bounds kernel), which the
+  README shows. CI's `examples` job builds the project against the checkout
+  (`FETCHCONTENT_SOURCE_DIR_CUDA4CPU`) and checks that the bugs are exposed,
+  including the line AddressSanitizer reports in `out_of_bounds.cu`.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.

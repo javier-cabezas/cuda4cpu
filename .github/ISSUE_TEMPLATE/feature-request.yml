@@ -1,0 +1,16 @@
+name: Feature request
+description: A CUDA or HIP feature that cuda4cpu doesn't implement yet
+labels: [enhancement]
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: Feature
+      description: The functions, types or syntax you need. ROADMAP.md lists those already planned.
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: Where it's used
+      description: The program or library that needs it, if it's public.
