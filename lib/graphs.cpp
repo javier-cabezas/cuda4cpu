@@ -157,7 +157,7 @@ std::shared_ptr<graph_allocation> new_allocation(size_t size)
 }
 
 //! The graph allocation at ptr, shared with the nodes that have it
-std::shared_ptr<graph_allocation> find_allocation(void *ptr, const std::vector<std::shared_ptr<graph_allocation>> &known)
+std::shared_ptr<graph_allocation> find_known_allocation(void *ptr, const std::vector<std::shared_ptr<graph_allocation>> &known)
 {
     for (const auto &a : known) {
         if (a->ptr == ptr)
@@ -206,8 +206,26 @@ cudaError_t free_memory(void *ptr)
             return cudaSuccess;
         }
     }
-    std::free(ptr);
+    if (ptr != nullptr && !release_allocation(ptr))
+        return record_error(cudaErrorInvalidValue);
     return cudaSuccess;
+}
+
+bool find_graph_allocation(const void *ptr, allocation_info &info)
+{
+    auto &r = allocations();
+    if (r.count.load(std::memory_order_relaxed) == 0)
+        return false;
+    const auto *p = static_cast<const char *>(ptr);
+    std::lock_guard lock(r.mutex);
+    for (const auto &[base, a] : r.by_address) {
+        const auto *start = static_cast<const char *>(base);
+        if (a->live && p >= start && p < start + std::max<size_t>(a->size, 1)) {
+            info = {base, a->size, memory_kind::device, 0};
+            return true;
+        }
+    }
+    return false;
 }
 
 void register_kernel(const void *func, kernel_binder binder)
@@ -1037,7 +1055,7 @@ cudaError_t cudaGraphAddMemFreeNode(cudaGraphNode_t *pGraphNode, cudaGraph_t gra
     if (dptr == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
     auto node        = new_node(cudaGraphNodeTypeMemFree);
-    node->allocation = detail::find_allocation(dptr, graph->allocations);   // keeps it mapped
+    node->allocation = detail::find_known_allocation(dptr, graph->allocations);   // keeps it mapped
     node->free_ptr   = dptr;
     return add_node(pGraphNode, graph, pDependencies, numDependencies, std::move(node));
 }

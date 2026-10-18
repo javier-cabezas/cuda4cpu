@@ -78,9 +78,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - What HIP does differently lives in the inline namespace
     `cuda4cpu::hip_api`, which the header exports like `cuda_api`:
     `hipDeviceProp_t` (derived from `cudaDeviceProp`),
-    `hipDeviceAttribute_t`, `hipGetErrorName`, `hipHostMalloc`, and HIP's
-    driver-API copies and memsets. Helpers go in `cuda4cpu::detail`: a
-    `detail` namespace inside `hip_api` would hide it.
+    `hipDeviceAttribute_t`, `hipGetErrorName`, `hipHostMalloc`,
+    `hipPointerAttribute_t`, HIP's driver-API copies and memsets, virtual
+    memory management (`hipMem*`, on the library's `detail::vmm_*`) and
+    contexts (`hipCtx*`, a per-OS-thread stack of `ihipCtx_t`, with the
+    primary context current when it's empty). Helpers go in
+    `cuda4cpu::detail`: a `detail` namespace inside `hip_api` would hide it,
+    and any other namespace in it would reach global scope.
+  - `hip_ext.h`: AMD's launches between events, `hipExtLaunchKernelGGL` (a
+    macro, or a function template like `hipLaunchKernelGGL`) and
+    `hipExtLaunchKernel`.
   - `hip_runtime.h` adds the kernel language: the mask-less warp functions,
     `hipLaunchKernelGGL` (a macro, or a function template with
     `HIP_TEMPLATE_KERNEL_LAUNCH`), `HIP_DYNAMIC_SHARED`, `hipThreadIdx_x`
@@ -91,6 +98,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
   fiber cache) and `system` (topology via OpenMP plus optional libnuma).
+- `lib/memory.cpp`: the registry of allocations (for pointer attributes and
+  `cudaFree`), the unified memory hints that `cudaMemRangeGetAttribute`
+  returns, and HIP's virtual memory management (see Gotchas).
 - `tools/cuda4cpu-gdb.py`: gdb convenience functions (`$threadIdx()`, ...)
   and the `cuda4cpu` command, which read `thread_block::Vars_`. The library is
   always built with `-g` so that gdb knows that variable's type.
@@ -229,11 +239,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `hip_runtime` (errors and their names, device queries and attributes,
     host memory, driver-API copies and memsets, symbols, `hipStreamDefault`
     and `hipStreamPerThread`, pools, `hipLaunchKernel`, capture),
+    `hip_memory` (pointer attributes of every kind of allocation, frees of
+    pointers hipMalloc didn't return, memory range attributes after advice
+    and prefetches, virtual memory mapped at two addresses, faulting until
+    access is set and shared through a file descriptor, contexts, and
+    `hipExtLaunchKernelGGL`/`hipExtLaunchKernel` with events),
     `hip_kernels` (every `hipLaunchKernelGGL` form, `HIP_DYNAMIC_SHARED` in a
     kernel and at namespace scope, mask-less warp functions with widths,
     cooperative groups, bit, clock and atomic intrinsics, the platform
     macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
-    `.cpp` file).
+    `.cpp` file, with `hipExtLaunchKernelGGL` too).
 
 ## How execution works (read before touching `launch.hpp`)
 
@@ -459,8 +474,23 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - Graph allocations are `mmap(PROT_NONE)` ranges, committed with `mprotect`
   while allocated (`graph_allocation`). So `cudaFree`, `cudaFreeHost` and
   `cudaFreeAsync` go through `detail::free_memory` in the library, which
-  checks the registry (skipped while there are no graph allocations) before
-  `std::free`.
+  checks the graph registry (skipped while there are no graph allocations)
+  before `release_allocation`.
+- `lib/memory.cpp` keeps a registry of every allocation (`allocate_aligned`
+  records it with its `memory_kind` and flags), registered host memory and
+  mapped virtual memory, by start address. `cudaPointerGetAttributes` and
+  HIP's pointer functions look up any pointer into them
+  (`find_allocation`, which then asks `graphs.cpp` for graph allocations),
+  and `cudaFree`/`cudaFreeHost` reject pointers that aren't the start of an
+  allocation, as CUDA does. The unified memory hints are kept there too, as
+  disjoint ranges of pages that updates split: they cover whole pages, and a
+  new allocation erases the hints left on its pages. The state is never
+  destroyed, because static objects may free memory after `main` returns.
+- HIP's virtual memory: physical memory is a `memfd` (`vmm_allocation`,
+  reference-counted by its handle and its mappings), a reserved range is a
+  `PROT_NONE` mapping, and `hipMemMap` maps the `memfd` over it with
+  `MAP_FIXED`, still `PROT_NONE` until `hipMemSetAccess`. Unmapping maps an
+  anonymous `PROT_NONE` range back, so the addresses stay reserved.
 - An executable graph copies its nodes (kernels are shared `bound_kernel`s),
   so the graph can be destroyed right after instantiation, as CUDA allows.
   `exec_node::origin` keeps the graph node pointer only as a key for
@@ -474,9 +504,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   Copying into a fresh allocation is bound by page faults, which threads
   take in parallel: 256 MB goes from about 180 ms to 30 ms. Overlapping
   copies stay one `memmove`.
-- Allocations go through `detail::allocate_aligned` in the library. When
-  inline, GCC may elide an allocation whose result is never dereferenced,
-  and treat it as successful.
+- Allocations go through `detail::allocate_aligned` in the library, which
+  also records them. When inline, GCC may elide an allocation whose result
+  is never dereferenced, and treat it as successful.
 - Runtime calls that fail must return the error through
   `detail::record_error(err)`, which also makes it the thread's last error.
   `grid_launcher::call` rejects configurations outside CUDA's limits with

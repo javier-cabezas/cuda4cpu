@@ -74,10 +74,14 @@ const char *cudaGetErrorName(cudaError_t error)
     case cudaErrorInvalidDeviceFunction: return "cudaErrorInvalidDeviceFunction";
     case cudaErrorNoDevice:               return "cudaErrorNoDevice";
     case cudaErrorInvalidDevice:          return "cudaErrorInvalidDevice";
+    case cudaErrorDeviceUninitialized:    return "cudaErrorDeviceUninitialized";
     case cudaErrorInvalidResourceHandle:  return "cudaErrorInvalidResourceHandle";
     case cudaErrorIllegalState: return "cudaErrorIllegalState";
     case cudaErrorNotReady:               return "cudaErrorNotReady";
+    case cudaErrorContextIsDestroyed:     return "cudaErrorContextIsDestroyed";
     case cudaErrorAssert:                 return "cudaErrorAssert";
+    case cudaErrorHostMemoryAlreadyRegistered: return "cudaErrorHostMemoryAlreadyRegistered";
+    case cudaErrorHostMemoryNotRegistered: return "cudaErrorHostMemoryNotRegistered";
     case cudaErrorLaunchFailure:          return "cudaErrorLaunchFailure";
     case cudaErrorCooperativeLaunchTooLarge: return "cudaErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:           return "cudaErrorNotSupported";
@@ -110,11 +114,17 @@ const char *cudaGetErrorString(cudaError_t error)
         return "invalid device function";
     case cudaErrorNoDevice:               return "no CUDA-capable device is detected";
     case cudaErrorInvalidDevice:          return "invalid device ordinal";
+    case cudaErrorDeviceUninitialized:    return "invalid device context";
     case cudaErrorInvalidResourceHandle:  return "invalid resource handle";
     case cudaErrorIllegalState:
         return "the operation cannot be performed in the present state";
     case cudaErrorNotReady:               return "device not ready";
+    case cudaErrorContextIsDestroyed:     return "context is destroyed";
     case cudaErrorAssert:                 return "device-side assert triggered";
+    case cudaErrorHostMemoryAlreadyRegistered:
+        return "part or all of the requested memory range is already mapped";
+    case cudaErrorHostMemoryNotRegistered:
+        return "pointer does not correspond to a registered memory region";
     case cudaErrorLaunchFailure:          return "unspecified launch failure";
     case cudaErrorCooperativeLaunchTooLarge:
         return "too many blocks in cooperative launch";

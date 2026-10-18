@@ -33,6 +33,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 #include "hip_common.h"
 #include "hip_version.h"
@@ -63,10 +64,14 @@ inline const char *hipGetErrorName(cudaError_t error)
     case cudaErrorInvalidDeviceFunction:     return "hipErrorInvalidDeviceFunction";
     case cudaErrorNoDevice:                  return "hipErrorNoDevice";
     case cudaErrorInvalidDevice:             return "hipErrorInvalidDevice";
+    case cudaErrorDeviceUninitialized:       return "hipErrorInvalidContext";
     case cudaErrorInvalidResourceHandle:     return "hipErrorInvalidHandle";
     case cudaErrorIllegalState:              return "hipErrorIllegalState";
     case cudaErrorNotReady:                  return "hipErrorNotReady";
+    case cudaErrorContextIsDestroyed:        return "hipErrorContextIsDestroyed";
     case cudaErrorAssert:                    return "hipErrorAssert";
+    case cudaErrorHostMemoryAlreadyRegistered: return "hipErrorHostMemoryAlreadyRegistered";
+    case cudaErrorHostMemoryNotRegistered:   return "hipErrorHostMemoryNotRegistered";
     case cudaErrorLaunchFailure:             return "hipErrorLaunchFailure";
     case cudaErrorCooperativeLaunchTooLarge: return "hipErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:              return "hipErrorNotSupported";
@@ -373,10 +378,9 @@ inline cudaError_t hipDeviceGetAttribute(int *value, hipDeviceAttribute_t attr, 
     case hipDeviceAttributeWallClockRate:                     *value = wall_clock_rate_khz; break;
     // Device memory is host memory, which the host accesses coherently
     case hipDeviceAttributeFineGrainSupport:                  *value = 1; break;
-    // Textures, virtual memory management and stream wait values aren't
-    // implemented
+    case hipDeviceAttributeVirtualMemoryManagementSupported: *value = 1; break;
+    // Textures and stream wait values aren't implemented
     case hipDeviceAttributeImageSupport:
-    case hipDeviceAttributeVirtualMemoryManagementSupported:
     case hipDeviceAttributeCanUseStreamWaitValue:
     case hipDeviceAttributeCooperativeMultiDeviceUnmatchedFunc:
     case hipDeviceAttributeCooperativeMultiDeviceUnmatchedGridDim:
@@ -638,6 +642,454 @@ inline cudaError_t hipMemsetD32Async(hipDeviceptr_t dst, int value, size_t count
 
 }
 
+namespace cuda4cpu {
+
+inline namespace hip_api {
+
+//
+// Pointers. hipPointerAttribute_t is CUDA's cudaPointerAttributes plus the
+// fields HIP adds.
+//
+
+struct hipPointerAttribute_t {
+    cudaMemoryType type;
+    int device;
+    void *devicePointer;
+    void *hostPointer;
+    int isManaged;
+    unsigned allocationFlags;   //!< The flags of hipHostMalloc or hipMallocManaged
+};
+
+inline cudaError_t hipPointerGetAttributes(hipPointerAttribute_t *attributes, const void *ptr)
+{
+    cudaPointerAttributes a;
+    if (cudaError_t err = cudaPointerGetAttributes(&a, ptr); err != cudaSuccess || attributes == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    detail::allocation_info info;
+    const unsigned flags = detail::find_allocation(ptr, info) ? info.flags : 0;
+    *attributes = {a.type, a.device, a.devicePointer, a.hostPointer, a.type == cudaMemoryTypeManaged, flags};
+    return cudaSuccess;
+}
+
+//! The size of the allocation that ptr points into
+inline cudaError_t hipMemPtrGetInfo(void *ptr, size_t *size)
+{
+    detail::allocation_info info;
+    if (size == nullptr || !detail::find_allocation(ptr, info))
+        return detail::record_error(cudaErrorInvalidValue);
+    *size = info.size;
+    return cudaSuccess;
+}
+
+//! The start and size of the allocation that dptr points into
+inline cudaError_t hipMemGetAddressRange(hipDeviceptr_t *pbase, size_t *psize, hipDeviceptr_t dptr)
+{
+    detail::allocation_info info;
+    if (!detail::find_allocation(dptr, info))
+        return detail::record_error(cudaErrorInvalidValue);
+    if (pbase != nullptr)
+        *pbase = info.base;
+    if (psize != nullptr)
+        *psize = info.size;
+    return cudaSuccess;
+}
+
+}
+
+//
+// Virtual memory management: physical memory, ranges of addresses, and
+// mappings between them. Defined in the library, where physical memory is a
+// memfd that hipMemMap maps. As on a GPU, mapped memory faults until
+// hipMemSetAccess allows access to it.
+//
+
+namespace detail {
+
+struct vmm_allocation;
+
+size_t vmm_granularity();
+cudaError_t vmm_create(vmm_allocation **handle, size_t size, const void *properties, size_t properties_size);
+cudaError_t vmm_import_fd(vmm_allocation **handle, int fd, const void *properties, size_t properties_size);
+cudaError_t vmm_export_fd(int *fd, vmm_allocation *handle);
+cudaError_t vmm_properties(void *properties, size_t properties_size, vmm_allocation *handle);
+cudaError_t vmm_release(vmm_allocation *handle);
+cudaError_t vmm_retain(vmm_allocation **handle, void *addr);
+cudaError_t vmm_reserve(void **ptr, size_t size, size_t alignment, void *addr);
+cudaError_t vmm_free(void *ptr, size_t size);
+cudaError_t vmm_map(void *ptr, size_t size, size_t offset, vmm_allocation *handle);
+cudaError_t vmm_unmap(void *ptr, size_t size);
+cudaError_t vmm_set_access(void *ptr, size_t size, cudaMemAccessFlags flags);
+cudaError_t vmm_get_access(unsigned long long *flags, const void *ptr);
+
+//! Physical memory and access can be on the device or the host
+inline cudaError_t check_vmm_location(const cudaMemLocation &location)
+{
+    switch (location.type) {
+    case cudaMemLocationTypeDevice:
+        return location.id == 0 ? cudaSuccess : record_error(cudaErrorInvalidDevice);
+    case cudaMemLocationTypeHost:
+    case cudaMemLocationTypeHostNuma:
+    case cudaMemLocationTypeHostNumaCurrent:
+        return cudaSuccess;
+    default:
+        return record_error(cudaErrorInvalidValue);
+    }
+}
+
+}
+
+inline namespace hip_api {
+
+using hipMemGenericAllocationHandle_t = detail::vmm_allocation *;
+
+enum hipMemAllocationGranularity_flags {
+    hipMemAllocationGranularityMinimum     = 0x0,
+    hipMemAllocationGranularityRecommended = 0x1
+};
+
+struct hipMemAllocationProp {
+    cudaMemAllocationType type;
+    union {
+        cudaMemAllocationHandleType requestedHandleType;
+        cudaMemAllocationHandleType requestedHandleTypes;
+    };
+    cudaMemLocation location;
+    void *win32HandleMetaData;
+    struct {
+        unsigned char compressionType;
+        unsigned char gpuDirectRDMACapable;
+        unsigned short usage;
+    } allocFlags;
+};
+
+}
+
+namespace detail {
+
+inline cudaError_t check_vmm_properties(const hipMemAllocationProp *prop)
+{
+    if (prop == nullptr || prop->type != cudaMemAllocationTypePinned)
+        return record_error(cudaErrorInvalidValue);
+    return check_vmm_location(prop->location);
+}
+
+}
+
+inline namespace hip_api {
+
+//! Sizes, offsets and addresses of virtual memory are multiples of a page
+inline cudaError_t hipMemGetAllocationGranularity(size_t *granularity, const hipMemAllocationProp *prop,
+                                                  hipMemAllocationGranularity_flags option)
+{
+    if (granularity == nullptr || (option != hipMemAllocationGranularityMinimum &&
+                                   option != hipMemAllocationGranularityRecommended))
+        return detail::record_error(cudaErrorInvalidValue);
+    if (cudaError_t err = detail::check_vmm_properties(prop))
+        return err;
+    *granularity = detail::vmm_granularity();
+    return cudaSuccess;
+}
+
+inline cudaError_t hipMemCreate(hipMemGenericAllocationHandle_t *handle, size_t size,
+                                const hipMemAllocationProp *prop, unsigned long long flags)
+{
+    if (flags != 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    if (cudaError_t err = detail::check_vmm_properties(prop))
+        return err;
+    return detail::vmm_create(handle, size, prop, sizeof(*prop));
+}
+
+inline cudaError_t hipMemRelease(hipMemGenericAllocationHandle_t handle)
+{
+    return detail::vmm_release(handle);
+}
+
+inline cudaError_t hipMemGetAllocationPropertiesFromHandle(hipMemAllocationProp *prop,
+                                                           hipMemGenericAllocationHandle_t handle)
+{
+    return detail::vmm_properties(prop, sizeof(*prop), handle);
+}
+
+//! The handle of the physical memory mapped at addr, which must be released
+inline cudaError_t hipMemRetainAllocationHandle(hipMemGenericAllocationHandle_t *handle, void *addr)
+{
+    return detail::vmm_retain(handle, addr);
+}
+
+//! Exports physical memory as a file descriptor (into *shareableHandle, an
+//! int), if it was created for that
+inline cudaError_t hipMemExportToShareableHandle(void *shareableHandle, hipMemGenericAllocationHandle_t handle,
+                                                 cudaMemAllocationHandleType handleType, unsigned long long flags)
+{
+    hipMemAllocationProp prop;
+    if (shareableHandle == nullptr || flags != 0 || handleType != cudaMemHandleTypePosixFileDescriptor ||
+        detail::vmm_properties(&prop, sizeof(prop), handle) != cudaSuccess ||
+        (prop.requestedHandleTypes & cudaMemHandleTypePosixFileDescriptor) == 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    return detail::vmm_export_fd(static_cast<int *>(shareableHandle), handle);
+}
+
+//! Imports physical memory from a file descriptor, passed as the pointer
+//! osHandle, as in HIP
+inline cudaError_t hipMemImportFromShareableHandle(hipMemGenericAllocationHandle_t *handle, void *osHandle,
+                                                   cudaMemAllocationHandleType shHandleType)
+{
+    if (shHandleType != cudaMemHandleTypePosixFileDescriptor)
+        return detail::record_error(cudaErrorInvalidValue);
+    hipMemAllocationProp prop{};
+    prop.type                = cudaMemAllocationTypePinned;
+    prop.requestedHandleType = cudaMemHandleTypePosixFileDescriptor;
+    prop.location            = {cudaMemLocationTypeDevice, 0};
+    return detail::vmm_import_fd(handle, int(reinterpret_cast<intptr_t>(osHandle)), &prop, sizeof(prop));
+}
+
+inline cudaError_t hipMemAddressReserve(void **ptr, size_t size, size_t alignment, void *addr,
+                                        unsigned long long flags)
+{
+    if (flags != 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    return detail::vmm_reserve(ptr, size, alignment, addr);
+}
+
+inline cudaError_t hipMemAddressFree(void *devPtr, size_t size)
+{
+    return detail::vmm_free(devPtr, size);
+}
+
+inline cudaError_t hipMemMap(void *ptr, size_t size, size_t offset, hipMemGenericAllocationHandle_t handle,
+                             unsigned long long flags)
+{
+    if (flags != 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    return detail::vmm_map(ptr, size, offset, handle);
+}
+
+//! Unmaps whole mappings
+inline cudaError_t hipMemUnmap(void *ptr, size_t size)
+{
+    return detail::vmm_unmap(ptr, size);
+}
+
+//! The device and the host share the mappings, so they get the widest access
+//! that the descriptors give either
+inline cudaError_t hipMemSetAccess(void *ptr, size_t size, const cudaMemAccessDesc *desc, size_t count)
+{
+    if (desc == nullptr || count == 0)
+        return detail::record_error(cudaErrorInvalidValue);
+    cudaMemAccessFlags flags = cudaMemAccessFlagsProtNone;
+    for (size_t i = 0; i < count; ++i) {
+        if (cudaError_t err = detail::check_vmm_location(desc[i].location))
+            return err;
+        if (desc[i].flags != cudaMemAccessFlagsProtNone && desc[i].flags != cudaMemAccessFlagsProtRead &&
+            desc[i].flags != cudaMemAccessFlagsProtReadWrite)
+            return detail::record_error(cudaErrorInvalidValue);
+        flags = desc[i].flags > flags ? desc[i].flags : flags;
+    }
+    return detail::vmm_set_access(ptr, size, flags);
+}
+
+inline cudaError_t hipMemGetAccess(unsigned long long *flags, const cudaMemLocation *location, void *ptr)
+{
+    if (location == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    if (cudaError_t err = detail::check_vmm_location(*location))
+        return err;
+    return detail::vmm_get_access(flags, ptr);
+}
+
+//
+// Contexts, from HIP's driver API, deprecated in HIP. There is one device, so
+// a context only has the device and its flags: contexts share the device's
+// memory, streams and settings. Each OS thread has a stack of current
+// contexts, and the primary context is current while the stack is empty.
+//
+
+struct ihipCtx_t {
+    int device;
+    unsigned int flags;
+};
+
+using hipCtx_t = ihipCtx_t *;
+
+}
+
+namespace detail {
+
+inline ihipCtx_t &primary_context()
+{
+    static ihipCtx_t context{0, 0};
+    return context;
+}
+
+inline std::vector<hipCtx_t> &context_stack()
+{
+    static thread_local std::vector<hipCtx_t> stack;
+    return stack;
+}
+
+inline hipCtx_t current_context()
+{
+    auto &stack = context_stack();
+    return stack.empty() ? &primary_context() : stack.back();
+}
+
+}
+
+inline namespace hip_api {
+
+inline cudaError_t hipCtxCreate(hipCtx_t *ctx, unsigned int flags, hipDevice_t device)
+{
+    if (ctx == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    if (device != 0)
+        return detail::record_error(cudaErrorInvalidDevice);
+    *ctx = new ihipCtx_t{device, flags};
+    detail::context_stack().push_back(*ctx);
+    return cudaSuccess;
+}
+
+//! Destroys a context that hipCtxCreate created, and makes it no longer
+//! current in this thread
+inline cudaError_t hipCtxDestroy(hipCtx_t ctx)
+{
+    if (ctx == nullptr || ctx == &detail::primary_context())
+        return detail::record_error(cudaErrorDeviceUninitialized);
+    auto &stack = detail::context_stack();
+    std::erase(stack, ctx);
+    delete ctx;
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxPushCurrent(hipCtx_t ctx)
+{
+    if (ctx == nullptr)
+        return detail::record_error(cudaErrorDeviceUninitialized);
+    detail::context_stack().push_back(ctx);
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxPopCurrent(hipCtx_t *ctx)
+{
+    auto &stack = detail::context_stack();
+    if (stack.empty())
+        return detail::record_error(cudaErrorDeviceUninitialized);
+    if (ctx != nullptr)
+        *ctx = stack.back();
+    stack.pop_back();
+    return cudaSuccess;
+}
+
+//! Replaces the current context, or with nullptr, pops it
+inline cudaError_t hipCtxSetCurrent(hipCtx_t ctx)
+{
+    auto &stack = detail::context_stack();
+    if (ctx == nullptr) {
+        if (!stack.empty())
+            stack.pop_back();
+    } else if (stack.empty()) {
+        stack.push_back(ctx);
+    } else {
+        stack.back() = ctx;
+    }
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxGetCurrent(hipCtx_t *ctx)
+{
+    if (ctx == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *ctx = detail::current_context();
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxGetDevice(hipDevice_t *device)
+{
+    if (device == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *device = detail::current_context()->device;
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxGetFlags(unsigned int *flags)
+{
+    if (flags == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *flags = detail::current_context()->flags;
+    return cudaSuccess;
+}
+
+inline cudaError_t hipCtxSynchronize()
+{
+    return cudaDeviceSynchronize();
+}
+
+inline cudaError_t hipCtxSetCacheConfig(cudaFuncCache cacheConfig)
+{
+    return cudaDeviceSetCacheConfig(cacheConfig);
+}
+
+inline cudaError_t hipCtxGetCacheConfig(cudaFuncCache *cacheConfig)
+{
+    return cudaDeviceGetCacheConfig(cacheConfig);
+}
+
+inline cudaError_t hipCtxSetSharedMemConfig(cudaSharedMemConfig config)
+{
+    return cudaDeviceSetSharedMemConfig(config);
+}
+
+inline cudaError_t hipCtxGetSharedMemConfig(cudaSharedMemConfig *pConfig)
+{
+    return cudaDeviceGetSharedMemConfig(pConfig);
+}
+
+//! The primary context is always active
+inline cudaError_t hipDevicePrimaryCtxRetain(hipCtx_t *pctx, hipDevice_t dev)
+{
+    if (pctx == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    if (dev != 0)
+        return detail::record_error(cudaErrorInvalidDevice);
+    *pctx = &detail::primary_context();
+    return cudaSuccess;
+}
+
+inline cudaError_t hipDevicePrimaryCtxRelease(hipDevice_t dev)
+{
+    return dev == 0 ? cudaSuccess : detail::record_error(cudaErrorInvalidDevice);
+}
+
+inline cudaError_t hipDevicePrimaryCtxGetState(hipDevice_t dev, unsigned int *flags, int *active)
+{
+    if (flags == nullptr || active == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    if (dev != 0)
+        return detail::record_error(cudaErrorInvalidDevice);
+    *flags  = detail::primary_context().flags;
+    *active = 1;
+    return cudaSuccess;
+}
+
+inline cudaError_t hipDevicePrimaryCtxSetFlags(hipDevice_t dev, unsigned int flags)
+{
+    if (dev != 0)
+        return detail::record_error(cudaErrorInvalidDevice);
+    detail::primary_context().flags = flags;
+    return cudaSuccess;
+}
+
+inline cudaError_t hipDevicePrimaryCtxReset(hipDevice_t dev)
+{
+    if (dev != 0)
+        return detail::record_error(cudaErrorInvalidDevice);
+    return cudaDeviceReset();
+}
+
+}
+
+}
+
 using namespace cuda4cpu::hip_api;
 
 //! HIP_SYMBOL(x) names the symbol x in hipMemcpyToSymbol and the other symbol
@@ -670,6 +1122,10 @@ using namespace cuda4cpu::hip_api;
 #define hipErrorInvalidDeviceFunction cudaErrorInvalidDeviceFunction
 #define hipErrorNoDevice cudaErrorNoDevice
 #define hipErrorInvalidDevice cudaErrorInvalidDevice
+#define hipErrorInvalidContext cudaErrorDeviceUninitialized
+#define hipErrorContextIsDestroyed cudaErrorContextIsDestroyed
+#define hipErrorHostMemoryAlreadyRegistered cudaErrorHostMemoryAlreadyRegistered
+#define hipErrorHostMemoryNotRegistered cudaErrorHostMemoryNotRegistered
 #define hipErrorInvalidHandle cudaErrorInvalidResourceHandle
 #define hipErrorInvalidResourceHandle cudaErrorInvalidResourceHandle
 #define hipErrorIllegalState cudaErrorIllegalState
@@ -801,6 +1257,27 @@ using namespace cuda4cpu::hip_api;
 #define hipMemAdviseSetAccessedBy cudaMemAdviseSetAccessedBy
 #define hipMemAdviseUnsetAccessedBy cudaMemAdviseUnsetAccessedBy
 #define hipCpuDeviceId cudaCpuDeviceId
+#define hipInvalidDeviceId cudaInvalidDeviceId
+#define hipMemoryType cudaMemoryType
+#define hipMemoryTypeUnregistered cudaMemoryTypeUnregistered
+#define hipMemoryTypeHost cudaMemoryTypeHost
+#define hipMemoryTypeDevice cudaMemoryTypeDevice
+#define hipMemoryTypeManaged cudaMemoryTypeManaged
+// AMD's other memory types, which no pointer has here
+#define hipMemoryTypeArray static_cast<cudaMemoryType>(10)
+#define hipMemoryTypeUnified static_cast<cudaMemoryType>(11)
+#define hipMemRangeAttribute cudaMemRangeAttribute
+#define hipMemRangeAttributeReadMostly cudaMemRangeAttributeReadMostly
+#define hipMemRangeAttributePreferredLocation cudaMemRangeAttributePreferredLocation
+#define hipMemRangeAttributeAccessedBy cudaMemRangeAttributeAccessedBy
+#define hipMemRangeAttributeLastPrefetchLocation cudaMemRangeAttributeLastPrefetchLocation
+#define hipMemRangeAttributePreferredLocationType cudaMemRangeAttributePreferredLocationType
+#define hipMemRangeAttributePreferredLocationId cudaMemRangeAttributePreferredLocationId
+#define hipMemRangeAttributeLastPrefetchLocationType cudaMemRangeAttributeLastPrefetchLocationType
+#define hipMemRangeAttributeLastPrefetchLocationId cudaMemRangeAttributeLastPrefetchLocationId
+#define hipMemRangeGetAttribute cudaMemRangeGetAttribute
+#define hipMemRangeGetAttributes cudaMemRangeGetAttributes
+#define hipHostGetFlags cudaHostGetFlags
 #define hipMemPool_t cudaMemPool_t
 #define hipMemPoolAttr cudaMemPoolAttr
 #define hipMemPoolReuseFollowEventDependencies cudaMemPoolReuseFollowEventDependencies

@@ -1411,16 +1411,6 @@ void thread_block::deadlock() const
     std::abort();
 }
 
-void *detail::allocate_aligned(size_t size)
-{
-    // Rounding up to the alignment must not wrap around to a small size
-    if (size > SIZE_MAX - allocation_alignment)
-        return nullptr;
-
-    return std::aligned_alloc(allocation_alignment,
-                              (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment);
-}
-
 void detail::memory_info(size_t &free, size_t &total)
 {
     const long page = sysconf(_SC_PAGESIZE);

@@ -257,6 +257,39 @@ int main()
         cudaFree(m);
     }
 
+    // Pointer attributes, frees of what cudaMalloc didn't allocate, and the
+    // hints of a memory range
+    {
+        float *d = nullptr, *m = nullptr, *h = nullptr, local[4];
+        EXPECT(cudaMalloc(&d, 64) == cudaSuccess && cudaMallocManaged(&m, 64) == cudaSuccess &&
+               cudaMallocHost(&h, 64) == cudaSuccess);
+        cudaPointerAttributes a;
+        EXPECT(cudaPointerGetAttributes(&a, d + 3) == cudaSuccess && a.type == cudaMemoryTypeDevice &&
+               a.devicePointer == d + 3 && a.hostPointer == nullptr);
+        EXPECT(cudaPointerGetAttributes(&a, m) == cudaSuccess && a.type == cudaMemoryTypeManaged &&
+               a.hostPointer == m);
+        EXPECT(cudaPointerGetAttributes(&a, h) == cudaSuccess && a.type == cudaMemoryTypeHost);
+        EXPECT(cudaPointerGetAttributes(&a, local) == cudaSuccess && a.type == cudaMemoryTypeUnregistered &&
+               a.device == cudaInvalidDeviceId);
+        EXPECT(cudaPointerGetAttributes(nullptr, d) == cudaErrorInvalidValue);
+
+        EXPECT(cudaMemAdvise(m, 64, cudaMemAdviseSetReadMostly, 0) == cudaSuccess);
+        int read_mostly = 0;
+        EXPECT(cudaMemRangeGetAttribute(&read_mostly, sizeof(read_mostly), cudaMemRangeAttributeReadMostly, m,
+                                        64) == cudaSuccess &&
+               read_mostly == 1);
+        EXPECT(cudaMemAdvise(m, 64, cudaMemAdviseSetAccessedBy, 3) == cudaErrorInvalidDevice);
+
+        EXPECT(cudaFree(local) == cudaErrorInvalidValue);
+        EXPECT(cudaFree(d + 1) == cudaErrorInvalidValue);
+        EXPECT(cudaGetLastError() == cudaErrorInvalidValue);
+        EXPECT(cudaFree(d) == cudaSuccess && cudaFree(d) == cudaErrorInvalidValue);
+        EXPECT(cudaFreeHost(h) == cudaSuccess && cudaFree(m) == cudaSuccess);
+        EXPECT(std::strcmp(cudaGetErrorName(cudaErrorHostMemoryNotRegistered),
+                           "cudaErrorHostMemoryNotRegistered") == 0);
+        cudaGetLastError();
+    }
+
     // Copies and memset
     {
         int src[4] = {1, 2, 3, 4}, dst[4] = {};

@@ -128,9 +128,10 @@ cuda4cpu_add_cuda_sources(rewrite_features rewrite/features.cu)
 add_test(NAME rewrite_features COMMAND rewrite_features)
 
 # HIP programs, through HIP's headers and names only: the runtime API, the
-# kernel language, and hipLaunchKernelGGL as a function template in a .cpp
-# file, which cuda4cpu_add_hip_sources compiles as HIP whatever its extension
-foreach(source IN ITEMS hip/runtime.hip hip/kernels.hip hip/template_launch.cpp)
+# host APIs for memory and contexts, the kernel language, and
+# hipLaunchKernelGGL as a function template in a .cpp file, which
+# cuda4cpu_add_hip_sources compiles as HIP whatever its extension
+foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/template_launch.cpp)
     cmake_path(GET source STEM stem)
     add_executable(hip_${stem})
     set_target_properties(hip_${stem} PROPERTIES CXX_EXTENSIONS OFF)
