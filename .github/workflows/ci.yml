@@ -149,6 +149,52 @@ jobs:
         with:
           key: ${{ steps.setup.outputs.ccache-key }}
 
+  # The examples the README shows: a project that gets cuda4cpu through
+  # FetchContent (from this checkout), and the bugs that cuda4cpu exposes
+  examples:
+    name: gcc-14 / examples
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev g++-14
+          ccache-key: examples
+
+      - name: Build and test the CMake project
+        run: |
+          cmake -S examples/cmake-project -B build/example -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DFETCHCONTENT_SOURCE_DIR_CUDA4CPU="$GITHUB_WORKSPACE"
+          cmake --build build/example
+          ctest --test-dir build/example --output-on-failure
+
+      # The missing __syncthreads() passes in the default order and fails in
+      # reverse; AddressSanitizer reports the kernel's line (keep it in sync
+      # with out_of_bounds.cu)
+      - name: Expose the bugs
+        working-directory: examples/bugs
+        run: |
+          driver="$GITHUB_WORKSPACE/build/example/_deps/cuda4cpu-build/tools/cuda4cpu-c++"
+          "$driver" -O2 missing_barrier.cu -o "$RUNNER_TEMP/missing_barrier"
+          "$RUNNER_TEMP/missing_barrier"
+          if CUDA4CPU_SCHEDULE=reverse "$RUNNER_TEMP/missing_barrier"; then exit 1; fi
+          "$driver" -g -fsanitize=address out_of_bounds.cu -o "$RUNNER_TEMP/out_of_bounds"
+          if "$RUNNER_TEMP/out_of_bounds" 2> "$RUNNER_TEMP/asan.log"; then exit 1; fi
+          cat "$RUNNER_TEMP/asan.log"
+          grep -q "heap-buffer-overflow" "$RUNNER_TEMP/asan.log"
+          grep -q "in scale(float\*, int) .*out_of_bounds.cu:27" "$RUNNER_TEMP/asan.log"
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}
+
   # Real CUDA and HIP programs, unmodified: a curated set of NVIDIA's
   # cuda-samples, Rodinia and AMD's rocm-examples, fetched at the revisions in
   # compat/suites.json. Fails if a program that passes in compat/baseline.json
