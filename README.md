@@ -144,7 +144,7 @@ thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid 
 include(FetchContent)
 FetchContent_Declare(cuda4cpu
     GIT_REPOSITORY https://github.com/javier-cabezas/cuda4cpu.git
-    GIT_TAG main)
+    GIT_TAG v0.1.0)
 FetchContent_MakeAvailable(cuda4cpu)
 
 add_executable(my_app main.cpp)
