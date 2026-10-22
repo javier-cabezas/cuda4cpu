@@ -155,6 +155,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   README shows. CI's `examples` job builds the project against the checkout
   (`FETCHCONTENT_SOURCE_DIR_CUDA4CPU`) and checks that the bugs are exposed,
   including the line AddressSanitizer reports in `out_of_bounds.cu`.
+  The project and the README's `FetchContent` snippet pin the latest release
+  (`GIT_TAG v0.1.0`): update both when tagging a new one.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.
