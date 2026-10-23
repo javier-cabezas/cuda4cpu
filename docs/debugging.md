@@ -42,9 +42,11 @@ results change, a barrier is missing:
 `random`, `warp_random` and `mixed` print the seed they picked so the run can
 be repeated.
 
-**Divergent barriers.** CUDA requires all the threads of a block to reach the
-same `__syncthreads()`. cuda4cpu reports blocks whose threads reach different
-ones:
+**Divergent barriers and warp operations.** CUDA requires all the threads of a
+block to reach the same `__syncthreads()`, and all the participating lanes of a
+warp operation (`__shfl_*_sync`, votes, `__match_*_sync`, `__syncwarp`) to have
+their own lane bit set in `mask` and to execute the same operation with the
+same `mask`. cuda4cpu reports violations:
 
 ```
 cuda4cpu: warning: threads of block (0, 0, 0) reached different __syncthreads() calls,

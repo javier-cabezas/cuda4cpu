@@ -17,17 +17,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# With CUDA4CPU_DIVERGENT_BARRIERS=error, divergent barriers abort the program
-# with a single report. Usage: cmake -DPROGRAM=... -P divergent_barrier_error.cmake
+# With CUDA4CPU_DIVERGENT_BARRIERS=error, divergent barriers and mismatched
+# warp operations abort the program with a single report.
+# Usage: cmake -DPROGRAM=... -P divergent_barrier_error.cmake
 
-execute_process(COMMAND ${CMAKE_COMMAND} -E env CUDA4CPU_DIVERGENT_BARRIERS=error "${PROGRAM}"
-                OUTPUT_VARIABLE output ERROR_VARIABLE errors RESULT_VARIABLE status)
+foreach(case IN ITEMS "threads of block:" "lanes .* reached mismatched warp operations:warp"
+                      "lane .* does not include its own lane:warp_mask")
+    string(FIND "${case}" ":" sep)
+    string(SUBSTRING "${case}" 0 ${sep} pattern)
+    math(EXPR arg_start "${sep} + 1")
+    string(SUBSTRING "${case}" ${arg_start} -1 arg)
 
-if(status EQUAL 0 OR output MATCHES "divergent: done")
-    message(FATAL_ERROR "the program did not stop (status ${status}):\n${output}\n${errors}")
-endif()
-string(REGEX MATCHALL "error: threads of block" reports "${errors}")
-list(LENGTH reports count)
-if(NOT count EQUAL 1)
-    message(FATAL_ERROR "expected one report, got ${count}:\n${errors}")
-endif()
+    execute_process(COMMAND ${CMAKE_COMMAND} -E env CUDA4CPU_DIVERGENT_BARRIERS=error "${PROGRAM}" ${arg}
+                    OUTPUT_VARIABLE output ERROR_VARIABLE errors RESULT_VARIABLE status)
+
+    if(status EQUAL 0 OR output MATCHES "divergent: done")
+        message(FATAL_ERROR "the program did not stop for '${arg}' (status ${status}):\n${output}\n${errors}")
+    endif()
+    string(REGEX MATCHALL "error: ${pattern}" reports "${errors}")
+    list(LENGTH reports count)
+    if(NOT count EQUAL 1)
+        message(FATAL_ERROR "expected one report for '${arg}', got ${count}:\n${errors}")
+    endif()
+endforeach()
