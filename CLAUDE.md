@@ -222,8 +222,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `extern __shared__` placement, checked at run time, including that
     `__LINE__` matches the original file. Update its expected line if you
     edit the file above that check.
-  - `schedule_{forward,reverse,random}`: a kernel with a missing
-    `__syncthreads()` that the default order hides and the others expose
+  - `schedule_{forward,reverse,warp_reverse,random,warp_random,mixed}`:
+    kernels with a missing `__syncthreads()` or `__syncwarp()` that the
+    default order hides and the others expose
   - `divergent_barrier_{warn,ignore,error}`: the divergent barrier check in
     each mode (error mode must abort with a single report).
     `divergent_barrier_later`: one thread diverges after every thread has

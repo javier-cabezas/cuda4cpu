@@ -11,10 +11,16 @@ endforeach()
 # A missing __syncthreads() that the default order hides and the others expose
 add_test(NAME schedule_forward COMMAND schedule hidden)
 add_test(NAME schedule_reverse COMMAND schedule exposed)
+add_test(NAME schedule_warp_reverse COMMAND schedule warp_exposed)
 add_test(NAME schedule_random COMMAND schedule exposed)
+add_test(NAME schedule_warp_random COMMAND schedule warp_exposed)
+add_test(NAME schedule_mixed COMMAND schedule exposed)
 set_tests_properties(schedule_forward PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=forward")
 set_tests_properties(schedule_reverse PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=reverse")
+set_tests_properties(schedule_warp_reverse PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=warp_reverse")
 set_tests_properties(schedule_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:12345")
+set_tests_properties(schedule_warp_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=warp_random:12345")
+set_tests_properties(schedule_mixed PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=mixed:12345")
 
 # Threads that reach different __syncthreads() calls: warned about by default,
 # fatal or ignored on request

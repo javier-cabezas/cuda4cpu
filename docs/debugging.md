@@ -27,10 +27,20 @@ thread, one after another.
 **Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the
 threads of a block run one after another, in index order by default. A missing
 barrier goes unnoticed when the thread that reads shared memory happens to run
-after the one that writes it. Run the program again with
-`CUDA4CPU_SCHEDULE=reverse` or `CUDA4CPU_SCHEDULE=random`; if the results
-change, a barrier is missing. `random` prints its seed, and
-`CUDA4CPU_SCHEDULE=random:<seed>` repeats that order.
+after the one that writes it. Run the program again with another order; if the
+results change, a barrier is missing:
+
+- `reverse`, `random` (or `random:<seed>`): reverse or shuffle all the threads
+  of each block, exposing missing `__syncthreads()` and `__syncwarp()`.
+- `warp_reverse`, `warp_random` (or `warp_random:<seed>`): reverse or shuffle
+  the warps of each block while keeping the lanes of each warp in forward
+  order, for kernels that rely on lockstep execution within a warp.
+- `mixed` (or `mixed:<seed>`): cycles the blocks of each grid through
+  `reverse`, `warp_reverse`, `random` and `forward`, so a single run tests all
+  of them.
+
+`random`, `warp_random` and `mixed` print the seed they picked so the run can
+be repeated.
 
 **Divergent barriers.** CUDA requires all the threads of a block to reach the
 same `__syncthreads()`. cuda4cpu reports blocks whose threads reach different
