@@ -542,7 +542,8 @@
           "verified": false
         },
         {
-          "dir": "HIP-Doc/Programming-Guide/Porting-CUDA-Driver-API/pointer_memory_type"
+          "dir": "HIP-Doc/Programming-Guide/Porting-CUDA-Driver-API/pointer_memory_type",
+          "expect": "ptr is of type hipMemoryTypeDevice\\nptrHost is of type hipMemoryTypeHost"
         },
         {
           "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Asynchronous-Concurrent-Execution/async_kernel_execution",
@@ -655,10 +656,14 @@
           "expect": "1 \\+ 2 = 3"
         },
         {
-          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/memory_range_attributes"
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Unified-Memory-Management/memory_range_attributes",
+          "expect": "1 \\+ 2 = 3\\nThe array a is set to hipMemRangeAttributeReadMostly",
+          "reject": "HIP error"
         },
         {
-          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Virtual-Memory-Management/virtual_memory"
+          "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Memory-Management/Virtual-Memory-Management/virtual_memory",
+          "expect": "Success. Value: 42\\nSuccess. zeroAddr kernel: 0\\nSuccess. fillAddr kernel: 42",
+          "reject": "HIP error|Failure"
         },
         {
           "dir": "HIP-Doc/Programming-Guide/Using-HIP-Runtime-API/Multi-Device-Management/device_enumeration",

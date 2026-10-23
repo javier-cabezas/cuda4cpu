@@ -21,12 +21,14 @@
 //
 // hipLaunchKernelGGL as a function template, which HIP declares when
 // HIP_TEMPLATE_KERNEL_LAUNCH is defined before hip_runtime.h: kernel names
-// with template arguments need no HIP_KERNEL_NAME. A .cpp file, as HIP
-// projects often name their sources, compiled with cuda4cpu_add_hip_sources.
+// with template arguments need no HIP_KERNEL_NAME. hipExtLaunchKernelGGL
+// (hip_ext.h) becomes one too. A .cpp file, as HIP projects often name their
+// sources, compiled with cuda4cpu_add_hip_sources.
 //
 
 #define HIP_TEMPLATE_KERNEL_LAUNCH
 
+#include <hip/hip_ext.h>
 #include <hip/hip_runtime.h>
 
 #include <cstdio>
@@ -52,9 +54,20 @@ int main()
     if (hipGetLastError() != hipSuccess)
         return EXIT_FAILURE;
 
+    hipEvent_t start, stop;
+    hipEventCreate(&start);
+    hipEventCreate(&stop);
+    hipExtLaunchKernelGGL(scale<block, 2, int>, dim3((100 + block - 1) / block), dim3(block), 0, hipStreamDefault,
+                          start, stop, 0, data, 100);
+    float ms = -1;
+    if (hipEventElapsedTime(&ms, start, stop) != hipSuccess || ms < 0)
+        return EXIT_FAILURE;
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
+
     int wrong = 0;
     for (int i = 0; i < 100; ++i)
-        wrong += data[i] != 3 * i;
+        wrong += data[i] != 6 * i;
     std::printf("hip_template_launch: %s\n", wrong == 0 ? "PASS" : "FAIL");
     return wrong == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

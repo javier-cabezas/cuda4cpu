@@ -87,6 +87,37 @@ enum cudaMemoryAdvise {
 //! cudaCpuDeviceId names the host as a location
 inline constexpr int cudaCpuDeviceId = -1;
 
+//! The device of memory that has none, and the answer of a memory range
+//! attribute whose pages disagree
+inline constexpr int cudaInvalidDeviceId = -2;
+
+//! What kind of allocation a pointer points into (cudaPointerGetAttributes)
+enum cudaMemoryType {
+    cudaMemoryTypeUnregistered = 0,
+    cudaMemoryTypeHost         = 1,
+    cudaMemoryTypeDevice       = 2,
+    cudaMemoryTypeManaged      = 3
+};
+
+struct cudaPointerAttributes {
+    cudaMemoryType type;
+    int device;
+    void *devicePointer;   //!< Null for memory that the device can't access as such
+    void *hostPointer;     //!< Null for device memory
+};
+
+//! The unified memory hints of a range (cudaMemRangeGetAttribute)
+enum cudaMemRangeAttribute {
+    cudaMemRangeAttributeReadMostly               = 1,
+    cudaMemRangeAttributePreferredLocation        = 2,
+    cudaMemRangeAttributeAccessedBy               = 3,
+    cudaMemRangeAttributeLastPrefetchLocation     = 4,
+    cudaMemRangeAttributePreferredLocationType    = 5,
+    cudaMemRangeAttributePreferredLocationId      = 6,
+    cudaMemRangeAttributeLastPrefetchLocationType = 7,
+    cudaMemRangeAttributeLastPrefetchLocationId   = 8
+};
+
 //! Memory pools, for stream-ordered allocation. Allocations come from the
 //! process heap, so pools differ only by their handles, and their properties
 //! and attributes have no effect.
@@ -183,10 +214,49 @@ namespace detail {
 //! Alignment of every allocation, as guaranteed by cudaMalloc
 inline constexpr size_t allocation_alignment = 256;
 
-//! Allocates size bytes aligned to allocation_alignment. Defined in the
-//! library, where the compiler can't elide the allocation: it may assume that
-//! an inline allocation whose result is never dereferenced succeeds.
-void *allocate_aligned(size_t size);
+//! What an allocation is, for cudaPointerGetAttributes and cudaFree
+enum class memory_kind : unsigned char {
+    device,       //!< cudaMalloc and the like
+    host,         //!< cudaMallocHost, cudaHostAlloc
+    managed,      //!< cudaMallocManaged
+    registered,   //!< cudaHostRegister
+    mapped        //!< Physical memory mapped with HIP's virtual memory management
+};
+
+//! Allocates size bytes aligned to allocation_alignment, and records the
+//! allocation with its kind and flags. Defined in the library, where the
+//! compiler can't elide the allocation: it may assume that an inline
+//! allocation whose result is never dereferenced succeeds.
+void *allocate_aligned(size_t size, memory_kind kind, unsigned flags);
+
+//! An allocation that a pointer points into (a graph allocation's kind is
+//! device)
+struct allocation_info {
+    void *base;
+    size_t size;
+    memory_kind kind;
+    unsigned flags;   //!< cudaHostAlloc's or cudaMallocManaged's flags
+};
+
+//! Finds the allocation that ptr points into (defined in the library)
+bool find_allocation(const void *ptr, allocation_info &info);
+
+// Registered host memory and unified memory hints, defined in the library.
+// Hints apply to whole pages, and to any memory: the device reports
+// pageableMemoryAccess.
+cudaError_t register_host(void *ptr, size_t size, unsigned flags);
+cudaError_t unregister_host(void *ptr);
+cudaError_t advise(const void *ptr, size_t count, cudaMemoryAdvise advice, cudaMemLocation location);
+cudaError_t prefetch(const void *ptr, size_t count, cudaMemLocation location);
+cudaError_t range_attribute(void *data, size_t data_size, cudaMemRangeAttribute attribute, const void *ptr,
+                            size_t count);
+
+//! The location that CUDA's older functions name with a device number
+inline cudaMemLocation device_location(int device)
+{
+    return device == cudaCpuDeviceId ? cudaMemLocation{cudaMemLocationTypeHost, 0}
+                                     : cudaMemLocation{cudaMemLocationTypeDevice, device};
+}
 
 //! The memory available to allocations and the device's total memory: the
 //! host's free and physical memory (defined in the library)
@@ -208,7 +278,7 @@ void copy_rows(char *dst, size_t dst_pitch, size_t dst_slice, const char *src, s
 //! with the low bytes of value, each row pitch bytes after the previous one
 void fill_rows(void *dst, size_t pitch, unsigned value, size_t element_size, size_t width, size_t height);
 
-inline cudaError_t allocate(void **ptr, size_t size)
+inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind = memory_kind::device, unsigned flags = 0)
 {
     if (ptr == nullptr)
         return record_error(cudaErrorInvalidValue);
@@ -217,7 +287,7 @@ inline cudaError_t allocate(void **ptr, size_t size)
         return cudaSuccess;
     }
 
-    void *p = allocate_aligned(size);
+    void *p = allocate_aligned(size, kind, flags);
     if (p == nullptr)
         return record_error(cudaErrorMemoryAllocation);
 
@@ -282,8 +352,13 @@ cudaError_t capture_fill(cudaStream_t stream, const cudaMemsetParams &params);
 cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size);
 cudaError_t capture_free(cudaStream_t stream, void *ptr);
 
-//! Frees memory from cudaMalloc and the like, or from a graph allocation node
+//! Frees memory from cudaMalloc and the like, or from a graph allocation node.
+//! Other pointers are rejected, as in CUDA.
 cudaError_t free_memory(void *ptr);
+
+//! Frees an allocation of the registry (defined in the library, with it):
+//! false if ptr isn't the start of one that cudaFree can free
+bool release_allocation(void *ptr);
 
 //! A 1D copy as 3D parameters
 inline cudaMemcpy3DParms linear_copy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
@@ -321,19 +396,19 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 static inline
 cudaError_t cudaMallocHost(void **ptr, size_t size)
 {
-    return detail::allocate(ptr, size);
+    return detail::allocate(ptr, size, detail::memory_kind::host);
 }
 
 static inline
-cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int /* flags */)
+cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int flags)
 {
-    return detail::allocate(pHost, size);
+    return detail::allocate(pHost, size, detail::memory_kind::host, flags);
 }
 
 static inline
-cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int /* flags */ = cudaMemAttachGlobal)
+cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal)
 {
-    return detail::allocate(devPtr, size);
+    return detail::allocate(devPtr, size, detail::memory_kind::managed, flags);
 }
 
 // Typed overloads, so that cudaMalloc(&ptr, size) works without a cast, as in CUDA
@@ -347,23 +422,23 @@ cudaError_t cudaMalloc(T **devPtr, size_t size)
 
 template <typename T>
 static inline
-cudaError_t cudaMallocHost(T **ptr, size_t size, unsigned int /* flags */ = 0)
+cudaError_t cudaMallocHost(T **ptr, size_t size, unsigned int flags = 0)
 {
-    return detail::allocate(reinterpret_cast<void **>(ptr), size);
+    return detail::allocate(reinterpret_cast<void **>(ptr), size, detail::memory_kind::host, flags);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaHostAlloc(T **pHost, size_t size, unsigned int /* flags */)
+cudaError_t cudaHostAlloc(T **pHost, size_t size, unsigned int flags)
 {
-    return detail::allocate(reinterpret_cast<void **>(pHost), size);
+    return detail::allocate(reinterpret_cast<void **>(pHost), size, detail::memory_kind::host, flags);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int /* flags */ = cudaMemAttachGlobal)
+cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal)
 {
-    return detail::allocate(reinterpret_cast<void **>(devPtr), size);
+    return detail::allocate(reinterpret_cast<void **>(devPtr), size, detail::memory_kind::managed, flags);
 }
 
 static inline
@@ -459,22 +534,23 @@ cudaError_t cudaMemPoolTrimTo(cudaMemPool_t /* memPool */, size_t /* minBytesToK
 
 //
 // Unified memory hints. All memory is host memory, so prefetching and advice
-// have nothing to do. Both CUDA's older signatures (with a device number) and
-// the ones with a cudaMemLocation are accepted.
+// change nothing, but they are recorded, for cudaMemRangeGetAttribute. Both
+// CUDA's older signatures (with a device number) and the ones with a
+// cudaMemLocation are accepted.
 //
 
 static inline
-cudaError_t cudaMemPrefetchAsync(const void * /* devPtr */, size_t /* count */, int /* dstDevice */,
+cudaError_t cudaMemPrefetchAsync(const void *devPtr, size_t count, int dstDevice,
                                  cudaStream_t /* stream */ = nullptr)
 {
-    return cudaSuccess;
+    return detail::prefetch(devPtr, count, detail::device_location(dstDevice));
 }
 
 static inline
-cudaError_t cudaMemPrefetchAsync(const void * /* devPtr */, size_t /* count */, cudaMemLocation /* location */,
+cudaError_t cudaMemPrefetchAsync(const void *devPtr, size_t count, cudaMemLocation location,
                                  unsigned int /* flags */, cudaStream_t /* stream */ = nullptr)
 {
-    return cudaSuccess;
+    return detail::prefetch(devPtr, count, location);
 }
 
 static inline
@@ -485,29 +561,92 @@ cudaError_t cudaStreamAttachMemAsync(cudaStream_t /* stream */, void * /* devPtr
 }
 
 static inline
-cudaError_t cudaMemAdvise(const void * /* devPtr */, size_t /* count */, cudaMemoryAdvise /* advice */,
-                          int /* device */)
+cudaError_t cudaMemAdvise(const void *devPtr, size_t count, cudaMemoryAdvise advice, int device)
 {
+    return detail::advise(devPtr, count, advice, detail::device_location(device));
+}
+
+static inline
+cudaError_t cudaMemAdvise(const void *devPtr, size_t count, cudaMemoryAdvise advice, cudaMemLocation location)
+{
+    return detail::advise(devPtr, count, advice, location);
+}
+
+//! Returns in data (dataSize bytes) the hint attribute of the pages of
+//! [devPtr, devPtr + count): a value they all share, or that they don't
+static inline
+cudaError_t cudaMemRangeGetAttribute(void *data, size_t dataSize, cudaMemRangeAttribute attribute,
+                                     const void *devPtr, size_t count)
+{
+    return detail::range_attribute(data, dataSize, attribute, devPtr, count);
+}
+
+static inline
+cudaError_t cudaMemRangeGetAttributes(void **data, size_t *dataSizes, cudaMemRangeAttribute *attributes,
+                                      size_t numAttributes, const void *devPtr, size_t count)
+{
+    if (numAttributes > 0 && (data == nullptr || dataSizes == nullptr || attributes == nullptr))
+        return detail::record_error(cudaErrorInvalidValue);
+    for (size_t i = 0; i < numAttributes; ++i) {
+        if (cudaError_t err = detail::range_attribute(data[i], dataSizes[i], attributes[i], devPtr, count))
+            return err;
+    }
     return cudaSuccess;
 }
 
+//! Host memory is device memory: registering it only records it, for
+//! cudaPointerGetAttributes
 static inline
-cudaError_t cudaMemAdvise(const void * /* devPtr */, size_t /* count */, cudaMemoryAdvise /* advice */,
-                          cudaMemLocation /* location */)
+cudaError_t cudaHostRegister(void *ptr, size_t size, unsigned int flags)
 {
+    return detail::register_host(ptr, size, flags);
+}
+
+static inline
+cudaError_t cudaHostUnregister(void *ptr)
+{
+    return detail::unregister_host(ptr);
+}
+
+//! The flags that host memory was allocated or registered with
+static inline
+cudaError_t cudaHostGetFlags(unsigned int *pFlags, void *pHost)
+{
+    detail::allocation_info info;
+    if (pFlags == nullptr || !detail::find_allocation(pHost, info) ||
+        (info.kind != detail::memory_kind::host && info.kind != detail::memory_kind::registered))
+        return detail::record_error(cudaErrorInvalidValue);
+    *pFlags = info.flags;
     return cudaSuccess;
 }
 
-//! Host memory is device memory: registering it changes nothing
+//! Where ptr points: into which kind of allocation, and its addresses on the
+//! host and the device. Any pointer is accepted: one into no allocation is
+//! cudaMemoryTypeUnregistered.
 static inline
-cudaError_t cudaHostRegister(void *ptr, size_t size, unsigned int /* flags */)
+cudaError_t cudaPointerGetAttributes(cudaPointerAttributes *attributes, const void *ptr)
 {
-    return size > 0 && ptr == nullptr ? detail::record_error(cudaErrorInvalidValue) : cudaSuccess;
-}
-
-static inline
-cudaError_t cudaHostUnregister(void * /* ptr */)
-{
+    if (attributes == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    void *p = const_cast<void *>(ptr);
+    detail::allocation_info info;
+    if (!detail::find_allocation(ptr, info)) {
+        *attributes = {cudaMemoryTypeUnregistered, cudaInvalidDeviceId, nullptr, p};
+        return cudaSuccess;
+    }
+    switch (info.kind) {
+    case detail::memory_kind::device:
+    case detail::memory_kind::mapped:
+        *attributes = {cudaMemoryTypeDevice, 0, p, nullptr};
+        break;
+    case detail::memory_kind::managed:
+        *attributes = {cudaMemoryTypeManaged, 0, p, p};
+        break;
+    case detail::memory_kind::host:
+    case detail::memory_kind::registered:
+        *attributes = {cudaMemoryTypeHost, 0, p, p};
+        break;
+    }
     return cudaSuccess;
 }
 
@@ -536,8 +675,7 @@ cudaError_t cudaFree(void *devPtr)
 static inline
 cudaError_t cudaFreeHost(void *ptr)
 {
-    std::free(ptr);
-    return cudaSuccess;
+    return detail::free_memory(ptr);
 }
 
 //! Device memory is host memory: the host's available and physical memory

@@ -1,7 +1,7 @@
 ![cuda4cpu](https://raw.githubusercontent.com/wiki/javier-cabezas/cuda4cpu/images/cuda4cpu_logo_300x75.png)
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
-[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-126%20of%20154%20pass-brightgreen)](docs/compatibility.md)
+[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-129%20of%20154%20pass-brightgreen)](docs/compatibility.md)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](docs/usage.md#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -22,7 +22,7 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
   source line.
 - **Catch the bugs a GPU hides:** missing `__syncthreads()`, and threads of a
   block that reach different barriers.
-- **Real code works:** 126 of 154 programs from NVIDIA's cuda-samples,
+- **Real code works:** 129 of 154 programs from NVIDIA's cuda-samples,
   Rodinia and AMD's rocm-examples build unmodified and pass, and CI checks
   that they keep passing.
 - **The CUDA you write today:** shared memory, warp shuffles and votes,
@@ -199,7 +199,8 @@ jobs:
   semaphores, conditional nodes, stream capture and `cudaGraphExecUpdate`.
 - **HIP**, as on HIP's NVIDIA platform: the runtime API under HIP's names,
   `hipLaunchKernelGGL`, `HIP_DYNAMIC_SHARED`, the mask-less warp functions
-  and HIP's own additions.
+  and HIP's own additions, such as pointer attributes, virtual memory
+  management and contexts.
 
 The full lists: [CUDA features](docs/features.md), [HIP](docs/hip.md),
 [limitations](docs/limitations.md). The [compatibility

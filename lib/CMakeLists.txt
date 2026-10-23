@@ -1,4 +1,4 @@
-add_library(cuda4cpu cuda4cpu.cpp graphs.cpp)
+add_library(cuda4cpu cuda4cpu.cpp graphs.cpp memory.cpp)
 add_library(cuda4cpu::cuda4cpu ALIAS cuda4cpu)
 
 set(CUDA4CPU_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
@@ -25,6 +25,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_common.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_cooperative_groups.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_ext.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime_api.h
