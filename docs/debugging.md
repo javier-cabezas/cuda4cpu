@@ -16,13 +16,24 @@ variables of the CUDA thread you're stopped in:
 $1 = {x = 6, y = 0, z = 0}
 (gdb) cuda4cpu
 thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
+(gdb) cuda4cpu threads
+block (2, 0, 0), 64 threads (64 live):
+  threads (0, 0, 0)..(5, 0, 0): at __syncthreads() (kernel.cu:45)
+* thread (6, 0, 0), lane 6: running
+  threads (7, 0, 0)..(63, 0, 0): runnable
+(gdb) cuda4cpu thread 4
+switched to thread (4, 0, 0) of block (2, 0, 0), lane 4 at kernel.cu:45
+(gdb) cuda4cpu thread
+thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
 ```
 
 `$threadIdx()`, `$blockIdx()`, `$blockDim()` and `$gridDim()` return the whole
 value. With a dimension (`$threadIdx("x")`), they return one component, which
-is what breakpoint conditions need. gdb lists OS threads, not the CUDA threads
-suspended at barriers. Set `OMP_NUM_THREADS=1` to run all the blocks on one
-thread, one after another.
+is what breakpoint conditions need. `cuda4cpu threads` lists the CUDA threads
+of the block and their states, and `cuda4cpu thread <x> [y] [z]` switches to
+another started CUDA thread so `bt` and `print` inspect its stack; `cuda4cpu
+thread` (or continuing execution) switches back to the running thread. Set
+`OMP_NUM_THREADS=1` to run all the blocks on one OS thread, one after another.
 
 **Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the
 threads of a block run one after another, in index order by default. A missing
