@@ -202,7 +202,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `grid.sync()` across rounds of a cooperative launch
   - `runtime`: error codes and the last error, launch limits, allocation,
     copies, memset, symbols, events, device queries and intrinsics, through
-    `cuda_runtime.h` only
+    `cuda_runtime.h` only. It and `hip_memory` run with
+    `CUDA4CPU_MEMCPY_DIRECTION=error`, to check the errors of copies in the
+    wrong direction.
+  - `memcpy_direction_{warn,error,ignore}`: those copies in each mode (warn
+    copies and reports each mistake once)
   - `symbol_address_rejected`: a compile-only test. Passing `&symbol` to
     `cudaMemcpyToSymbol` must fail with the static_assert message.
   - `events`: event timing
@@ -540,6 +544,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   warp_random[:seed], mixed[:seed]),
   `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore) and
   `CUDA4CPU_INTERLEAVE` (auto, off, or a number of loop iterations).
+  `CUDA4CPU_MEMCPY_DIRECTION` (warn, error, ignore) is read in
+  `lib/memory.cpp`, by `check_copy_direction`, which checks a copy's pointers
+  against the registry of allocations.
 - Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
   to a permutation (`fibers::order`, inverse in `position`), which
   `fill_order` builds. `reverse` and `warp_reverse` fill it once per

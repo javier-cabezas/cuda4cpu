@@ -40,9 +40,13 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
+#include <string_view>
+#include <tuple>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -333,6 +337,102 @@ void register_symbol(const void *ptr, size_t size)
     const uintptr_t p = reinterpret_cast<uintptr_t>(ptr);
     std::lock_guard lock(s.mutex);
     s.allocations.try_emplace(p, allocation{size, memory_kind::symbol, 0});
+}
+
+namespace {
+
+//! CUDA4CPU_MEMCPY_DIRECTION
+enum class direction_check { warn, error, ignore };
+
+direction_check direction_setting()
+{
+    static const direction_check setting = [] {
+        const char *v = std::getenv("CUDA4CPU_MEMCPY_DIRECTION");
+        if (v == nullptr || *v == '\0' || std::string_view(v) == "warn")
+            return direction_check::warn;
+        if (std::string_view(v) == "error")
+            return direction_check::error;
+        if (std::string_view(v) == "ignore")
+            return direction_check::ignore;
+        std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_MEMCPY_DIRECTION=%s: expected warn, error or ignore\n", v);
+        return direction_check::warn;
+    }();
+    return setting;
+}
+
+//! Where a pointer points, for the direction check
+enum class pointer_place { host, device, either };
+
+pointer_place place(const void *ptr)
+{
+    allocation_info info;
+    if (!find_allocation(ptr, info))
+        return pointer_place::host;
+    switch (info.kind) {
+    case memory_kind::device:
+    case memory_kind::mapped:
+    case memory_kind::symbol:
+        return pointer_place::device;
+    default:
+        return pointer_place::either;   // Pinned, registered and managed memory
+    }
+}
+
+const char *place_name(pointer_place p)
+{
+    return p == pointer_place::host ? "host memory that CUDA didn't allocate" : "device memory";
+}
+
+const char *kind_name(cudaMemcpyKind kind)
+{
+    switch (kind) {
+    case cudaMemcpyHostToHost:     return "cudaMemcpyHostToHost";
+    case cudaMemcpyHostToDevice:   return "cudaMemcpyHostToDevice";
+    case cudaMemcpyDeviceToHost:   return "cudaMemcpyDeviceToHost";
+    default:                       return "cudaMemcpyDeviceToDevice";
+    }
+}
+
+[[gnu::noinline, gnu::cold]] void report_copy_direction(cudaMemcpyKind kind, const char *side, pointer_place p)
+{
+    static std::mutex lock;
+    static std::set<std::tuple<int, std::string_view, int>> reported;
+
+    std::lock_guard guard(lock);
+    if (!reported.emplace(int(kind), side, int(p)).second)
+        return;
+    std::fprintf(stderr,
+                 "cuda4cpu: warning: a copy with %s has its %s in %s, which CUDA leaves undefined. "
+                 "The copy goes ahead; CUDA4CPU_MEMCPY_DIRECTION=error makes it fail with "
+                 "cudaErrorInvalidMemcpyDirection.\n",
+                 kind_name(kind), side, place_name(p));
+}
+
+}
+
+bool check_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind)
+{
+    if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault)
+        return false;
+    const direction_check setting = direction_setting();
+    if (kind == cudaMemcpyDefault || setting == direction_check::ignore)
+        return true;
+
+    const bool dst_device = kind == cudaMemcpyHostToDevice || kind == cudaMemcpyDeviceToDevice;
+    const bool src_device = kind == cudaMemcpyDeviceToHost || kind == cudaMemcpyDeviceToDevice;
+    const pointer_place dst_place = place(dst), src_place = place(src);
+    // The place that a side mustn't be in
+    const pointer_place dst_wrong = dst_device ? pointer_place::host : pointer_place::device;
+    const pointer_place src_wrong = src_device ? pointer_place::host : pointer_place::device;
+    if (dst_place != dst_wrong && src_place != src_wrong)
+        return true;
+    if (setting == direction_check::error)
+        return false;
+    if (dst_place == dst_wrong)
+        report_copy_direction(kind, "destination", dst_place);
+    if (src_place == src_wrong)
+        report_copy_direction(kind, "source", src_place);
+    return true;
 }
 
 bool release_allocation(void *ptr)

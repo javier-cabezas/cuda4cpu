@@ -299,27 +299,11 @@ inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind = memory_k
     return cudaSuccess;
 }
 
-inline bool valid_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind)
-{
-    auto can_be_host = [](const void *ptr) {
-        allocation_info info;
-        return !find_allocation(ptr, info) ||
-               (info.kind != memory_kind::device && info.kind != memory_kind::mapped &&
-                info.kind != memory_kind::symbol);
-    };
-    auto can_be_device = [](const void *ptr) {
-        allocation_info info;
-        return find_allocation(ptr, info);
-    };
-    switch (kind) {
-    case cudaMemcpyHostToHost:     return can_be_host(dst) && can_be_host(src);
-    case cudaMemcpyHostToDevice:   return can_be_device(dst) && can_be_host(src);
-    case cudaMemcpyDeviceToHost:   return can_be_host(dst) && can_be_device(src);
-    case cudaMemcpyDeviceToDevice: return can_be_device(dst) && can_be_device(src);
-    case cudaMemcpyDefault:        return true;
-    default:                       return false;
-    }
-}
+//! Checks that dst and src are where kind says, by the registry of
+//! allocations. CUDA leaves a mismatch undefined, so by default this warns and
+//! the copy goes ahead; it is false (the copy must fail) only with
+//! CUDA4CPU_MEMCPY_DIRECTION=error.
+bool check_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind);
 
 inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
 {
@@ -329,7 +313,7 @@ inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind
         return cudaSuccess;
     if (dst == nullptr || src == nullptr)
         return record_error(cudaErrorInvalidValue);
-    if (!valid_copy_direction(dst, src, kind))
+    if (!check_copy_direction(dst, src, kind))
         return record_error(cudaErrorInvalidMemcpyDirection);
 
     copy_bytes(dst, src, count);
@@ -357,7 +341,7 @@ inline cudaError_t copy_3d(const cudaMemcpy3DParms &p)
                       p.srcPos.y * p.srcPtr.pitch + p.srcPos.x;
     auto *dst = static_cast<char *>(p.dstPtr.ptr) + p.dstPos.z * dst_slice + p.dstPos.y * p.dstPtr.pitch +
                 p.dstPos.x;
-    if (!valid_copy_direction(dst, src, p.kind))
+    if (!check_copy_direction(dst, src, p.kind))
         return record_error(cudaErrorInvalidMemcpyDirection);
     copy_rows(dst, p.dstPtr.pitch, dst_slice, src, p.srcPtr.pitch, src_slice, e.width, e.height, e.depth);
     return cudaSuccess;
