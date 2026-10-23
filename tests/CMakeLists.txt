@@ -39,11 +39,11 @@ set_tests_properties(divergent_barrier_ignore PROPERTIES
     ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=ignore")
 add_test(NAME divergent_warp_warn COMMAND divergent_barrier warp)
 set_tests_properties(divergent_warp_warn PROPERTIES
-    PASS_REGULAR_EXPRESSION "warning: lanes [0-9]+ and [0-9]+ of a warp in block \\([0-9], 0, 0\\) reached mismatched warp operations \\(__shfl_\\*_sync with mask 0xffffffff and warp vote with mask 0xffffffff\\)"
+    PASS_REGULAR_EXPRESSION "warning: lanes [0-9]+ and [0-9]+ of warp [0-9]+ of block \\([0-9], 0, 0\\) reached mismatched warp operations \\(__shfl_\\*_sync with mask 0xffffffff and warp vote with mask 0xffffffff\\)"
     ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=warn")
 add_test(NAME divergent_warp_mask COMMAND divergent_barrier warp_mask)
 set_tests_properties(divergent_warp_mask PROPERTIES
-    PASS_REGULAR_EXPRESSION "warning: lane 0 of block \\([0-9], 0, 0\\) called __shfl_\\*_sync with mask 0xfffffffe, which does not include its own lane"
+    PASS_REGULAR_EXPRESSION "warning: lane 0 of warp [0-9]+ of block \\([0-9], 0, 0\\) called __shfl_\\*_sync with mask 0xfffffffe, which does not include its own lane"
     ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=warn")
 add_test(NAME divergent_warp_ignore COMMAND divergent_barrier warp)
 set_tests_properties(divergent_warp_ignore PROPERTIES
