@@ -77,6 +77,15 @@ the next one run after that many iterations (`1`: every iteration). Like
 `CUDA4CPU_SCHEDULE`, a different value can expose code that depends on the
 order threads run in.
 
+**Pointer checks in `cudaFree` and `cudaMemcpy`.** Because every allocation is
+recorded with its kind, `cudaFree` rejects host stack/heap pointers, interior
+pointers (`ptr + k`), symbol addresses and double frees with
+`cudaErrorInvalidValue`, and `cudaMemcpy` (plus `cudaMemcpy2D`, `cudaMemcpy3D`,
+`cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol` and their async/HIP equivalents)
+rejects mismatched pointer and direction arguments (such as a `cudaMalloc`
+pointer passed as the host side of `cudaMemcpyHostToDevice`, or swapped `dst`
+and `src`) with `cudaErrorInvalidMemcpyDirection`.
+
 **AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
 fiber stacks, so out-of-bounds accesses in kernels are reported with the

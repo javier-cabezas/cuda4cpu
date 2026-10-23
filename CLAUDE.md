@@ -98,9 +98,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
   fiber cache) and `system` (topology via OpenMP plus optional libnuma).
-- `lib/memory.cpp`: the registry of allocations (for pointer attributes and
-  `cudaFree`), the unified memory hints that `cudaMemRangeGetAttribute`
-  returns, and HIP's virtual memory management (see Gotchas).
+- `lib/memory.cpp`: the registry of allocations (for pointer attributes,
+  `cudaFree`, and `cudaMemcpyKind` direction checks), the unified memory hints
+  that `cudaMemRangeGetAttribute` returns, and HIP's virtual memory management
+  (see Gotchas).
 - `tools/cuda4cpu-gdb.py`: gdb convenience functions (`$threadIdx()`, ...)
   and the `cuda4cpu` command (`cuda4cpu`, `cuda4cpu threads`,
   `cuda4cpu thread`), which read `thread_block::Vars_` and

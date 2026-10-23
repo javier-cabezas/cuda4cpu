@@ -108,6 +108,12 @@ static void pointer_attributes()
     EXPECT(hipHostUnregister(local) == hipSuccess);
     EXPECT(hipPointerGetAttributes(&a, local) == hipSuccess && a.type == hipMemoryTypeUnregistered);
 
+    // Copy directions must match where the pointers point
+    EXPECT(hipMemcpyHtoD(device, local, sizeof(int)) == hipSuccess);
+    EXPECT(hipMemcpyHtoD(local, device, sizeof(int)) == hipErrorInvalidMemcpyDirection);
+    EXPECT(hipMemcpyDtoH(device, local, sizeof(int)) == hipErrorInvalidMemcpyDirection);
+    EXPECT(hipMemcpyDtoD(device, local, sizeof(int)) == hipErrorInvalidMemcpyDirection);
+
     EXPECT(hipFree(device) == hipSuccess);
     EXPECT(hipPointerGetAttributes(&a, device) == hipSuccess && a.type == hipMemoryTypeUnregistered);
     // Freeing twice, or what hipMalloc didn't allocate, fails

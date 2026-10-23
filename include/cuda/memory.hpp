@@ -220,7 +220,8 @@ enum class memory_kind : unsigned char {
     host,         //!< cudaMallocHost, cudaHostAlloc
     managed,      //!< cudaMallocManaged
     registered,   //!< cudaHostRegister
-    mapped        //!< Physical memory mapped with HIP's virtual memory management
+    mapped,       //!< Physical memory mapped with HIP's virtual memory management
+    symbol        //!< __device__ or __constant__ variable
 };
 
 //! Allocates size bytes aligned to allocation_alignment, and records the
@@ -228,6 +229,9 @@ enum class memory_kind : unsigned char {
 //! compiler can't elide the allocation: it may assume that an inline
 //! allocation whose result is never dereferenced succeeds.
 void *allocate_aligned(size_t size, memory_kind kind, unsigned flags);
+
+//! Records a __device__ or __constant__ symbol in the allocation registry
+void register_symbol(const void *ptr, size_t size);
 
 //! An allocation that a pointer points into (a graph allocation's kind is
 //! device)
@@ -295,12 +299,38 @@ inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind = memory_k
     return cudaSuccess;
 }
 
+inline bool valid_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind)
+{
+    auto can_be_host = [](const void *ptr) {
+        allocation_info info;
+        return !find_allocation(ptr, info) ||
+               (info.kind != memory_kind::device && info.kind != memory_kind::mapped &&
+                info.kind != memory_kind::symbol);
+    };
+    auto can_be_device = [](const void *ptr) {
+        allocation_info info;
+        return find_allocation(ptr, info);
+    };
+    switch (kind) {
+    case cudaMemcpyHostToHost:     return can_be_host(dst) && can_be_host(src);
+    case cudaMemcpyHostToDevice:   return can_be_device(dst) && can_be_host(src);
+    case cudaMemcpyDeviceToHost:   return can_be_host(dst) && can_be_device(src);
+    case cudaMemcpyDeviceToDevice: return can_be_device(dst) && can_be_device(src);
+    case cudaMemcpyDefault:        return true;
+    default:                       return false;
+    }
+}
+
 inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
 {
     if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault)
         return record_error(cudaErrorInvalidMemcpyDirection);
-    if (count > 0 && (dst == nullptr || src == nullptr))
+    if (count == 0)
+        return cudaSuccess;
+    if (dst == nullptr || src == nullptr)
         return record_error(cudaErrorInvalidValue);
+    if (!valid_copy_direction(dst, src, kind))
+        return record_error(cudaErrorInvalidMemcpyDirection);
 
     copy_bytes(dst, src, count);
     return cudaSuccess;
@@ -327,6 +357,8 @@ inline cudaError_t copy_3d(const cudaMemcpy3DParms &p)
                       p.srcPos.y * p.srcPtr.pitch + p.srcPos.x;
     auto *dst = static_cast<char *>(p.dstPtr.ptr) + p.dstPos.z * dst_slice + p.dstPos.y * p.dstPtr.pitch +
                 p.dstPos.x;
+    if (!valid_copy_direction(dst, src, p.kind))
+        return record_error(cudaErrorInvalidMemcpyDirection);
     copy_rows(dst, p.dstPtr.pitch, dst_slice, src, p.srcPtr.pitch, src_slice, e.width, e.height, e.depth);
     return cudaSuccess;
 }
@@ -637,6 +669,7 @@ cudaError_t cudaPointerGetAttributes(cudaPointerAttributes *attributes, const vo
     switch (info.kind) {
     case detail::memory_kind::device:
     case detail::memory_kind::mapped:
+    case detail::memory_kind::symbol:
         *attributes = {cudaMemoryTypeDevice, 0, p, nullptr};
         break;
     case detail::memory_kind::managed:
@@ -819,8 +852,11 @@ cudaError_t cudaMemcpyToSymbol(T &&symbol, const void *src, size_t count, size_t
 {
     static_assert(std::is_lvalue_reference_v<T>,
                   "cudaMemcpyToSymbol takes the symbol itself, as in CUDA, not its address");
+    if (kind != cudaMemcpyHostToDevice && kind != cudaMemcpyDeviceToDevice && kind != cudaMemcpyDefault)
+        return detail::record_error(cudaErrorInvalidMemcpyDirection);
     if (offset + count > sizeof(symbol))
         return detail::record_error(cudaErrorInvalidValue);
+    detail::register_symbol(std::addressof(symbol), sizeof(symbol));
 
     return detail::copy(reinterpret_cast<char *>(std::addressof(symbol)) + offset, src, count, kind);
 }
@@ -832,8 +868,11 @@ cudaError_t cudaMemcpyFromSymbol(void *dst, T &&symbol, size_t count, size_t off
 {
     static_assert(std::is_lvalue_reference_v<T>,
                   "cudaMemcpyFromSymbol takes the symbol itself, as in CUDA, not its address");
+    if (kind != cudaMemcpyDeviceToHost && kind != cudaMemcpyDeviceToDevice && kind != cudaMemcpyDefault)
+        return detail::record_error(cudaErrorInvalidMemcpyDirection);
     if (offset + count > sizeof(symbol))
         return detail::record_error(cudaErrorInvalidValue);
+    detail::register_symbol(std::addressof(symbol), sizeof(symbol));
 
     return detail::copy(dst, reinterpret_cast<const char *>(std::addressof(symbol)) + offset, count, kind);
 }
@@ -845,8 +884,11 @@ cudaError_t cudaMemcpyToSymbolAsync(T &&symbol, const void *src, size_t count, s
 {
     static_assert(std::is_lvalue_reference_v<T>,
                   "cudaMemcpyToSymbolAsync takes the symbol itself, as in CUDA, not its address");
+    if (kind != cudaMemcpyHostToDevice && kind != cudaMemcpyDeviceToDevice && kind != cudaMemcpyDefault)
+        return detail::record_error(cudaErrorInvalidMemcpyDirection);
     if (offset + count > sizeof(symbol))
         return detail::record_error(cudaErrorInvalidValue);
+    detail::register_symbol(std::addressof(symbol), sizeof(symbol));
     return cudaMemcpyAsync(reinterpret_cast<char *>(std::addressof(symbol)) + offset, src, count, kind, stream);
 }
 
@@ -857,8 +899,11 @@ cudaError_t cudaMemcpyFromSymbolAsync(void *dst, T &&symbol, size_t count, size_
 {
     static_assert(std::is_lvalue_reference_v<T>,
                   "cudaMemcpyFromSymbolAsync takes the symbol itself, as in CUDA, not its address");
+    if (kind != cudaMemcpyDeviceToHost && kind != cudaMemcpyDeviceToDevice && kind != cudaMemcpyDefault)
+        return detail::record_error(cudaErrorInvalidMemcpyDirection);
     if (offset + count > sizeof(symbol))
         return detail::record_error(cudaErrorInvalidValue);
+    detail::register_symbol(std::addressof(symbol), sizeof(symbol));
     return cudaMemcpyAsync(dst, reinterpret_cast<const char *>(std::addressof(symbol)) + offset, count, kind,
                            stream);
 }
@@ -869,6 +914,7 @@ cudaError_t cudaGetSymbolAddress(void **devPtr, T &&symbol)
 {
     static_assert(std::is_lvalue_reference_v<T>,
                   "cudaGetSymbolAddress takes the symbol itself, as in CUDA, not its address");
+    detail::register_symbol(std::addressof(symbol), sizeof(symbol));
     *devPtr = const_cast<void *>(static_cast<const void *>(std::addressof(symbol)));
     return cudaSuccess;
 }

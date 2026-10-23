@@ -327,6 +327,14 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
     return ptr;
 }
 
+void register_symbol(const void *ptr, size_t size)
+{
+    auto &s = state();
+    const uintptr_t p = reinterpret_cast<uintptr_t>(ptr);
+    std::lock_guard lock(s.mutex);
+    s.allocations.try_emplace(p, allocation{size, memory_kind::symbol, 0});
+}
+
 bool release_allocation(void *ptr)
 {
     auto &s = state();
@@ -334,7 +342,7 @@ bool release_allocation(void *ptr)
         std::lock_guard lock(s.mutex);
         auto it = s.allocations.find(reinterpret_cast<uintptr_t>(ptr));
         if (it == s.allocations.end() || it->second.kind == memory_kind::registered ||
-            it->second.kind == memory_kind::mapped)
+            it->second.kind == memory_kind::mapped || it->second.kind == memory_kind::symbol)
             return false;
         s.allocations.erase(it);
     }
