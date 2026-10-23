@@ -30,14 +30,16 @@ foreach(line IN LISTS lines)
     endif()
 endforeach()
 
-# LeakSanitizer doesn't work under ptrace, and would make the program fail
+# LeakSanitizer doesn't work under ptrace, and would make the program fail.
+# The expected states of the block's threads are those of the default order,
+# whatever CUDA4CPU_SCHEDULE the tests run with.
 set(asan_options "detect_leaks=0")
 if(DEFINED ENV{ASAN_OPTIONS} AND NOT "$ENV{ASAN_OPTIONS}" STREQUAL "")
     set(asan_options "$ENV{ASAN_OPTIONS}:detect_leaks=0")
 endif()
 
 execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env "ASAN_OPTIONS=${asan_options}"
+    COMMAND ${CMAKE_COMMAND} -E env "ASAN_OPTIONS=${asan_options}" CUDA4CPU_SCHEDULE=forward
             "${GDB}" -q -batch -nx -ex "set debuginfod enabled off" -ex "source ${SCRIPT}"
             -ex "break barriers.cpp:${breakpoint} if \$threadIdx(\"x\") == 6 && \$blockIdx(\"x\") == 3"
             -ex run -ex "print \$threadIdx()" -ex "print \$blockIdx().x" -ex "print \$laneid()"
