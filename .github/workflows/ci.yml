@@ -65,7 +65,7 @@ jobs:
         id: setup
         uses: ./.github/actions/setup
         with:
-          packages: ninja-build libnuma-dev g++-14
+          packages: ninja-build libnuma-dev g++-14 gdb
           ccache-key: portable-context
 
       - name: Configure, build and test

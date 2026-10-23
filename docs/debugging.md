@@ -32,7 +32,10 @@ value. With a dimension (`$threadIdx("x")`), they return one component, which
 is what breakpoint conditions need. `cuda4cpu threads` lists the CUDA threads
 of the block and their states, and `cuda4cpu thread <x> [y] [z]` switches to
 another started CUDA thread so `bt` and `print` inspect its stack; `cuda4cpu
-thread` (or continuing execution) switches back to the running thread. Set
+thread` (or continuing execution) switches back to the running thread. The
+program isn't modified: gdb shows that thread's frames as callers of the frame
+the OS thread stopped in, which `bt` hides (frame numbers start at 1), so
+continuing from an IDE is safe too. Set
 `OMP_NUM_THREADS=1` to run all the blocks on one OS thread, one after another.
 
 **Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the

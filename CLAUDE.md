@@ -105,7 +105,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   and the `cuda4cpu` command (`cuda4cpu`, `cuda4cpu threads`,
   `cuda4cpu thread`), which read `thread_block::Vars_` and
   `thread_block::Current_`. The library is always built with `-g` so that gdb
-  knows those variables' types.
+  knows those variables' types. `cuda4cpu thread` never writes to the
+  program: a Python unwinder makes the suspended fiber's frames (from its
+  saved context, a stack pointer or a `jmp_buf` mangled with glibc's pointer
+  guard) the callers of the frame the OS thread stopped in, and a frame filter
+  hides that frame. Resuming in any way, MI included, drops the selection.
 - `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
   `extern __shared__ T x[];` in a `.cu` file and in the local headers it
   includes. It also:

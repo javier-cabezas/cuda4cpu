@@ -36,9 +36,9 @@ execute_process(
             -ex run -ex "print \$threadIdx()" -ex "print \$blockIdx().x" -ex "print \$laneid()"
             -ex cuda4cpu -ex bt
             -ex "cuda4cpu threads"
-            -ex "cuda4cpu thread 4" -ex "print t" -ex "print v" -ex "print \$threadIdx()"
+            -ex "cuda4cpu thread 4" -ex bt -ex "print t" -ex "print v" -ex "print \$threadIdx()"
             -ex "cuda4cpu thread" -ex "print t"
-            -ex kill
+            -ex "cuda4cpu thread 4" -ex delete -ex continue
             "${PROGRAM}"
     OUTPUT_VARIABLE output ERROR_VARIABLE errors RESULT_VARIABLE status)
 
@@ -59,7 +59,12 @@ foreach(expected
         "\\$4 = 4"
         "\\$5 = 3"
         "\\$6 = {x = 4, y = 0, z = 0}"
-        "\\$7 = 6")
+        "\\$7 = 6"
+        # The selected thread's backtrace hides the frames the OS thread
+        # stopped in, and the program still runs correctly once resumed
+        "switched to thread \\(4, 0, 0\\)[^#]*\n#[1-9]"
+        "switched to thread \\(4, 0, 0\\)[^$]*cuda4cpu::thread_block::fiber_main"
+        "exited normally")
     if(NOT output MATCHES "${expected}")
         message(FATAL_ERROR "gdb output does not match '${expected}':\n${output}\n${errors}")
     endif()
