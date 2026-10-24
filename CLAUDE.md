@@ -102,8 +102,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `cudaFree`), the unified memory hints that `cudaMemRangeGetAttribute`
   returns, and HIP's virtual memory management (see Gotchas).
 - `tools/cuda4cpu-gdb.py`: gdb convenience functions (`$threadIdx()`, ...)
-  and the `cuda4cpu` command, which read `thread_block::Vars_`. The library is
-  always built with `-g` so that gdb knows that variable's type.
+  and the `cuda4cpu` command (`cuda4cpu`, `cuda4cpu threads`,
+  `cuda4cpu thread`), which read `thread_block::Vars_` and
+  `thread_block::Current_`. The library is always built with `-g` so that gdb
+  knows those variables' types. `cuda4cpu thread` never writes to the
+  program: a Python unwinder makes the suspended fiber's frames (from its
+  saved context, a stack pointer or a `jmp_buf` mangled with glibc's pointer
+  guard) the callers of the frame the OS thread stopped in, and a frame filter
+  hides that frame. Resuming in any way, MI included, drops the selection.
 - `tools/cuda4cpu-rewrite`: rewrites `kernel<<<...>>>(...)` and
   `extern __shared__ T x[];` in a `.cu` file and in the local headers it
   includes. It also:
@@ -231,8 +237,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     report). `divergent_barrier_later`: one thread diverges after every thread
     has started, and the report must name its line numbers.
   - `gdb` (`gdb_test.cmake`, if gdb is installed): a breakpoint conditioned on
-    `$threadIdx("x")`, the built-in variables, and a backtrace that ends where
-    the fiber started
+    `$threadIdx("x")`, the built-in variables, a backtrace that ends where
+    the fiber started, listing the block's threads (`cuda4cpu threads`), and
+    switching to a suspended CUDA thread (`cuda4cpu thread`)
   - `rewrite_unit` (`rewrite/test_rewrite.py`): exact rewriter output, the
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
