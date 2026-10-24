@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <barrier>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -83,6 +84,10 @@ struct kernel_closure {
     std::barrier<> *grid = nullptr;
     //! The kernel's choice of interleaving
     interleave_tuner *tuner = nullptr;
+    //! OS thread time per block, in nanoseconds, in the kernel's last launch
+    //! of several blocks (0 before the first): it sizes the chunks of blocks
+    //! of the next launch
+    std::atomic<uint64_t> *block_time = nullptr;
 };
 
 }
@@ -448,7 +453,7 @@ template <typename F, typename... Stored>
 struct kernel_call : kernel_closure {
     template <typename... Args>
     kernel_call(F f, Args &&...a) :
-        kernel_closure{&run_direct_impl, &run_one_impl, nullptr, &tuner},
+        kernel_closure{&run_direct_impl, &run_one_impl, nullptr, &tuner, &block_time},
         func(std::move(f)),
         args(std::forward<Args>(a)...)
     {
@@ -530,6 +535,7 @@ struct kernel_call : kernel_closure {
 
     //! One per launch site: the rewriter launches through a lambda of its own
     static inline interleave_tuner tuner;
+    static inline std::atomic<uint64_t> block_time{0};
 };
 
 //! CUDA's limits: launches outside them fail on a GPU, so they fail here too
@@ -541,7 +547,27 @@ inline bool valid_launch(const launch_conf &conf)
            g.x > 0 && g.y > 0 && g.z > 0 && g.x <= 2147483647u && g.y <= 65535 && g.z <= 65535;
 }
 
-//! Runs every block of a launch whose configuration is valid
+//! Blocks per chunk of a launch, which OpenMP hands out dynamically, so that
+//! blocks of uneven cost balance across OS threads. Chunks are contiguous,
+//! which keeps neighboring blocks together. With about 128 chunks per OS
+//! thread, the OS threads finish close together: 8, the size before the
+//! kernel's first launch, left them idle for 5 to 9% of cuda-samples/scan's
+//! time, waiting for the last chunk. But a chunk must take at least 10 us
+//! (from the time per block of the kernel's last launch), or taking it from
+//! the shared counter costs as much as running its blocks: a launch of 4096
+//! blocks of 0.3 us went from 0.07 to 0.15 ms.
+inline size_t chunk_size(size_t nblocks, size_t threads, uint64_t block_time)
+{
+    const size_t coarse = std::max<size_t>(1, nblocks / (threads * 8));
+    if (block_time == 0)
+        return coarse;
+    const size_t fine = std::max<size_t>(1, nblocks / (threads * 128));
+    const size_t shortest = size_t((10000 + block_time - 1) / block_time);
+    return std::min(coarse, std::max(fine, shortest));
+}
+
+//! Runs every block of a launch whose configuration is valid. Only the OS
+//! threads that get blocks acquire (and, the first time, create) fibers.
 inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
 {
     const size_t nblocks = conf.nblocks();
@@ -555,13 +581,8 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
         return;
     }
     const size_t threads = std::min(nblocks, size_t(omp_get_max_threads()));
-
-    // Contiguous chunks of blocks, handed out dynamically so that blocks of
-    // uneven cost balance across OS threads. About 8 chunks per OS thread
-    // keeps neighboring blocks together and the scheduling overhead low.
-    // Only the OS threads that get blocks acquire (and, the first time,
-    // create) fibers.
-    const size_t chunk = std::max<size_t>(1, nblocks / (threads * 8));
+    const size_t chunk = chunk_size(nblocks, threads, kernel.block_time->load(std::memory_order_relaxed));
+    const auto start = std::chrono::steady_clock::now();
 
     #pragma omp parallel num_threads(int(threads))
     {
@@ -574,6 +595,8 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
             block->execute(kernel, conf.block_id(i));
         }
     }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+    kernel.block_time->store(uint64_t(elapsed.count()) * threads / nblocks, std::memory_order_relaxed);
 }
 
 //! Most blocks a cooperative launch can have: one per multiprocessor, which

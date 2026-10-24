@@ -1,8 +1,10 @@
 # How it works
 
 - **Grid → OpenMP threads.** `launch(...).call(...)` splits the grid's thread
-  blocks into contiguous chunks, about 8 per OS thread, and hands them out to
-  the threads dynamically, so blocks of uneven cost balance out. There is one
+  blocks into contiguous chunks and hands them out to the threads
+  dynamically, so blocks of uneven cost balance out. Chunks are small, about
+  128 per OS thread, so that the threads finish close together, but each
+  takes at least about 10 µs, judging by the kernel's previous launch. There is one
   OS thread per CPU core, unless `OMP_NUM_THREADS` says otherwise.
 - **Block → fibers.** Within a block, each CUDA thread is a user-level fiber
   with its own stack. On x86-64, switching fibers takes a dozen instructions

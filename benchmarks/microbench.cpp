@@ -143,11 +143,13 @@ __global__ void stencil(float *out, const float *in, int w, int h)
                                  in[(y - 1) * w + x] + in[(y + 1) * w + x]);
 }
 
-// Block b does work proportional to b, like a triangular loop nest
-__global__ void triangular(float *out, int scale)
+// Block b does work proportional to b, like a triangular loop nest, or to
+// the number of blocks after it
+__global__ void triangular(float *out, int scale, bool decreasing)
 {
+    const int work = int(decreasing ? gridDim.x - 1 - blockIdx.x : blockIdx.x) * scale;
     float acc = 0.f;
-    for (int i = 0; i < int(blockIdx.x) * scale; ++i)
+    for (int i = 0; i < work; ++i)
         acc += float(i) * 1e-7f;
     out[size_t(blockIdx.x) * blockDim.x + threadIdx.x] = acc;
 }
@@ -315,7 +317,8 @@ int main()
         const unsigned blocks = 512, threads = 64;
         const int scale = 40;
         std::vector<float> out(blocks * threads);
-        double ms = median_ms([&] { launch(triangular, blocks, threads).call(out.data(), scale); });
+        double ms = median_ms([&] { launch(triangular, blocks, threads).call(out.data(), scale, false); });
+        double down = median_ms([&] { launch(triangular, blocks, threads).call(out.data(), scale, true); });
         double omp = median_ms([&] {
             #pragma omp parallel for schedule(dynamic)
             for (unsigned b = 0; b < blocks; ++b) {
@@ -328,5 +331,6 @@ int main()
         });
         row("triangular, 512 blocks of increasing cost", ms, "ms");
         row("  same loop with OpenMP schedule(dynamic)", omp, "ms");
+        row("triangular, 512 blocks of decreasing cost", down, "ms");
     }
 }

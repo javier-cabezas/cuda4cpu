@@ -26,20 +26,17 @@ Out of scope: inline PTX, the driver API, and graphics interop.
 
 ## Performance
 
-Measured on the compatibility suite (131.8 s in total for the programs that
-pass, Clang 22, `-march=native`, 16 OS threads). `cuda-samples/scan` takes 42%
+Measured on the compatibility suite (124.5 s in total for the programs that
+pass, Clang 22, `-march=native`, 16 OS threads). `cuda-samples/scan` takes 41%
 of it: about half of its time goes to barriers, because it waits at
 `__syncthreads()` after every two or three operations.
 
-1. **Find out where idle OpenMP time comes from.** OpenMP threads wait for
-   9.5% of `scan`'s time and 16% of `streamcluster`'s. If it's uneven work at
-   the end of each launch, smaller chunks of blocks would help.
-2. **Inline the barrier fast path into kernels.** A barrier costs about 6.5 ns
+1. **Inline the barrier fast path into kernels.** A barrier costs about 6.5 ns
    per CUDA thread on one core, and a bare fiber switch 3.5 ns. Moving the
    fast path into the header would save the call and some of the rest, at
    most about a quarter of `scan`'s time, at the cost of exposing the
    scheduler's state in a public header.
-3. **Remove barriers at compile time.** Splitting a kernel at each barrier
+2. **Remove barriers at compile time.** Splitting a kernel at each barrier
    and running each piece as a loop over the block's threads (as POCL and
    CuPBoP do) avoids switching altogether, and is the only way to make
    barrier-dense kernels an order of magnitude faster. It needs a Clang-based
