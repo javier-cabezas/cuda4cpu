@@ -469,6 +469,13 @@ struct thread_block::fibers {
     context caller;                   //!< Where execute() resumes when the block completes
     context discarded;                //!< Saved context of fibers that never resume
 
+    //! Blocks run, and whether one of them ran in fiber mode, which touched
+    //! the threads' stacks for the first time. The interleave tuner times
+    //! neither the first block nor the first in fiber mode: those took page
+    //! faults that later blocks don't.
+    unsigned blocks_run = 0;
+    bool stacks_touched = false;
+
     //! Saves the running context in save and resumes load
     void switch_to(context &save, context &load)
     {
@@ -884,15 +891,130 @@ void thread_block::reserve_shared(size_t bytes)
 namespace {
 
 //! Loop iterations each thread runs before the next one, for each candidate
-//! of interleave_tuner: never switch, every 4 and every 16. In a grid-stride
-//! loop of 256 threads, switching every 4 iterations ran 10 times faster than
-//! never: past 16, the block's lines no longer fit in L1 before the next
-//! thread reuses them.
-constexpr unsigned interleave_slices[detail::interleave_tuner::candidates] = {~0u, 4, 16};
+//! of interleave_tuner, in the order they are timed: every 4, 8 and 16, and
+//! never switch. In a grid-stride loop of 256 threads, switching every 4
+//! iterations ran 10 times faster than never: past 16, the block's lines no
+//! longer fit in L1 before the next thread reuses them. Rodinia's
+//! streamcluster runs fastest with 8. Never switching comes last, because it
+//! is the candidate that can be slowest by far, and it is then rejected
+//! after a few blocks.
+constexpr unsigned interleave_slices[detail::interleave_tuner::candidates] = {4, 8, 16, ~0u};
 
-//! Blocks timed with each candidate before choosing. The fastest of them
-//! counts, so the first ones, which touch fresh fiber stacks, don't decide.
-constexpr unsigned interleave_trials = 3;
+//! A candidate is rejected once this many of its blocks took more than twice
+//! the best median so far
+constexpr unsigned interleave_rejections = 3;
+
+//! A block that the interleave tuner times
+struct tuner_trial {
+    detail::interleave_tuner *tuner = nullptr;
+    int candidate = -1;
+    bool alone = false;  //!< No block of another candidate ran while it did
+    unsigned started[detail::interleave_tuner::candidates];  //!< Blocks of each candidate started before it
+    std::chrono::steady_clock::time_point start;
+};
+
+//! Starts timing a block with the first candidate that hasn't been decided.
+//! Candidates take turns so that most of their blocks run only next to blocks
+//! of the same candidate: next to blocks that never switch, whose accesses
+//! are spread over more memory, a block took up to twice as long.
+tuner_trial begin_trial(detail::interleave_tuner &tuner)
+{
+    using detail::interleave_tuner;
+    tuner_trial t;
+    t.tuner     = &tuner;
+    t.candidate = interleave_tuner::candidates - 1;
+    for (int c = 0; c < interleave_tuner::candidates; ++c) {
+        if (tuner.median[c].load(std::memory_order_relaxed) == 0) {
+            t.candidate = c;
+            break;
+        }
+    }
+    tuner.started[t.candidate].fetch_add(1, std::memory_order_relaxed);
+    t.alone = true;
+    for (int c = 0; c < interleave_tuner::candidates; ++c) {
+        t.started[c] = tuner.started[c].load(std::memory_order_relaxed);
+        if (c != t.candidate && t.started[c] != tuner.finished[c].load(std::memory_order_relaxed))
+            t.alone = false;
+    }
+    t.start = std::chrono::steady_clock::now();
+    return t;
+}
+
+//! The lowest median of the candidates decided so far (~0 if none)
+uint64_t best_median(const detail::interleave_tuner &tuner)
+{
+    uint64_t best = ~uint64_t(0);
+    for (const auto &median : tuner.median) {
+        const uint64_t m = median.load();
+        if (m != 0)
+            best = std::min(best, m);
+    }
+    return best;
+}
+
+//! Decides candidate c with its median (~0: rejected), and chooses the
+//! candidate with the lowest median once all are decided. The fastest block
+//! would be noisy: blocks differ in their work, and some are preempted.
+void decide_candidate(detail::interleave_tuner &tuner, int c, uint64_t median)
+{
+    using detail::interleave_tuner;
+    uint64_t undecided = 0;
+    if (!tuner.median[c].compare_exchange_strong(undecided, median))
+        return;
+    int best = -1;
+    uint64_t best_median = ~uint64_t(0);
+    for (int k = 0; k < interleave_tuner::candidates; ++k) {
+        const uint64_t m = tuner.median[k].load();
+        if (m == 0)
+            return;
+        if (best < 0 || m < best_median) {
+            best        = k;
+            best_median = m;
+        }
+    }
+    tuner.choice.store(best, std::memory_order_relaxed);
+}
+
+//! Ends a trial. A warm block (timed) that ran alone becomes a sample, and
+//! the candidate's last sample decides it; a warm block, alone or not, that
+//! took more than twice the best median counts towards rejecting it.
+void end_trial(const tuner_trial &t, bool timed)
+{
+    using detail::interleave_tuner;
+    auto &tuner = *t.tuner;
+    const int c = t.candidate;
+    const uint64_t nanoseconds = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - t.start).count());
+    bool alone = t.alone;
+    for (int k = 0; k < interleave_tuner::candidates; ++k) {
+        if (k != c && tuner.started[k].load(std::memory_order_relaxed) != t.started[k])
+            alone = false;
+    }
+    tuner.finished[c].fetch_add(1, std::memory_order_relaxed);
+    if (!timed || tuner.median[c].load(std::memory_order_relaxed) != 0)
+        return;
+
+    const uint64_t best = best_median(tuner);
+    if (best != ~uint64_t(0) && nanoseconds / 2 > best &&
+        tuner.slow[c].fetch_add(1, std::memory_order_relaxed) + 1 == interleave_rejections) {
+        decide_candidate(tuner, c, ~uint64_t(0));
+        return;
+    }
+    if (!alone)
+        return;
+    const unsigned slot = tuner.taken[c].fetch_add(1, std::memory_order_relaxed);
+    if (slot >= interleave_tuner::samples)
+        return;
+    tuner.nanoseconds[c][slot].store(nanoseconds, std::memory_order_relaxed);
+    // Each sample's store happens before the last increment
+    if (tuner.stored[c].fetch_add(1, std::memory_order_acq_rel) + 1 != interleave_tuner::samples)
+        return;
+    uint64_t times[interleave_tuner::samples];
+    for (unsigned k = 0; k < interleave_tuner::samples; ++k)
+        times[k] = tuner.nanoseconds[c][k].load(std::memory_order_relaxed);
+    std::nth_element(times, times + interleave_tuner::samples / 2, times + interleave_tuner::samples);
+    decide_candidate(tuner, c, std::max<uint64_t>(times[interleave_tuner::samples / 2], 1));
+}
 
 }
 
@@ -938,20 +1060,19 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
 
     // The kernel's interleaving, or a trial of one while it is being chosen
     detail::interleave_tuner *tuner = kernel.tuner;
-    int trial = -1;
+    tuner_trial trial;
     slice_ = settings::get().interleave;
     if (slice_ == 0 && tuner != nullptr) {
         const int choice = tuner->choice.load(std::memory_order_relaxed);
         if (choice >= 0) {
             slice_ = interleave_slices[choice];
         } else {
-            trial  = int(tuner->trials.fetch_add(1, std::memory_order_relaxed) % detail::interleave_tuner::candidates);
-            slice_ = interleave_slices[trial];
+            trial  = begin_trial(*tuner);
+            slice_ = interleave_slices[trial.candidate];
         }
     }
     if (slice_ == 0)
         slice_ = ~0u;
-    const auto start = trial >= 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 
     thread_block *prev = Current_;
     builtin_vars prev_vars = Vars_;
@@ -965,29 +1086,12 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     Current_ = prev;
     Vars_    = prev_vars;
 
-    if (trial >= 0)
-        record_trial(*tuner, trial, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                 std::chrono::steady_clock::now() - start).count()));
-}
-
-//! Records the time of a block run with candidate trial, and chooses the
-//! fastest candidate once each has run interleave_trials blocks
-void thread_block::record_trial(detail::interleave_tuner &tuner, int trial, uint64_t nanoseconds)
-{
-    auto &fastest = tuner.fastest[trial];
-    for (uint64_t seen = fastest.load(std::memory_order_relaxed); nanoseconds < seen &&
-         !fastest.compare_exchange_weak(seen, nanoseconds, std::memory_order_relaxed); ) {
-    }
-    tuner.blocks[trial].fetch_add(1, std::memory_order_relaxed);
-
-    int best = 0;
-    for (int c = 0; c < detail::interleave_tuner::candidates; ++c) {
-        if (tuner.blocks[c].load(std::memory_order_relaxed) < interleave_trials)
-            return;
-        if (tuner.fastest[c].load(std::memory_order_relaxed) < tuner.fastest[best].load(std::memory_order_relaxed))
-            best = c;
-    }
-    tuner.choice.store(best, std::memory_order_relaxed);
+    // A block that took this thread_block's first page faults isn't timed
+    const bool warm = f.blocks_run > 0 && (direct_ || f.stacks_touched);
+    ++f.blocks_run;
+    f.stacks_touched |= !direct_;
+    if (trial.tuner != nullptr)
+        end_trial(trial, warm);
 }
 
 void thread_block::interleave()

@@ -393,10 +393,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `slice_` iterations before the next switch. `execute()` sets `slice_` per
   block from the kernel's `interleave_tuner` (a static member of each
   `kernel_call` instantiation, so one per launch site): the first blocks try
-  `interleave_slices` (off, 4, 16) in turn, three each, and the fastest block
-  of each candidate decides. A grid-stride copy went from 199 to 35 ms, and
-  page walks per thousand instructions from 297 to 1 in
-  `cuda-samples/alignedTypes`. `CUDA4CPU_INTERLEAVE` fixes the slice.
+  `interleave_slices` (4, 8, 16, off) one after another (`begin_trial`), and
+  the lowest median of 15 blocks decides. A block counts only if no block of
+  another candidate ran at the same time, and if it isn't its
+  `thread_block`'s first, or first in fiber mode: those take the page faults
+  of its stacks. A candidate is rejected once 3 of its blocks take more than
+  twice the best median so far, which is why off comes last: in
+  `alignedTypes` its blocks took up to 30 times longer. Before, the fastest
+  of 3 blocks per candidate, run next to blocks of the other candidates,
+  made Rodinia's streamcluster take 11 to 22 s from run to run. A grid-stride
+  copy went from 199 to 35 ms, and page walks per thousand instructions from
+  297 to 1 in `cuda-samples/alignedTypes`. `CUDA4CPU_INTERLEAVE` fixes the
+  slice.
 - Releases are rechecked whenever the set of lanes being waited for shrinks:
   when a thread returns, or starts waiting at `__syncthreads()`, at a tile
   barrier, or (for `__activemask()`) at any warp operation. That is why
