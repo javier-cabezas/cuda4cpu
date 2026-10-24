@@ -1,12 +1,27 @@
-foreach(test IN ITEMS atomics barriers cooperative_groups divergent_barrier events launch runtime schedule stacks stencil2d
-                      stencil3d warp)
+foreach(test IN ITEMS atomics barriers cooperative_groups divergent_barrier events launch memcpy_direction runtime
+                      schedule stacks stencil2d stencil3d warp)
     add_executable(${test} ${test}.cpp)
     set_target_properties(${test} PROPERTIES CXX_EXTENSIONS OFF)
     target_link_libraries(${test} PRIVATE cuda4cpu::cuda4cpu)
-    if(NOT test MATCHES "^(divergent_barrier|schedule)$")
+    if(NOT test MATCHES "^(divergent_barrier|memcpy_direction|schedule)$")
         add_test(NAME ${test} COMMAND ${test})
     endif()
 endforeach()
+
+# runtime checks the errors of copies whose pointers don't match their kind
+set_tests_properties(runtime PROPERTIES ENVIRONMENT "CUDA4CPU_MEMCPY_DIRECTION=error")
+
+# Those copies with each CUDA4CPU_MEMCPY_DIRECTION: warn (the default) reports
+# each kind of mistake once
+add_test(NAME memcpy_direction_warn COMMAND memcpy_direction warn)
+set_tests_properties(memcpy_direction_warn PROPERTIES
+    PASS_REGULAR_EXPRESSION "cuda4cpu: warning: a copy with cudaMemcpyHostToDevice has its destination in host memory that CUDA didn't allocate[^\n]*\ncuda4cpu: warning: a copy with cudaMemcpyHostToDevice has its source in device memory[^\n]*\ncuda4cpu: warning: [^\n]*cudaMemcpyDeviceToHost[^\n]*\n.*memcpy_direction: passed")
+add_test(NAME memcpy_direction_error COMMAND memcpy_direction error)
+set_tests_properties(memcpy_direction_error PROPERTIES
+    ENVIRONMENT "CUDA4CPU_MEMCPY_DIRECTION=error" FAIL_REGULAR_EXPRESSION "warning")
+add_test(NAME memcpy_direction_ignore COMMAND memcpy_direction ignore)
+set_tests_properties(memcpy_direction_ignore PROPERTIES
+    ENVIRONMENT "CUDA4CPU_MEMCPY_DIRECTION=ignore" FAIL_REGULAR_EXPRESSION "warning")
 
 # A missing __syncthreads() that the default order hides and the others expose
 add_test(NAME schedule_forward COMMAND schedule hidden)
@@ -156,6 +171,7 @@ foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/templ
     cuda4cpu_add_hip_sources(hip_${stem} ${source})
     add_test(NAME hip_${stem} COMMAND hip_${stem})
 endforeach()
+set_tests_properties(hip_memory PROPERTIES ENVIRONMENT "CUDA4CPU_MEMCPY_DIRECTION=error")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit

@@ -77,6 +77,27 @@ the next one run after that many iterations (`1`: every iteration). Like
 `CUDA4CPU_SCHEDULE`, a different value can expose code that depends on the
 order threads run in.
 
+**Pointer checks in `cudaFree` and `cudaMemcpy`.** Because every allocation is
+recorded with its kind, `cudaFree` rejects host stack/heap pointers, interior
+pointers (`ptr + k`), symbol addresses and double frees with
+`cudaErrorInvalidValue`. Copies (`cudaMemcpy`, `cudaMemcpy2D`, `cudaMemcpy3D`,
+their async and HIP equivalents) check that their pointers are where their
+`cudaMemcpyKind` says: a `cudaMalloc` pointer passed as the host side of
+`cudaMemcpyHostToDevice`, or swapped `dst` and `src`, is reported:
+
+```
+cuda4cpu: warning: a copy with cudaMemcpyHostToDevice has its destination in host memory that CUDA
+didn't allocate, which CUDA leaves undefined. The copy goes ahead; CUDA4CPU_MEMCPY_DIRECTION=error
+makes it fail with cudaErrorInvalidMemcpyDirection.
+```
+
+CUDA leaves such copies undefined, and a GPU may make them anyway, so
+`CUDA4CPU_MEMCPY_DIRECTION` chooses what happens: `warn` (the default, once
+for each kind of mistake), `error` (the copy fails with
+`cudaErrorInvalidMemcpyDirection`) or `ignore`. Pinned, registered and managed
+memory can be either side. `cudaMemcpyToSymbol` and `cudaMemcpyFromSymbol`
+always reject a kind they don't accept, as CUDA does.
+
 **AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
 fiber stacks, so out-of-bounds accesses in kernels are reported with the

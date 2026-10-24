@@ -293,13 +293,36 @@ int main()
     // Copies and memset
     {
         int src[4] = {1, 2, 3, 4}, dst[4] = {};
+        int *dev = nullptr, *managed = nullptr, *pinned = nullptr;
+        EXPECT(cudaMalloc(&dev, sizeof(src)) == cudaSuccess);
+        EXPECT(cudaMallocManaged(&managed, sizeof(src)) == cudaSuccess);
+        EXPECT(cudaMallocHost(&pinned, sizeof(src)) == cudaSuccess);
+
         EXPECT(cudaMemcpy(dst, src, sizeof(src), cudaMemcpyHostToHost) == cudaSuccess);
         EXPECT(std::memcmp(dst, src, sizeof(src)) == 0);
         EXPECT(cudaMemcpy(dst, src, sizeof(src), cudaMemcpyKind(7)) == cudaErrorInvalidMemcpyDirection);
         EXPECT(cudaGetLastError() == cudaErrorInvalidMemcpyDirection);
+
+        // Direction checks: device vs host pointers, plus managed and pinned
+        EXPECT(cudaMemcpy(dev, src, sizeof(src), cudaMemcpyHostToDevice) == cudaSuccess);
+        EXPECT(cudaMemcpy(src, dev, sizeof(src), cudaMemcpyHostToDevice) == cudaErrorInvalidMemcpyDirection);
+        EXPECT(cudaMemcpy(dev, src, sizeof(src), cudaMemcpyDeviceToHost) == cudaErrorInvalidMemcpyDirection);
+        EXPECT(cudaMemcpy(dst, dev, sizeof(src), cudaMemcpyDeviceToHost) == cudaSuccess);
+        EXPECT(cudaMemcpy(dev, dst, sizeof(src), cudaMemcpyHostToHost) == cudaErrorInvalidMemcpyDirection);
+        EXPECT(cudaMemcpy(dst, src, sizeof(src), cudaMemcpyDeviceToDevice) == cudaErrorInvalidMemcpyDirection);
+        EXPECT(cudaMemcpy(managed, src, sizeof(src), cudaMemcpyHostToDevice) == cudaSuccess);
+        EXPECT(cudaMemcpy(managed, dev, sizeof(src), cudaMemcpyDeviceToHost) == cudaSuccess);
+        EXPECT(cudaMemcpy(dev, pinned, sizeof(src), cudaMemcpyDeviceToDevice) == cudaSuccess);
+        EXPECT(cudaMemcpy2D(src, sizeof(src), dev, sizeof(src), sizeof(src), 1, cudaMemcpyHostToDevice) ==
+               cudaErrorInvalidMemcpyDirection);
+        cudaGetLastError();
+
         EXPECT(cudaMemcpyAsync(dst, src, sizeof(src), cudaMemcpyDefault) == cudaSuccess);
         EXPECT(cudaMemset(dst, 0xff, sizeof(dst)) == cudaSuccess && dst[3] == -1);
         EXPECT(cudaMemsetAsync(dst, 0, sizeof(dst)) == cudaSuccess && dst[0] == 0);
+        cudaFree(dev);
+        cudaFree(managed);
+        cudaFreeHost(pinned);
     }
 
     // Large copies and memsets, which several OS threads share: unaligned,
@@ -357,11 +380,18 @@ int main()
 
         int count = -1;
         EXPECT(cudaMemcpyFromSymbol(&count, counter, sizeof(int)) == cudaSuccess && count == 1);
+        EXPECT(cudaMemcpyToSymbol(counter, &zero, sizeof(int), 0, cudaMemcpyDeviceToHost) ==
+               cudaErrorInvalidMemcpyDirection);
+        EXPECT(cudaMemcpyFromSymbol(&count, counter, sizeof(int), 0, cudaMemcpyHostToDevice) ==
+               cudaErrorInvalidMemcpyDirection);
+        cudaGetLastError();
 
         void *address = nullptr;
         size_t size = 0;
         EXPECT(cudaGetSymbolAddress(&address, table) == cudaSuccess && address == static_cast<void *>(table));
         EXPECT(cudaGetSymbolSize(&size, table) == cudaSuccess && size == sizeof(table));
+        EXPECT(cudaFree(address) == cudaErrorInvalidValue);
+        cudaGetLastError();
     }
 
     // Events and streams with CUDA's default arguments
