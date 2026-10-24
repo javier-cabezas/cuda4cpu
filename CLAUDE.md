@@ -275,8 +275,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   stores the callable and the arguments (a `std::tuple`) in a
   `detail::kernel_call<F, Stored...>`. That type provides the two thread loops
   instantiated for it, `run_direct` and `run_one`, and `detail::run_grid`
-  runs the blocks in an `omp for schedule(dynamic, chunk)` loop, with about 8
-  contiguous chunks per OS thread. The parallel region has at most one OS
+  runs the blocks in an `omp for schedule(dynamic, chunk)` loop. `chunk_size`
+  makes about 128 contiguous chunks per OS thread, so that they finish close
+  together, but chunks of at least 10 µs, from the time per block of the
+  launch site's previous launch (`kernel_call::block_time`, which `run_grid`
+  measures), and never more than 8 per OS thread, the size of a site's first
+  launch. With 8 chunks per thread, OS threads waited for the last chunk
+  for 5 to 9% of `scan`'s time; with chunks of one block, tiny blocks spent
+  as long taking them as running them. `guided` scheduling was rejected:
+  libgomp's first chunk is 1/16 of the grid, and blocks of decreasing cost
+  took twice as long. The parallel region has at most one OS
   thread per block, and a single-block grid runs on the calling thread
   without one: waking the OpenMP threads costs about 2 µs, 5x an empty
   256-thread block. With a lambda, the kernel is known at
