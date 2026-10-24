@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(cuda4cpu
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Library and headers to make CUDA codes run seamlessly on CPUs"
     HOMEPAGE_URL "https://github.com/javier-cabezas/cuda4cpu"
     LANGUAGES CXX)

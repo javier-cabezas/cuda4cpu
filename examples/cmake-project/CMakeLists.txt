@@ -6,7 +6,7 @@ project(cuda4cpu_example CXX)
 include(FetchContent)
 FetchContent_Declare(cuda4cpu
     GIT_REPOSITORY https://github.com/javier-cabezas/cuda4cpu.git
-    GIT_TAG v0.1.0)
+    GIT_TAG v0.2.0)
 FetchContent_MakeAvailable(cuda4cpu)
 
 add_executable(vecadd)
