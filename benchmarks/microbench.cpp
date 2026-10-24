@@ -209,7 +209,8 @@ int main()
             cudaMemcpy(dev, host.data(), bytes, cudaMemcpyHostToDevice);
         });
         double fresh_set = fresh_ms(bytes, [&](void *dev) { cudaMemset(dev, 0, bytes); });
-        double copy = median_ms([&] { cudaMemcpy(touched.data(), host.data(), bytes, cudaMemcpyHostToDevice); });
+        // Both are host vectors, which cudaMemcpyDefault allows
+        double copy = median_ms([&] { cudaMemcpy(touched.data(), host.data(), bytes, cudaMemcpyDefault); });
         row("cudaMemcpy 256 MB into a new allocation", fresh_copy, "ms");
         row("cudaMemset 256 MB of a new allocation", fresh_set, "ms");
         row("cudaMemcpy 256 MB into touched memory", copy, "ms");
