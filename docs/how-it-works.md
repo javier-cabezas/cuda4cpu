@@ -27,8 +27,9 @@
   a grid-stride loop touches a new page per iteration, and page walks
   dominate. cuda4cpu-rewrite inserts a cheap tick at the top of the outermost
   loops of device functions, and every few iterations the next CUDA thread of
-  the block runs. Each kernel launch site times its first blocks with no
-  turns, with turns every 4 iterations and every 16, and keeps the fastest.
+  the block runs. Each kernel launch site times its first blocks with turns
+  every 4, 8 and 16 iterations, and with no turns, one option after another,
+  and keeps the fastest.
   A 50 MB grid-stride copy ran 5.7 times faster.
 - **`__syncthreads()` → cooperative switch.** When a CUDA thread first reaches
   a barrier, the block switches to fiber mode. From then on, each CUDA thread

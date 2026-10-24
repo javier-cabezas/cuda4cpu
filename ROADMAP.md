@@ -31,21 +31,15 @@ pass, Clang 22, `-march=native`, 16 OS threads). `cuda-samples/scan` takes 42%
 of it: about half of its time goes to barriers, because it waits at
 `__syncthreads()` after every two or three operations.
 
-1. **Make the interleave tuner reliable.** Each launch site times each
-   candidate (no turns, turns every 4 iterations, every 16) on 3 blocks and
-   keeps the fastest, and 3 blocks are too few: Rodinia's `streamcluster`
-   takes 10.8 to 14 s from run to run (32.8 s without turns, 11.1 s with
-   turns every 4 iterations, 23.4 s every 16). Time more blocks per
-   candidate, and try a candidate of 8.
-2. **Find out where idle OpenMP time comes from.** OpenMP threads wait for
+1. **Find out where idle OpenMP time comes from.** OpenMP threads wait for
    9.5% of `scan`'s time and 16% of `streamcluster`'s. If it's uneven work at
    the end of each launch, smaller chunks of blocks would help.
-3. **Inline the barrier fast path into kernels.** A barrier costs about 6.5 ns
+2. **Inline the barrier fast path into kernels.** A barrier costs about 6.5 ns
    per CUDA thread on one core, and a bare fiber switch 3.5 ns. Moving the
    fast path into the header would save the call and some of the rest, at
    most about a quarter of `scan`'s time, at the cost of exposing the
    scheduler's state in a public header.
-4. **Remove barriers at compile time.** Splitting a kernel at each barrier
+3. **Remove barriers at compile time.** Splitting a kernel at each barrier
    and running each piece as a loop over the block's threads (as POCL and
    CuPBoP do) avoids switching altogether, and is the only way to make
    barrier-dense kernels an order of magnitude faster. It needs a Clang-based

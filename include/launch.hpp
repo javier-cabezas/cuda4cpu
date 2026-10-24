@@ -52,12 +52,18 @@ struct kernel_call;
 
 //! How the CUDA threads of a block take turns in a kernel's loops (see
 //! loop_tick()): run each one to completion, or switch every few
-//! iterations. One per kernel launch site, chosen by timing its first blocks.
+//! iterations. One per kernel launch site, chosen by timing its first blocks
+//! with each candidate in turn: the lowest median time wins.
 struct interleave_tuner {
-    static constexpr int candidates = 3;
-    std::atomic<unsigned> trials{0};
-    std::atomic<uint64_t> fastest[candidates] = {~uint64_t(0), ~uint64_t(0), ~uint64_t(0)};  //!< Nanoseconds
-    std::atomic<unsigned> blocks[candidates] = {};
+    static constexpr int candidates = 4;
+    static constexpr unsigned samples = 15;  //!< Blocks timed with each candidate
+    std::atomic<unsigned> started[candidates] = {};   //!< Blocks of each candidate started
+    std::atomic<unsigned> finished[candidates] = {};  //!< And finished
+    std::atomic<unsigned> taken[candidates] = {};     //!< Samples claimed
+    std::atomic<unsigned> stored[candidates] = {};    //!< Samples stored; the last one decides
+    std::atomic<unsigned> slow[candidates] = {};      //!< Blocks slower than twice the best median
+    std::atomic<uint64_t> nanoseconds[candidates][samples] = {};
+    std::atomic<uint64_t> median[candidates] = {};    //!< 0 while timing, ~0 if rejected
     std::atomic<int> choice{-1};
 };
 
@@ -306,7 +312,6 @@ private:
     [[noreturn]] void finish_current();
     void switch_to_thread(size_t from, size_t to);
     [[noreturn]] void deadlock() const;
-    static void record_trial(detail::interleave_tuner &tuner, int trial, uint64_t nanoseconds);
     void promote();
     void switch_from_current();
     size_t next_runnable(size_t from) const;
