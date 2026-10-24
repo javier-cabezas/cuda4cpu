@@ -222,8 +222,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `extern __shared__` placement, checked at run time, including that
     `__LINE__` matches the original file. Update its expected line if you
     edit the file above that check.
-  - `schedule_{forward,reverse,random}`: a kernel with a missing
-    `__syncthreads()` that the default order hides and the others expose
+  - `schedule_{forward,reverse,warp_reverse,random,warp_random,mixed}`:
+    kernels with a missing `__syncthreads()` or `__syncwarp()` that the
+    default order hides and the others expose
   - `divergent_barrier_{warn,ignore,error}`: the divergent barrier check in
     each mode (error mode must abort with a single report).
     `divergent_barrier_later`: one thread diverges after every thread has
@@ -526,12 +527,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   preempt. Clang's HIP mode doesn't include it either.
 
 - Debugging settings come from the environment, read once in `settings`:
-  `CUDA4CPU_SCHEDULE` (forward, reverse, random[:seed]),
+  `CUDA4CPU_SCHEDULE` (forward, reverse, warp_reverse, random[:seed],
+  warp_random[:seed], mixed[:seed]),
   `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore) and
   `CUDA4CPU_INTERLEAVE` (auto, off, or a number of loop iterations).
 - Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
-  to a permutation (`fibers::order`, inverse in `position`). It's reversed once
-  per thread_block, or shuffled per block from the seed and the block index.
+  to a permutation (`fibers::order`, inverse in `position`), which
+  `fill_order` builds. `reverse` and `warp_reverse` fill it once per
+  thread_block. `random` and `warp_random` refill it for every block from the
+  identity, shuffled with the seed and the block index, so a block's order
+  doesn't depend on the blocks its OS thread ran before. `mixed` picks one of
+  reverse, warp_reverse, random and forward per block (by its linear index);
+  a forward block sets `order_` to nullptr and gets the fast paths back.
   Direct mode walks it with `pos_`. `promote()` marks `order_[0..pos_)` as
   finished, and `next_runnable_after()` follows the order. Anything that
   reasons about which threads ran in direct mode must use the order, not

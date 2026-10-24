@@ -210,7 +210,7 @@ struct sanitizer_context {
 //! Debugging settings, read once from the environment
 //!
 struct settings {
-    enum class order { forward, reverse, random };
+    enum class order { forward, reverse, warp_reverse, random, warp_random, mixed };
     enum class divergence { warn, error, ignore };
 
     order schedule = order::forward;            //!< CUDA4CPU_SCHEDULE
@@ -230,20 +230,38 @@ private:
         settings s;
         if (const char *v = std::getenv("CUDA4CPU_SCHEDULE"); v != nullptr && *v != '\0') {
             std::string value = v;
+            auto parse_seed = [&](size_t prefix) -> uint64_t {
+                return value.size() > prefix ? std::strtoull(value.c_str() + prefix, nullptr, 0)
+                                             : std::random_device{}();
+            };
             if (value == "forward") {
                 s.schedule = order::forward;
             } else if (value == "reverse") {
                 s.schedule = order::reverse;
+            } else if (value == "warp_reverse") {
+                s.schedule = order::warp_reverse;
             } else if (value == "random" || value.rfind("random:", 0) == 0) {
                 s.schedule = order::random;
-                s.seed = value.size() > 7 ? std::strtoull(value.c_str() + 7, nullptr, 0)
-                                          : std::random_device{}();
+                s.seed = parse_seed(7);
                 std::fprintf(stderr, "cuda4cpu: running threads in random order, seed %llu "
                                      "(CUDA4CPU_SCHEDULE=random:%llu reproduces it)\n",
                              (unsigned long long)s.seed, (unsigned long long)s.seed);
+            } else if (value == "warp_random" || value.rfind("warp_random:", 0) == 0) {
+                s.schedule = order::warp_random;
+                s.seed = parse_seed(12);
+                std::fprintf(stderr, "cuda4cpu: running warps in random order, seed %llu "
+                                     "(CUDA4CPU_SCHEDULE=warp_random:%llu reproduces it)\n",
+                             (unsigned long long)s.seed, (unsigned long long)s.seed);
+            } else if (value == "mixed" || value.rfind("mixed:", 0) == 0) {
+                s.schedule = order::mixed;
+                s.seed = parse_seed(6);
+                std::fprintf(stderr, "cuda4cpu: running blocks in mixed thread orders, seed %llu "
+                                     "(CUDA4CPU_SCHEDULE=mixed:%llu reproduces it)\n",
+                             (unsigned long long)s.seed, (unsigned long long)s.seed);
             } else {
                 std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_SCHEDULE=%s: expected forward, "
-                                     "reverse, random or random:<seed>\n", v);
+                                     "reverse, warp_reverse, random[:<seed>], warp_random[:<seed>] "
+                                     "or mixed[:<seed>]\n", v);
             }
         }
         if (const char *v = std::getenv("CUDA4CPU_DIVERGENT_BARRIERS"); v != nullptr && *v != '\0') {
@@ -659,6 +677,43 @@ struct thread_block::fibers {
 
 namespace {
 
+//! Fills order (and its inverse, position) for nthreads threads with the
+//! given schedule. For random orders, seed shuffles the threads or warps.
+void fill_order(std::vector<unsigned> &order, std::vector<unsigned> &position, size_t nthreads,
+                settings::order schedule, uint64_t seed)
+{
+    order.resize(nthreads);
+    position.resize(nthreads);
+    if (schedule == settings::order::reverse) {
+        for (size_t i = 0; i < nthreads; ++i)
+            order[i] = unsigned(nthreads - 1 - i);
+    } else if (schedule == settings::order::warp_reverse || schedule == settings::order::warp_random) {
+        const size_t nwarps = (nthreads + warp_size - 1) / warp_size;
+        std::vector<size_t> warps(nwarps);
+        std::iota(warps.begin(), warps.end(), size_t(0));
+        if (schedule == settings::order::warp_reverse) {
+            std::reverse(warps.begin(), warps.end());
+        } else {
+            std::mt19937_64 random(seed);
+            std::shuffle(warps.begin(), warps.end(), random);
+        }
+        size_t p = 0;
+        for (size_t w : warps) {
+            const size_t begin = w * warp_size, end = std::min(begin + warp_size, nthreads);
+            for (size_t t = begin; t < end; ++t)
+                order[p++] = unsigned(t);
+        }
+    } else {
+        std::iota(order.begin(), order.end(), 0u);
+        if (schedule == settings::order::random) {
+            std::mt19937_64 random(seed);
+            std::shuffle(order.begin(), order.end(), random);
+        }
+    }
+    for (size_t p = 0; p < nthreads; ++p)
+        position[order[p]] = unsigned(p);
+}
+
 #if !CUDA4CPU_ASM_CONTEXT
 struct fiber_init {
     context    *start;
@@ -682,15 +737,15 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
     ids_(nthreads_),
     fibers_{std::make_unique<fibers>(nthreads_, stack_size)}
 {
-    if (settings::get().schedule != settings::order::forward) {
+    const auto schedule = settings::get().schedule;
+    if (schedule != settings::order::forward) {
         auto &f = *fibers_;
-        f.order.resize(nthreads_);
-        f.position.resize(nthreads_);
-        std::iota(f.order.begin(), f.order.end(), 0u);
-        if (settings::get().schedule == settings::order::reverse)
-            std::reverse(f.order.begin(), f.order.end());
-        for (size_t p = 0; p < nthreads_; ++p)
-            f.position[f.order[p]] = unsigned(p);
+        if (schedule == settings::order::reverse || schedule == settings::order::warp_reverse) {
+            fill_order(f.order, f.position, nthreads_, schedule, 0);
+        } else {
+            f.order.resize(nthreads_);
+            f.position.resize(nthreads_);
+        }
         order_ = f.order.data();
     }
     fibers_->fast_switch = order_ == nullptr && !fibers_->sanitize;
@@ -787,13 +842,30 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     pos_      = 0;
 
     auto &f = *fibers_;
-    if (settings::get().schedule == settings::order::random) {
+    const auto schedule = settings::get().schedule;
+    if (schedule == settings::order::random || schedule == settings::order::warp_random ||
+        schedule == settings::order::mixed) {
         // A different order for every block, reproducible from the seed
-        uint64_t linear = (uint64_t(block_id.z) * conf_.grid.y + block_id.y) * conf_.grid.x + block_id.x;
-        std::mt19937_64 random(settings::get().seed ^ (linear * 0x9e3779b97f4a7c15ull));
-        std::shuffle(f.order.begin(), f.order.end(), random);
-        for (size_t p = 0; p < nthreads_; ++p)
-            f.position[f.order[p]] = unsigned(p);
+        const uint64_t linear = (uint64_t(block_id.z) * conf_.grid.y + block_id.y) * conf_.grid.x + block_id.x;
+        const uint64_t block_seed = settings::get().seed ^ (linear * 0x9e3779b97f4a7c15ull);
+        settings::order block_schedule = schedule;
+        if (schedule == settings::order::mixed) {
+            constexpr settings::order cycle[] = {
+                settings::order::reverse,
+                settings::order::warp_reverse,
+                settings::order::random,
+                settings::order::forward,
+            };
+            block_schedule = cycle[linear % 4];
+        }
+        if (block_schedule == settings::order::forward) {
+            order_ = nullptr;
+            f.fast_switch = !f.sanitize;
+        } else {
+            fill_order(f.order, f.position, nthreads_, block_schedule, block_seed);
+            order_ = f.order.data();
+            f.fast_switch = false;
+        }
     }
 
     // Direct mode runs on the stack of the first thread in the order: when the

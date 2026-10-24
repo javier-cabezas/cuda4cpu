@@ -20,11 +20,13 @@
 
 
 //
-// Missing __syncthreads(): each thread reads the shared memory that the
-// previous thread wrote, without a barrier. In the default order the previous
-// thread has always run first, which hides the bug; CUDA4CPU_SCHEDULE=reverse
-// or random exposes it. The same kernel with the barrier is correct in every
-// order. Usage: schedule hidden|exposed
+// Missing __syncthreads() and __syncwarp(): each thread reads the shared
+// memory that the previous thread wrote, without a barrier. In the default
+// order the previous thread has always run first, which hides both bugs;
+// warp_reverse and warp_random expose the missing __syncthreads() between
+// warps while keeping lanes within each warp in forward order; reverse,
+// random and mixed expose both. The same kernels with the barriers are
+// correct in every order. Usage: schedule hidden|warp_exposed|exposed
 //
 
 #include <cstdio>
@@ -48,6 +50,17 @@ __global__ void shift(int *out, const int *in)
     out[blockIdx.x * N + t] = t > 0 ? s[t - 1] : -1;
 }
 
+template <bool Sync>
+__global__ void warp_shift(int *out, const int *in)
+{
+    __shared__ int s[N];
+    unsigned t = threadIdx.x;
+    s[t] = in[blockIdx.x * N + t];
+    if (Sync)
+        __syncwarp();
+    out[blockIdx.x * N + t] = t % 32 > 0 ? s[t - 1] : -1;
+}
+
 template <bool Barrier>
 static bool correct()
 {
@@ -62,21 +75,42 @@ static bool correct()
     return true;
 }
 
+template <bool Sync>
+static bool warp_correct()
+{
+    const unsigned blocks = 4;
+    int in[blocks * N], out[blocks * N];
+    for (unsigned i = 0; i < blocks * N; ++i)
+        in[i] = int(i) * 3;
+    launch(warp_shift<Sync>, blocks, N).call(out, in);
+    for (unsigned i = 0; i < blocks * N; ++i)
+        if (out[i] != (i % 32 > 0 ? in[i - 1] : -1))
+            return false;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (std::strcmp(argv[1], "hidden") != 0 && std::strcmp(argv[1], "exposed") != 0)) {
-        std::fprintf(stderr, "usage: schedule hidden|exposed\n");
+    if (argc != 2 || (std::strcmp(argv[1], "hidden") != 0 &&
+                      std::strcmp(argv[1], "warp_exposed") != 0 &&
+                      std::strcmp(argv[1], "exposed") != 0)) {
+        std::fprintf(stderr, "usage: schedule hidden|warp_exposed|exposed\n");
         return EXIT_FAILURE;
     }
-    const bool expect_exposed = std::strcmp(argv[1], "exposed") == 0;
+    const bool expect_block_exposed = std::strcmp(argv[1], "hidden") != 0;
+    const bool expect_warp_exposed  = std::strcmp(argv[1], "exposed") == 0;
 
     int errors = 0;
-    if (!correct<true>()) {
+    if (!correct<true>() || !warp_correct<true>()) {
         std::printf("the kernel with the barrier gave wrong results\n");
         ++errors;
     }
-    if (correct<false>() == expect_exposed) {
-        std::printf("the missing barrier was %s\n", expect_exposed ? "hidden" : "exposed");
+    if (correct<false>() == expect_block_exposed) {
+        std::printf("the missing __syncthreads() was %s\n", expect_block_exposed ? "hidden" : "exposed");
+        ++errors;
+    }
+    if (warp_correct<false>() == expect_warp_exposed) {
+        std::printf("the missing __syncwarp() was %s\n", expect_warp_exposed ? "hidden" : "exposed");
         ++errors;
     }
     return errors == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
