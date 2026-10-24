@@ -225,10 +225,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `schedule_{forward,reverse,warp_reverse,random,warp_random,mixed}`:
     kernels with a missing `__syncthreads()` or `__syncwarp()` that the
     default order hides and the others expose
-  - `divergent_barrier_{warn,ignore,error}`: the divergent barrier check in
-    each mode (error mode must abort with a single report).
-    `divergent_barrier_later`: one thread diverges after every thread has
-    started, and the report must name its line numbers.
+  - `divergent_barrier_{warn,ignore,error}` and
+    `divergent_warp_{warn,mask,ignore}`: the divergent barrier and warp
+    operation checks in each mode (error mode must abort with a single
+    report). `divergent_barrier_later`: one thread diverges after every thread
+    has started, and the report must name its line numbers.
   - `gdb` (`gdb_test.cmake`, if gdb is installed): a breakpoint conditioned on
     `$threadIdx("x")`, the built-in variables, and a backtrace that ends where
     the fiber started

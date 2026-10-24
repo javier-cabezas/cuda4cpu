@@ -35,6 +35,8 @@
 #include <random>
 #include <set>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <setjmp.h>
@@ -323,6 +325,53 @@ private:
         std::abort();
 }
 
+//! Reports a thread that called a warp-synchronous operation with a mask that
+//! does not include its own lane bit
+[[gnu::noinline, gnu::cold]] void report_warp_mask_missing_self(const char *op, unsigned mask, unsigned lane,
+                                                                unsigned warp, dim3 block)
+{
+    static std::mutex lock;
+    static std::set<std::tuple<std::string_view, unsigned, unsigned>> reported;
+
+    const bool error = settings::get().barriers == settings::divergence::error;
+    std::lock_guard<std::mutex> guard(lock);
+    if (!reported.emplace(op, mask, lane).second && !error)
+        return;
+    std::fprintf(stderr,
+                 "cuda4cpu: %s: lane %u of warp %u of block (%u, %u, %u) called %s with mask 0x%08x, "
+                 "which does not include its own lane. CUDA requires every calling thread's "
+                 "lane bit to be set in mask.\n",
+                 error ? "error" : "warning", lane, warp, block.x, block.y, block.z, op, mask);
+    if (error)
+        std::abort();
+}
+
+//! Reports two lanes of a warp whose warp-synchronous operations have
+//! overlapping masks but different masks or operation kinds
+[[gnu::noinline, gnu::cold]] void report_divergent_warp(const char *op1, unsigned mask1, unsigned lane1,
+                                                        const char *op2, unsigned mask2, unsigned lane2,
+                                                        unsigned warp, dim3 block)
+{
+    static std::mutex lock;
+    static std::set<std::tuple<std::string_view, unsigned, std::string_view, unsigned>> reported;
+
+    const bool error = settings::get().barriers == settings::divergence::error;
+    std::string_view name1 = op1, name2 = op2;
+    auto key = std::tie(name1, mask1) <= std::tie(name2, mask2) ? std::make_tuple(name1, mask1, name2, mask2)
+                                                                : std::make_tuple(name2, mask2, name1, mask1);
+    std::lock_guard<std::mutex> guard(lock);
+    if (!reported.insert(key).second && !error)
+        return;
+    std::fprintf(stderr,
+                 "cuda4cpu: %s: lanes %u and %u of warp %u of block (%u, %u, %u) reached mismatched "
+                 "warp operations (%s with mask 0x%08x and %s with mask 0x%08x). CUDA requires "
+                 "participating lanes to execute the same operation with the same mask.\n",
+                 error ? "error" : "warning", lane1, lane2, warp, block.x, block.y, block.z,
+                 op1, mask1, op2, mask2);
+    if (error)
+        std::abort();
+}
+
 }
 
 //!
@@ -339,6 +388,19 @@ struct thread_block::fibers {
         op_match_all,
         op_converge
     };
+
+    //! The name of a warp operation, for reports
+    static const char *op_name(unsigned char kind)
+    {
+        switch (kind) {
+        case op_sync:      return "__syncwarp";
+        case op_shuffle:   return "__shfl_*_sync";
+        case op_ballot:    return "warp vote";
+        case op_match_any: return "__match_any_sync";
+        case op_match_all: return "__match_all_sync";
+        default:           return "__activemask";
+        }
+    }
 
     //! Allocates one stack per fiber in a single mapping, each one with a
     //! guard page below it so that a stack overflow faults instead of silently
@@ -1167,10 +1229,11 @@ uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value
         auto &f = *fibers_;
         const size_t self = cur_;
         auto &warp = f.warps[self / warp_size];
+        const uint32_t pair = 3u << (self % warp_size);
         size_t next;
-        if ((self + 1) % warp_size != 0 && (mask & lane_bit(self + 1)) != 0 &&
+        if ((self + 1) % warp_size != 0 && (mask & pair) == pair &&
             (next = f.fast_next(self)) != no_thread) {
-            f.warp_mask[self]  = mask | lane_bit(self);
+            f.warp_mask[self]  = mask;
             f.warp_kind[self]  = kind;
             f.warp_src[self]   = src_lane % warp_size;
             f.warp_value[self] = value;
@@ -1194,7 +1257,11 @@ uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value
     auto &f = *fibers_;
     const size_t self = cur_;
 
-    f.warp_mask[self]  = mask | lane_bit(self);
+    if ((mask & lane_bit(self)) == 0 && settings::get().barriers != settings::divergence::ignore) [[unlikely]]
+        report_warp_mask_missing_self(fibers::op_name(kind), mask, unsigned(self % warp_size),
+                                      unsigned(self / warp_size), block_id_);
+
+    f.warp_mask[self]  = mask;
     f.warp_kind[self]  = kind;
     f.warp_src[self]   = src_lane % warp_size;
     f.warp_value[self] = value;
@@ -1267,7 +1334,8 @@ void thread_block::try_release_warp(size_t tid)
     const size_t w    = tid / warp_size;
     const size_t base = w * warp_size;
     const auto &warp = f.warps[w];
-    const uint32_t lanes = warp_live_mask(base) & f.warp_mask[tid];
+    const uint32_t live = warp_live_mask(base);
+    uint32_t lanes = live & (f.warp_mask[tid] | lane_bit(tid));
     const bool converge = f.warp_kind[tid] == fibers::op_converge;
     // For other operations, lanes in __activemask() haven't arrived: they'll
     // come once it returns
@@ -1278,6 +1346,27 @@ void thread_block::try_release_warp(size_t tid)
     if (converge) {
         f.release_converge(tid);
         return;
+    }
+    const unsigned first_lane = unsigned(std::countr_zero(lanes));
+    const size_t first = base + first_lane;
+    for (uint32_t m = lanes; m != 0; m &= m - 1) {
+        const unsigned l = unsigned(std::countr_zero(m));
+        const size_t other = base + l;
+        if (f.warp_mask[other] != f.warp_mask[first] || f.warp_kind[other] != f.warp_kind[first]) [[unlikely]] {
+            lanes |= live & f.warp_mask[other];
+            if ((lanes & ~arrived) != 0)
+                return;
+            if (settings::get().barriers != settings::divergence::ignore)
+                report_divergent_warp(fibers::op_name(f.warp_kind[first]), f.warp_mask[first], first_lane,
+                                      fibers::op_name(f.warp_kind[other]), f.warp_mask[other], l,
+                                      unsigned(w), block_id_);
+        }
+    }
+    // Also release any lane that omitted its own bit from this same mask
+    for (uint32_t m = arrived & ~lanes; m != 0; m &= m - 1) {
+        const unsigned l = unsigned(std::countr_zero(m));
+        if (f.warp_mask[base + l] == f.warp_mask[tid] && f.warp_kind[base + l] == f.warp_kind[tid])
+            lanes |= 1u << l;
     }
     switch (f.warp_kind[tid]) {
     case fibers::op_shuffle:

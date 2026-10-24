@@ -67,6 +67,21 @@ __global__ void divergent_later(int *out)
     }
 }
 
+// Lanes of a warp that execute different warp operations with overlapping masks
+__global__ void divergent_warp(int *out)
+{
+    if (threadIdx.x % 32 < 16)
+        out[threadIdx.x] = __shfl_xor_sync(0xffffffff, int(threadIdx.x), 1);
+    else
+        out[threadIdx.x] = int(__ballot_sync(0xffffffff, 1));
+}
+
+// A lane that calls a warp operation with a mask that omits its own lane bit
+__global__ void missing_self_mask(int *out)
+{
+    out[threadIdx.x] = __shfl_sync(0xfffffffe, int(threadIdx.x), 1);
+}
+
 int main(int argc, char **argv)
 {
     int out[64];
@@ -74,6 +89,10 @@ int main(int argc, char **argv)
     std::printf("uniform: done\n");
     if (argc > 1 && std::strcmp(argv[1], "later") == 0)
         launch(divergent_later, 4, 64).call(out);
+    else if (argc > 1 && std::strcmp(argv[1], "warp") == 0)
+        launch(divergent_warp, 4, 64).call(out);
+    else if (argc > 1 && std::strcmp(argv[1], "warp_mask") == 0)
+        launch(missing_self_mask, 4, 64).call(out);
     else
         launch(divergent, 4, 64).call(out);
     std::printf("divergent: done\n");
