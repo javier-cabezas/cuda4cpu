@@ -178,13 +178,17 @@ add_test(NAME rewrite_unit
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/test_rewrite.py
                  ${PROJECT_SOURCE_DIR}/tools/cuda4cpu-rewrite)
 
-# The cuda4cpu-c++ driver, with the compiler that builds the project
+# The cuda4cpu-c++ driver, with its default compiler, the one that builds
+# the project. CXX names the driver itself, as in CXX=cuda4cpu-c++ make,
+# which it must skip instead of running itself until the timeout.
 add_test(NAME driver
          COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++
                  -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/samples/vector_add.cu
                  -DWORK=${CMAKE_CURRENT_BINARY_DIR}/driver
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
-set_tests_properties(driver PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
+set_tests_properties(driver PROPERTIES
+                     ENVIRONMENT_MODIFICATION "CUDA4CPU_CXX=unset:;CXX=set:${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++"
+                     TIMEOUT 60)
 
 # cuda4cpu-hipcc compiles a .cpp file as HIP, and drops options for AMD GPUs;
 # cuda4cpu-c++ does with -x hip

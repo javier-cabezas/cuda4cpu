@@ -60,6 +60,7 @@ function(cuda4cpu_configure_drivers directory)
     endforeach()
 endfunction()
 
+set(CUDA4CPU_DRIVER_CXX "${CMAKE_CXX_COMPILER}")
 set(CUDA4CPU_DRIVER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
 set(CUDA4CPU_DRIVER_LIBRARY_DIR "${PROJECT_BINARY_DIR}/lib")
 set(CUDA4CPU_DRIVER_REWRITE "${PROJECT_SOURCE_DIR}/tools/cuda4cpu-rewrite")

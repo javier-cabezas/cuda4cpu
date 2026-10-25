@@ -141,7 +141,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
   after the compile: their paths reach the command line and the
   preprocessed output, so they must be the same on every build for ccache to
-  hit.
+  hit. Without `$CUDA4CPU_CXX` or `$CXX`, the driver runs the compiler that
+  built the library (`CUDA4CPU_DRIVER_CXX`): it used to run `c++`, and a
+  Clang-built library then had GCC's libgomp in the same process as its
+  libomp. A `$CXX` that is a cuda4cpu driver is skipped, or the driver would
+  run itself, and any other such loop stops at once: the driver sets
+  `CUDA4CPU_DRIVER_RUNNING` for the compiler, and fails if it starts with it.
+  (A driver running itself until the timeout used up the machine's memory.)
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -249,8 +255,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `rewrite_unit` (`rewrite/test_rewrite.py`): exact rewriter output, the
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
-    `cuda4cpu-c++`, in one step and with separate compile and link.
-    `driver_hipcc` and `driver_x_hip` build a HIP `.cpp` file with
+    `cuda4cpu-c++`, in one step and with separate compile and link, with its
+    default compiler and `CXX` set to the driver itself. `driver_hipcc` and `driver_x_hip` build a HIP `.cpp` file with
     `cuda4cpu-hipcc` (and an AMD-only option) and with `cuda4cpu-c++ -x hip`.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):
     `hip_runtime` (errors and their names, device queries and attributes,

@@ -101,7 +101,11 @@ cuda4cpu-c++ -O2 -c kernels.cu        # kernels.o, as with any compiler
 
 It rewrites the `.cu` files, adds the C++ standard, OpenMP and the cuda4cpu
 include directory, and links `libcuda4cpu` when it links. It runs
-`$CUDA4CPU_CXX`, `$CXX` or `c++`. It takes the compiler's options, not
+`$CUDA4CPU_CXX`, `$CXX` (unless that's a cuda4cpu driver, as in
+`CXX=cuda4cpu-c++ make`), or else the compiler that built `libcuda4cpu`. Use
+the same kind of compiler as the library: GCC and Clang have their own
+OpenMP runtimes, and a program with both has two pools of threads. It takes
+the compiler's options, not
 nvcc's. `.hip` files are HIP sources, and `-x cu` or `-x hip` set the
 language of the files after them, as with clang.
 
