@@ -10,7 +10,7 @@ builtins.
 - **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`, `hip/hip_ext.h`,
   `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_bf16.h`
   (`__hip_bfloat16`, `__hip_bfloat162` and the `HIPRT_*_BF16` constants, on
-  CUDA's bfloat16), `hip/hip_vector_types.h`,
+  CUDA's bfloat16), `hip/hip_fp8.h` (see below), `hip/hip_vector_types.h`,
   `hip/hip_version.h` (HIP 7.2) and `hip/hip_common.h`.
 - **Runtime API:** every CUDA function, type and constant that cuda4cpu
   implements has its HIP name. `hipMalloc`, `hipStream_t` and
@@ -61,8 +61,19 @@ builtins.
   - `wall_clock64` and `__clock64`
   - `unsafeAtomicAdd`, `safeAtomicAdd`, `atomicAddNoRet`
   - the `__HIP_ARCH_HAS_*` feature macros
+  - 8-bit floats (`hip/hip_fp8.h`). HIP has them only on AMD GPUs, so this
+    is AMD's API: the OCP formats (`__HIP_E4M3`, `__HIP_E5M2`, CUDA's) and
+    AMD's FNUZ ones (`__HIP_E4M3_FNUZ`, `__HIP_E5M2_FNUZ`: no infinity, no
+    negative zero, NaN at 0x80), the `__hip_cvt_*` conversions (E8M0 too,
+    with `hipRoundMode`), and the classes `__hip_fp8_e4m3`,
+    `__hip_fp8x2_e4m3`, `__hip_fp8x4_e4m3` and their E5M2 and FNUZ
+    counterparts, which convert implicitly and saturate. Values that don't
+    fit follow AMD's rules, which differ from CUDA's: anything beyond the
+    largest finite value overflows, even if it would round down to it, and
+    an infinity stays infinite in E5M2 and becomes NaN in the other formats,
+    even when saturating.
 - **Not implemented:** what CUDA lacks here too (textures, ...),
-  plus 8-bit floats (`hip/hip_fp8.h`), `hip/hip_complex.h`, and what needs
+  plus `hip/hip_complex.h`, and what needs
   device code compiled or loaded at run time: HIPRTC and the module API
   (`hipModuleLoad`, ...). Also `hipPointerGetAttribute` and
   `hipDrvPointerGetAttributes`, the driver API's attribute-by-attribute

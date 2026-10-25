@@ -99,7 +99,7 @@
   "rocm-examples/launch_bounds": "passed",
   "rocm-examples/llvm_ir_to_executable": "passed",
   "rocm-examples/low_precision_float_fp16": "passed",
-  "rocm-examples/low_precision_float_fp8": "build_failed",
+  "rocm-examples/low_precision_float_fp8": "failed",
   "rocm-examples/math": "passed",
   "rocm-examples/matrix_multiplication": "passed",
   "rocm-examples/memory_pool": "passed",

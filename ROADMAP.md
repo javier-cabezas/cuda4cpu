@@ -13,8 +13,8 @@ one of these:
   `surf2Dwrite`, CUDA arrays): 10 programs.
 - **Dynamic parallelism**: kernels that launch kernels. 2 programs.
 - **Smaller API gaps**, one program each: libcu++ headers (`<cuda/...>`),
-  device-side `assert` reported as a launch error, `hip/hip_complex.h`, 8-bit
-  floats (`hip/hip_fp8.h`), green contexts.
+  device-side `assert` reported as a launch error, `hip/hip_complex.h`, green
+  contexts.
 - **Kernel language:** `__reduce_*_sync`, `memcpy_async`, 16-bit integer
   atomics.
 - **Platforms:** CI on AArch64, where the portable context switch

@@ -33,7 +33,12 @@ Most of what's missing is a few features:
 | 10 | Textures and surfaces |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
-| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, 8-bit floats (`hip/hip_fp8.h`), complex numbers (`hip/hip_complex.h`) |
+| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, complex numbers (`hip/hip_complex.h`) |
+
+`low_precision_float_fp8` builds, but converts only on AMD's gfx94x GPUs:
+it reads the device's `gcnArchName`, and on any other device prints that it
+needs one and stops. The suite expects the line it prints after converting,
+so it doesn't count as passing.
 
 Two more, versions 5 and 6 of the reduction tutorial, have a race:
 their last warp reduces through shared memory without `__syncwarp()` between

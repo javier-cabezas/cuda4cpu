@@ -680,7 +680,8 @@
           "dir": "HIP-Doc/Reference/Low-Precision-Floating-Point-Types/low_precision_float_fp16"
         },
         {
-          "dir": "HIP-Doc/Reference/Low-Precision-Floating-Point-Types/low_precision_float_fp8"
+          "dir": "HIP-Doc/Reference/Low-Precision-Floating-Point-Types/low_precision_float_fp8",
+          "expect": "CPU and GPU round trip convert matches"
         },
         {
           "dir": "Tutorials/reduction",
