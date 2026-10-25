@@ -24,15 +24,17 @@
 // arguments), launches with <<<...>>>, HIP's names of the built-in variables,
 // HIP_DYNAMIC_SHARED in a kernel and at namespace scope, the warp functions
 // without masks, bit manipulation, clocks, atomics, cooperative groups, half
-// precision (hip_fp16.h), bfloat16 (hip_bf16.h), and the platform and feature
-// macros.
+// precision (hip_fp16.h), bfloat16 (hip_bf16.h), complex numbers
+// (hip_complex.h), and the platform and feature macros.
 //
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_cooperative_groups.h>
 #include <hip/hip_bf16.h>
+#include <hip/hip_complex.h>
 #include <hip/hip_fp16.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -169,6 +171,18 @@ __global__ void bfloat16_math(const __hip_bfloat16 *a, float *sum, __hip_bfloat1
     sum[i] = __bfloat162float(a[i] + HIPRT_ONE_BF16);
     const __hip_bfloat162 v = __halves2bfloat162(a[i], a[i]);
     fused[i] = __hfma2(v, v, v);
+}
+
+//! Complex numbers, through HIP's names: z * w + z, z / w, |z|^2 and |z|
+__global__ void complex_math(const hipFloatComplex *z, const hipDoubleComplex *w, hipFloatComplex *fused,
+                             hipDoubleComplex *quotient, float *squared, double *magnitude)
+{
+    const unsigned i = threadIdx.x;
+    const hipFloatComplex wf = hipComplexDoubleToFloat(w[i]);
+    fused[i] = hipCaddf(hipCmulf(z[i], wf), z[i]);
+    quotient[i] = hipCdiv(hipComplexFloatToDouble(z[i]), w[i]);
+    squared[i] = hipCsqabsf(z[i]);
+    magnitude[i] = hipCabs(hipConj(w[i]));
 }
 
 __global__ void clocks(long long *ticks)
@@ -321,6 +335,32 @@ int main()
         EXPECT(__hisinf(HIPRT_INF_BF16) == 1 && __hisnan(HIPRT_NAN_BF16) && __bfloat162float(HIPRT_MAX_NORMAL_BF16) > 3e38f);
         const __hip_bfloat16_raw raw = HIPRT_NEG_ZERO_BF16;
         EXPECT(raw.x == 0x8000);
+    }
+
+    // Complex numbers, with small integers, whose results are exact
+    {
+        hipFloatComplex z[4], fused[4];
+        hipDoubleComplex w[4], quotient[4];
+        float squared[4];
+        double magnitude[4];
+        for (int i = 0; i < 4; ++i) {
+            z[i] = make_hipFloatComplex(float(i), 1.f);
+            w[i] = make_hipDoubleComplex(0, 2);
+        }
+        hipLaunchKernelGGL(complex_math, 1, 4, 0, 0, z, w, fused, quotient, squared, magnitude);
+        int wrong = 0;
+        for (int i = 0; i < 4; ++i) {
+            // (i + 1j)(2j) + (i + 1j) = (i - 2) + (2i + 1)j, and (i + 1j) / 2j = 0.5 - (i / 2)j
+            wrong += hipCrealf(fused[i]) != float(i - 2) || hipCimagf(fused[i]) != float(2 * i + 1);
+            wrong += hipCreal(quotient[i]) != 0.5 || hipCimag(quotient[i]) != -0.5 * i;
+            wrong += std::fabs(squared[i] - float(i * i + 1)) > 1e-5f || magnitude[i] != 2;
+        }
+        EXPECT(wrong == 0);
+        const hipComplex c = make_hipComplex(1.f, 2.f);
+        const hipComplex f = hipCfmaf(c, c, c);                   // (1 + 2i)^2 + (1 + 2i) = -2 + 6i
+        EXPECT(hipCrealf(f) == -2.f && hipCimagf(f) == 6.f && hipCabsf(hipCsubf(c, hipConjf(c))) == 4.f);
+        EXPECT(hipCimag(hipCfma(hipComplexFloatToDouble(c), make_hipDoubleComplex(0, 1), make_hipDoubleComplex(0, 0))) == 1.0);
+        EXPECT(hipCrealf(hipCdivf(c, c)) == 1.f && hipCsqabs(make_hipDoubleComplex(3, 4)) == 25.0);
     }
 
     // Atomics, clocks and bit manipulation

@@ -10,7 +10,9 @@ builtins.
 - **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`, `hip/hip_ext.h`,
   `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_bf16.h`
   (`__hip_bfloat16`, `__hip_bfloat162` and the `HIPRT_*_BF16` constants, on
-  CUDA's bfloat16), `hip/hip_fp8.h` (see below), `hip/hip_vector_types.h`,
+  CUDA's bfloat16), `hip/hip_fp8.h` (see below), `hip/hip_complex.h`
+  (`hipFloatComplex`, `hipCaddf`, ... on CUDA's `cuComplex.h`, plus
+  `hipCsqabsf` and `hipCsqabs`), `hip/hip_vector_types.h`,
   `hip/hip_version.h` (HIP 7.2) and `hip/hip_common.h`.
 - **Runtime API:** every CUDA function, type and constant that cuda4cpu
   implements has its HIP name. `hipMalloc`, `hipStream_t` and
@@ -72,8 +74,8 @@ builtins.
     largest finite value overflows, even if it would round down to it, and
     an infinity stays infinite in E5M2 and becomes NaN in the other formats,
     even when saturating.
-- **Not implemented:** what CUDA lacks here too (textures, ...),
-  plus `hip/hip_complex.h`, and what needs
+- **Not implemented:** what CUDA lacks here too (textures, ...), and what
+  needs
   device code compiled or loaded at run time: HIPRTC and the module API
   (`hipModuleLoad`, ...). Also `hipPointerGetAttribute` and
   `hipDrvPointerGetAttributes`, the driver API's attribute-by-attribute

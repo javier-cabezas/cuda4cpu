@@ -150,6 +150,11 @@ set_target_properties(fp8 PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(fp8 fp8.cu)
 add_test(NAME fp8 COMMAND fp8)
 
+add_executable(complex)
+set_target_properties(complex PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(complex complex.cu)
+add_test(NAME complex COMMAND complex)
+
 # Loops with interleaved threads (loop ticks inserted by the rewriter), with
 # the interleaving chosen per kernel, off, and fixed
 add_executable(interleave)

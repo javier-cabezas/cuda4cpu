@@ -24,7 +24,7 @@ passing. Today:
 |---|---|---|
 | cuda-samples | 43 of 61 (1 more waives itself, and 2 are skipped as too slow) | 15 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
-| rocm-examples | 76 of 82 | 6 |
+| rocm-examples | 77 of 82 | 5 |
 
 Most of what's missing is a few features:
 
@@ -33,7 +33,7 @@ Most of what's missing is a few features:
 | 10 | Textures and surfaces |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
-| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL, complex numbers (`hip/hip_complex.h`) |
+| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
 
 `low_precision_float_fp8` builds, but converts only on AMD's gfx94x GPUs:
 it reads the device's `gcnArchName`, and on any other device prints that it

@@ -90,6 +90,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `detail::amd_fp8<I, We, Wm>`); CUDA's convert explicitly, AMD's
   implicitly, so `__half(amd_value)` is ambiguous where copy-initialization
   isn't.
+- `include/cuComplex.h` and `include/hip/hip_complex.h`: complex numbers as
+  `float2`/`double2`, with CUDA's formulas (scaled division and absolute
+  value, `cuCfmaf`'s order of additions). The HIP names are macros for the
+  CUDA ones, except `hipCsqabsf`/`hipCsqabs`.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -255,6 +259,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     Every value, midpoint and their neighbors, from double, float, half and
     bfloat16, E8M0 in both rounding modes, the classes, pairs and
     quadruples, and conversions in a kernel.
+  - `complex` (`complex.cu`): cuComplex.h against `long double` arithmetic
+    on random operands, the overflow and underflow its formulas avoid, and a
+    DFT in a kernel
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
   - `vectorize` (`vectorize.cu`): kernels without barriers (odd block sizes,
@@ -302,7 +309,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `hip_kernels` (every `hipLaunchKernelGGL` form, `HIP_DYNAMIC_SHARED` in a
     kernel and at namespace scope, mask-less warp functions with widths,
     cooperative groups, bit, clock and atomic intrinsics, bfloat16 through
-    `hip_bf16.h`, the platform macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
+    `hip_bf16.h`, complex numbers through `hip_complex.h`, the platform
+    macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
     `.cpp` file, with `hipExtLaunchKernelGGL` too).
 
 ## How execution works (read before touching `launch.hpp`)
