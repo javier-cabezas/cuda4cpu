@@ -36,8 +36,9 @@ source, as hipcc does, and drops hipcc's options for AMD GPUs
 (--offload-arch=..., -fgpu-rdc, ...).
 
 The driver adds the C++ standard, OpenMP and the cuda4cpu include directory,
-and links libcuda4cpu when it links. The compiler is $CUDA4CPU_CXX, $CXX or
-c++.
+and links libcuda4cpu when it links. The compiler is $CUDA4CPU_CXX, $CXX
+(unless it is a cuda4cpu driver, as in CXX=cuda4cpu-c++ make), the compiler
+that built libcuda4cpu, or c++.
 """
 
 import os
@@ -53,6 +54,11 @@ REWRITE = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_REWRITE@'))
 
 # 'hip' for cuda4cpu-hipcc, which compiles C++ sources as HIP, as hipcc does
 MODE = '@CUDA4CPU_DRIVER_MODE@'
+
+# The compiler that built libcuda4cpu. Another one would link its own OpenMP
+# runtime: with GCC's libgomp next to Clang's libomp, a process has two pools
+# of OpenMP threads.
+LIBRARY_CXX = '@CUDA4CPU_DRIVER_CXX@'
 
 # Compiler options whose value is the next argument
 OPTIONS_WITH_VALUE = {
@@ -108,8 +114,38 @@ def work_directory(argv):
     return tempfile.mkdtemp(prefix='cuda4cpu-')
 
 
+def is_driver(command):
+    """Whether command runs a cuda4cpu driver, which would then run itself"""
+    path = shutil.which(command)
+    if path is None:
+        return False
+    path = os.path.realpath(path)
+    return os.path.dirname(path) == HERE and os.path.basename(path).startswith('cuda4cpu-')
+
+
+def find_compiler():
+    if os.environ.get('CUDA4CPU_CXX'):
+        return os.environ['CUDA4CPU_CXX']
+    cxx = os.environ.get('CXX')
+    if cxx and not is_driver(cxx):
+        return cxx
+    if LIBRARY_CXX and shutil.which(LIBRARY_CXX):
+        return LIBRARY_CXX
+    return 'c++'
+
+
+# Set for the compiler the driver runs: a driver that finds it was run by
+# one, through a compiler variable that names a driver in another way, stops
+# instead of running itself until the machine runs out of memory
+RUNNING = 'CUDA4CPU_DRIVER_RUNNING'
+
+
 def main(argv):
-    compiler = os.environ.get('CUDA4CPU_CXX') or os.environ.get('CXX') or 'c++'
+    if os.environ.get(RUNNING):
+        sys.stderr.write(f'{os.path.basename(sys.argv[0])}: run as the compiler of a cuda4cpu driver; '
+                         'set CUDA4CPU_CXX to a C++ compiler\n')
+        return 1
+    compiler = find_compiler()
     work = work_directory(argv)
     try:
         args = []
@@ -164,7 +200,7 @@ def main(argv):
         if not NO_LINK.intersection(args):
             back = ['-L' + LIBRARY_DIR, '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
 
-        return subprocess.call([compiler] + front + args + back)
+        return subprocess.call([compiler] + front + args + back, env=dict(os.environ, **{RUNNING: '1'}))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
