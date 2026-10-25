@@ -26,9 +26,9 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
   Rodinia and AMD's rocm-examples build unmodified and pass, and CI checks
   that they keep passing.
 - **The CUDA you write today:** shared memory, warp shuffles and votes,
-  cooperative groups (including `grid.sync()`), atomics, half precision and
-  bfloat16, streams, events, and CUDA graphs with stream capture. HIP code
-  compiles too.
+  cooperative groups (including `grid.sync()`), atomics, half precision,
+  bfloat16 and 8-bit floats, streams, events, and CUDA graphs with stream
+  capture. HIP code compiles too.
 
 ## Contents
 
@@ -189,8 +189,8 @@ jobs:
 - **Kernel language:** `__global__`, `__device__`, `__shared__` (static and
   dynamic), `__constant__`, `__syncthreads()`, every warp shuffle, vote and
   match, `__activemask()` and `__syncwarp()`, atomics, `cuda_fp16.h`,
-  `cuda_bf16.h`, math and integer intrinsics, rounding-mode intrinsics,
-  `clock64()`.
+  `cuda_bf16.h`, `cuda_fp8.h`, math and integer intrinsics, rounding-mode
+  intrinsics, `clock64()`.
 - **Cooperative groups:** thread blocks, tiles of up to 1024 threads,
   coalesced groups, partitions, `reduce` and `scan`, and `grid.sync()` in
   cooperative launches.

@@ -15,6 +15,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp16.h
+            ${CUDA4CPU_INCLUDE_DIR}/cuda_fp8.h
             ${CUDA4CPU_INCLUDE_DIR}/nvToolsExt.h
             ${CUDA4CPU_INCLUDE_DIR}/nvtx3/nvToolsExt.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_runtime.h
@@ -29,6 +30,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_ext.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp16.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp8.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime_api.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_vector_types.h

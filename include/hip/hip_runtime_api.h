@@ -1152,6 +1152,11 @@ using namespace cuda4cpu::hip_api;
 #define hipStream_t cudaStream_t
 #define hipEvent_t cudaEvent_t
 #define hipStreamCallback_t cudaStreamCallback_t
+#define hipRoundMode cudaRoundMode
+#define hipRoundNearest cudaRoundNearest
+#define hipRoundZero cudaRoundZero
+#define hipRoundPosInf cudaRoundPosInf
+#define hipRoundMinInf cudaRoundMinInf
 
 // Devices (cuda/device.hpp)
 #define hipDeviceScheduleAuto cudaDeviceScheduleAuto

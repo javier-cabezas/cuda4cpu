@@ -117,6 +117,10 @@ VECTOR_TYPE(ulonglong, unsigned long long)
 VECTOR_TYPE(float, float)
 VECTOR_TYPE(double, double)
 
+//! The rounding of the conversions that take one, such as cuda_fp8.h's to
+//! e8m0
+enum cudaRoundMode { cudaRoundNearest, cudaRoundZero, cudaRoundPosInf, cudaRoundMinInf };
+
 }
 
 namespace detail {

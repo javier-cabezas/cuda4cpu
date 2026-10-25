@@ -145,6 +145,11 @@ target_compile_options(bf16 PRIVATE -frounding-math)
 cuda4cpu_add_cuda_sources(bf16 bf16.cu)
 add_test(NAME bf16 COMMAND bf16)
 
+add_executable(fp8)
+set_target_properties(fp8 PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(fp8 fp8.cu)
+add_test(NAME fp8 COMMAND fp8)
+
 # Loops with interleaved threads (loop ticks inserted by the rewriter), with
 # the interleaving chosen per kernel, off, and fixed
 add_executable(interleave)

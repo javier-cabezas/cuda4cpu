@@ -79,6 +79,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   comparison and math functions of bfloat16 are overloads of half's
   (`__hadd`, `hsqrt`, ...). `hip/hip_fp16.h` and `hip/hip_bf16.h` include
   them, the latter with HIP's names (`__hip_bfloat16`, `HIPRT_*_BF16`).
+- `include/cuda_fp8.h` and `include/hip/hip_fp8.h`: 8-bit floats, as
+  `small_float.hpp` formats. CUDA's and AMD's rules for what doesn't fit
+  differ, and each header follows its vendor's (`detail::nv_fp8_bits`,
+  `detail::amd_fp8_bits`): CUDA rounds first and saturates infinities, AMD
+  overflows anything beyond the largest finite value and keeps E5M2's
+  infinities. HIP has fp8 only on AMD, so `hip_fp8.h` is AMD's API, with
+  its FNUZ formats. E8M0 (`detail::e8m0_bits`) is a power of two, shared by
+  both. The classes derive from templates (`detail::nv_fp8<I>`,
+  `detail::amd_fp8<I, We, Wm>`); CUDA's convert explicitly, AMD's
+  implicitly, so `__half(amd_value)` is ambiguous where copy-initialization
+  isn't.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -238,6 +249,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     in `long double` (toward zero, with the inexact flag) and then to
     nearest, which is exact. A product on a tie with the smallest addend
     checks `__hfma`'s rounding to odd.
+  - `fp8` (`fp8.cu`): CUDA's and AMD's 8-bit floats against each format's
+    256 codes decoded from its widths, rounded to nearest even, with each
+    vendor's rules for NaN, infinity and overflow written out in the test.
+    Every value, midpoint and their neighbors, from double, float, half and
+    bfloat16, E8M0 in both rounding modes, the classes, pairs and
+    quadruples, and conversions in a kernel.
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
   - `vectorize` (`vectorize.cu`): kernels without barriers (odd block sizes,
