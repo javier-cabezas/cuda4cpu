@@ -15,8 +15,8 @@ one of these:
 - **Smaller API gaps**, one program each: libcu++ headers (`<cuda/...>`),
   device-side `assert` reported as a launch error, `hip/hip_complex.h`, 8-bit
   floats (`hip/hip_fp8.h`), green contexts.
-- **Kernel language:** bfloat16, `__reduce_*_sync`, `memcpy_async`, 16-bit
-  integer atomics.
+- **Kernel language:** `__reduce_*_sync`, `memcpy_async`, 16-bit integer
+  atomics.
 - **Platforms:** CI on AArch64, where the portable context switch
   (`_setjmp`/`_longjmp`) is used but hasn't been tested yet, and an assembly
   context switch for it. macOS and Windows would need their own fiber stacks
@@ -31,11 +31,12 @@ pass, Clang 22, `-march=native`, 16 OS threads). `cuda-samples/scan` takes 41%
 of it: about half of its time goes to barriers, because it waits at
 `__syncthreads()` after every two or three operations.
 
-1. **Inline the barrier fast path into kernels.** A barrier costs about 6.5 ns
-   per CUDA thread on one core, and a bare fiber switch 3.5 ns. Moving the
-   fast path into the header would save the call and some of the rest, at
-   most about a quarter of `scan`'s time, at the cost of exposing the
-   scheduler's state in a public header.
+1. **Find where `scan`'s branch mispredictions come from.** Its barriers are
+   bound by stalls, not instructions: inlining the barrier into the kernels
+   (static library, link-time optimization) took 4.8% of its instructions
+   away and none of its cycles, although a barrier went from 6.3 to 5.2 ns in
+   the micro-benchmarks. It mispredicts about 4.6 * 10^10 branches, roughly a
+   fifth of its cycles.
 2. **Remove barriers at compile time.** Splitting a kernel at each barrier
    and running each piece as a loop over the block's threads (as POCL and
    CuPBoP do) avoids switching altogether, and is the only way to make

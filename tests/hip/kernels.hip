@@ -24,11 +24,13 @@
 // arguments), launches with <<<...>>>, HIP's names of the built-in variables,
 // HIP_DYNAMIC_SHARED in a kernel and at namespace scope, the warp functions
 // without masks, bit manipulation, clocks, atomics, cooperative groups, half
-// precision (hip_fp16.h), and the platform and feature macros.
+// precision (hip_fp16.h), bfloat16 (hip_bf16.h), and the platform and feature
+// macros.
 //
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_cooperative_groups.h>
+#include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
 
 #include <cstdint>
@@ -157,6 +159,15 @@ __global__ void half_math(const __half *a, const __half *b, float *sum, __half2 
     const unsigned i = threadIdx.x;
     sum[i] = __half2float(a[i] + b[i]);
     const __half2 v = __halves2half2(a[i], b[i]);
+    fused[i] = __hfma2(v, v, v);
+}
+
+//! bfloat16, through HIP's names: a + 1, and a * a + a with bfloat162
+__global__ void bfloat16_math(const __hip_bfloat16 *a, float *sum, __hip_bfloat162 *fused)
+{
+    const unsigned i = threadIdx.x;
+    sum[i] = __bfloat162float(a[i] + HIPRT_ONE_BF16);
+    const __hip_bfloat162 v = __halves2bfloat162(a[i], a[i]);
     fused[i] = __hfma2(v, v, v);
 }
 
@@ -290,6 +301,26 @@ int main()
             wrong += __high2float(fused[i]) != 0.25f * float(i * i) + 0.5f * float(i);
         }
         EXPECT(wrong == 0);
+    }
+
+    // bfloat16, with small integers, which are exact
+    {
+        __hip_bfloat16 a[32];
+        float sum[32];
+        __hip_bfloat162 fused[32];
+        for (int i = 0; i < 32; ++i)
+            a[i] = __float2bfloat16(float(i % 8));
+        hipLaunchKernelGGL(bfloat16_math, 1, 32, 0, 0, a, sum, fused);
+        int wrong = 0;
+        for (int i = 0; i < 32; ++i) {
+            const float x = float(i % 8);
+            wrong += sum[i] != x + 1;
+            wrong += __low2float(fused[i]) != x * x + x || __high2float(fused[i]) != x * x + x;
+        }
+        EXPECT(wrong == 0);
+        EXPECT(__hisinf(HIPRT_INF_BF16) == 1 && __hisnan(HIPRT_NAN_BF16) && __bfloat162float(HIPRT_MAX_NORMAL_BF16) > 3e38f);
+        const __hip_bfloat16_raw raw = HIPRT_NEG_ZERO_BF16;
+        EXPECT(raw.x == 0x8000);
     }
 
     // Atomics, clocks and bit manipulation

@@ -13,6 +13,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/reduce.h
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/scan.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda.h
+            ${CUDA4CPU_INCLUDE_DIR}/cuda_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/nvToolsExt.h
             ${CUDA4CPU_INCLUDE_DIR}/nvtx3/nvToolsExt.h
@@ -26,6 +27,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_common.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_cooperative_groups.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_ext.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime_api.h
@@ -41,6 +43,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda/math.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/memory.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/mycuda.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/small_float.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/streams.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/types.hpp)
 

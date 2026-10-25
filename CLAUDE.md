@@ -64,11 +64,21 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the `detail::capture_*` functions of the library.
 - `include/nvtx3/nvToolsExt.h` (and `nvToolsExt.h`): NVTX stand-ins that do
   nothing.
-- `include/cuda_fp16.h`: `__half`/`__half2` and their intrinsics, in
-  `cuda_api`. A `__half` holds the binary16 bits. `detail::to_half_bits`
-  rounds a double to half in any of the four modes, and every operation is
-  "compute in double, round once", which is correctly rounded for half (see
-  the comments on `__hfma`'s exactness). `hip/hip_fp16.h` includes it.
+- `include/cuda/small_float.hpp`: the formats smaller than float, as
+  `detail::float_format` (exponent and mantissa bits, bias, and how
+  infinities and NaNs are encoded: IEEE, E4M3's single NaN, or FNUZ).
+  `to_bits<F>` rounds a double to F's bits in any of the four modes, with
+  optional saturation, and `from_bits<F>` decodes them exactly. Operations
+  are "compute in double, round once", which is correctly rounded for these
+  formats, except fused multiply-adds: `fma_bits` rounds the double sum to
+  odd first (two-sum gives its error), or a sum on a tie of F after rounding
+  to double would round the wrong way.
+- `include/cuda_fp16.h` and `include/cuda_bf16.h`: `__half`/`__half2` and
+  `__nv_bfloat16`/`__nv_bfloat162` and their intrinsics, in `cuda_api`, on
+  `small_float.hpp`. Each holds its format's bits. The arithmetic,
+  comparison and math functions of bfloat16 are overloads of half's
+  (`__hadd`, `hsqrt`, ...). `hip/hip_fp16.h` and `hip/hip_bf16.h` include
+  them, the latter with HIP's names (`__hip_bfloat16`, `HIPRT_*_BF16`).
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -223,6 +233,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     boundary, a million random add/sub/mul/fma (exact as `__int128`
     multiples of 2^-48) and div/sqrt (through 64-bit `long double`), the
     special values, and kernels with `half2`, shuffles and atomics.
+  - `bf16` (`bf16.cu`, with `-frounding-math`): bfloat16 the same way, with a
+    table of every bfloat16 as a `long double`. Operations are rounded to odd
+    in `long double` (toward zero, with the inexact flag) and then to
+    nearest, which is exact. A product on a tie with the smallest addend
+    checks `__hfma`'s rounding to odd.
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
   - `vectorize` (`vectorize.cu`): kernels without barriers (odd block sizes,
@@ -269,8 +284,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `hipExtLaunchKernelGGL`/`hipExtLaunchKernel` with events),
     `hip_kernels` (every `hipLaunchKernelGGL` form, `HIP_DYNAMIC_SHARED` in a
     kernel and at namespace scope, mask-less warp functions with widths,
-    cooperative groups, bit, clock and atomic intrinsics, the platform
-    macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
+    cooperative groups, bit, clock and atomic intrinsics, bfloat16 through
+    `hip_bf16.h`, the platform macros) and `hip_template_launch` (`HIP_TEMPLATE_KERNEL_LAUNCH`, in a
     `.cpp` file, with `hipExtLaunchKernelGGL` too).
 
 ## How execution works (read before touching `launch.hpp`)

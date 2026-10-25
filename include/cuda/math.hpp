@@ -351,6 +351,19 @@ inline T __ldg(const T *ptr)
     return *ptr;
 }
 
+// Loads and stores with cache hints (cache at all levels, at the global
+// level, streaming, last use, volatile; write-back, write-through), which
+// are ordinary loads and stores on the CPU
+template <typename T> inline T __ldca(const T *ptr) { return *ptr; }
+template <typename T> inline T __ldcg(const T *ptr) { return *ptr; }
+template <typename T> inline T __ldcs(const T *ptr) { return *ptr; }
+template <typename T> inline T __ldlu(const T *ptr) { return *ptr; }
+template <typename T> inline T __ldcv(const T *ptr) { return *ptr; }
+template <typename T> inline void __stwb(T *ptr, T value) { *ptr = value; }
+template <typename T> inline void __stcg(T *ptr, T value) { *ptr = value; }
+template <typename T> inline void __stcs(T *ptr, T value) { *ptr = value; }
+template <typename T> inline void __stwt(T *ptr, T value) { *ptr = value; }
+
 }
 
 }

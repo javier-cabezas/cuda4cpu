@@ -8,7 +8,9 @@ implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
 builtins.
 
 - **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`, `hip/hip_ext.h`,
-  `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_vector_types.h`,
+  `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_bf16.h`
+  (`__hip_bfloat16`, `__hip_bfloat162` and the `HIPRT_*_BF16` constants, on
+  CUDA's bfloat16), `hip/hip_vector_types.h`,
   `hip/hip_version.h` (HIP 7.2) and `hip/hip_common.h`.
 - **Runtime API:** every CUDA function, type and constant that cuda4cpu
   implements has its HIP name. `hipMalloc`, `hipStream_t` and
@@ -59,7 +61,7 @@ builtins.
   - `wall_clock64` and `__clock64`
   - `unsafeAtomicAdd`, `safeAtomicAdd`, `atomicAddNoRet`
   - the `__HIP_ARCH_HAS_*` feature macros
-- **Not implemented:** what CUDA lacks here too (textures, bfloat16, ...),
+- **Not implemented:** what CUDA lacks here too (textures, ...),
   plus 8-bit floats (`hip/hip_fp8.h`), `hip/hip_complex.h`, and what needs
   device code compiled or loaded at run time: HIPRTC and the module API
   (`hipModuleLoad`, ...). Also `hipPointerGetAttribute` and
