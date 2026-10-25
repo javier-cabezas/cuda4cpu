@@ -137,6 +137,14 @@ set_target_properties(fp16 PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(fp16 fp16.cu)
 add_test(NAME fp16 COMMAND fp16)
 
+# The reference changes the rounding mode around ordinary operations, which
+# the compiler must not move or merge across the change
+add_executable(bf16)
+set_target_properties(bf16 PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_options(bf16 PRIVATE -frounding-math)
+cuda4cpu_add_cuda_sources(bf16 bf16.cu)
+add_test(NAME bf16 COMMAND bf16)
+
 # Loops with interleaved threads (loop ticks inserted by the rewriter), with
 # the interleaving chosen per kernel, off, and fixed
 add_executable(interleave)

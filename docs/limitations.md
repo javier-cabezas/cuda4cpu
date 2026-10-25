@@ -65,7 +65,7 @@
   supports AMD GPUs doesn't compile: AMD builtins (`__builtin_amdgcn_*`),
   `__HIP_PLATFORM_AMD__` branches, and code that assumes 64-lane wavefronts.
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
-  bfloat16 and 8-bit floats, `__reduce_*_sync`, `memcpy_async`, 16-bit
-  integer atomics, inline PTX, and the driver API. [Compatibility with real CUDA and HIP
+  8-bit floats, `__reduce_*_sync`, `memcpy_async`, 16-bit integer atomics,
+  inline PTX, and the driver API. [Compatibility with real CUDA and HIP
   code](compatibility.md) shows which programs each
   one blocks.

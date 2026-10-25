@@ -24,10 +24,8 @@
 // arrays of halves have CUDA's layout and copy to and from the host as they
 // are.
 //
-// Operations convert to double, compute, and round to half once. That is
-// exact before rounding for additions, subtractions and multiplications, and
-// for divisions and square roots double's 53 bits make the double rounding
-// harmless. So is __hfma's (see detail::fma). Conversions
+// Operations convert to double, compute, and round to half once, which
+// rounds correctly (see small_float.hpp), __hfma included. Conversions
 // round as their suffix says: _rn (to nearest even), _rz (toward zero), _rd
 // (down) and _ru (up). Transcendental functions (hexp, hsin, ...) round the
 // double result, so they are at least as accurate as CUDA's.
@@ -46,6 +44,7 @@
 #include <limits>
 
 #include "cuda_runtime.h"
+#include "cuda/small_float.hpp"
 
 // The include guards of CUDA's own headers, which code tests
 #ifndef __CUDA_FP16_H__
@@ -63,78 +62,18 @@ namespace cuda4cpu {
 namespace detail {
 
 //! Rounding of a conversion or an operation to half
-enum class half_rounding { nearest, toward_zero, down, up };
+using half_rounding = float_rounding;
 
 //! The bits of x rounded to half as rounding says
 constexpr uint16_t to_half_bits(double x, half_rounding rounding = half_rounding::nearest)
 {
-    const uint64_t bits = std::bit_cast<uint64_t>(x);
-    const uint16_t sign = uint16_t((bits >> 48) & 0x8000);
-    const int biased = int((bits >> 52) & 0x7ff);
-    const uint64_t fraction = bits & ((uint64_t(1) << 52) - 1);
-
-    if (biased == 0x7ff)
-        return fraction != 0 ? uint16_t(0x7fff) : uint16_t(sign | 0x7c00);     // NaN, infinity
-    if (biased == 0 && fraction == 0)
-        return sign;                                                          // zero, which is exact
-
-    // Whether to round the magnitude up (away from zero) or down
-    const bool negative = sign != 0;
-    bool magnitude_up = false;
-    if (rounding == half_rounding::up)
-        magnitude_up = !negative;
-    else if (rounding == half_rounding::down)
-        magnitude_up = negative;
-
-    // x is significand * 2^(exponent - 52)
-    const uint64_t significand = biased != 0 ? fraction | (uint64_t(1) << 52) : fraction;
-    const int exponent = biased != 0 ? biased - 1023 : -1022;
-    if (exponent >= 16) {
-        // Beyond the largest half (65504): infinity, unless the magnitude
-        // rounds down
-        const bool down = rounding != half_rounding::nearest && !magnitude_up;
-        return uint16_t(sign | (down ? 0x7bff : 0x7c00));
-    }
-
-    // The half below |x| (base, as bits), and the remainder of |x| above it,
-    // where half_unit is half a unit in the last place of the half
-    uint32_t base;
-    uint64_t remainder, half_unit;
-    if (exponent >= -14) {                                  // normal: 11 significant bits
-        base = uint32_t((exponent + 15) << 10) + uint32_t(significand >> 42) - 1024;
-        remainder = significand & ((uint64_t(1) << 42) - 1);
-        half_unit = uint64_t(1) << 41;
-    } else {                                                // subnormal: units of 2^-24
-        const int shift = std::min(28 - exponent, 63);
-        base = uint32_t(significand >> shift);
-        remainder = significand & ((uint64_t(1) << shift) - 1);
-        half_unit = uint64_t(1) << (shift - 1);
-    }
-
-    uint32_t result = base;
-    if (rounding == half_rounding::nearest) {
-        if (remainder > half_unit || (remainder == half_unit && (base & 1)))
-            result = base + 1;
-    } else if (magnitude_up && remainder != 0) {
-        result = base + 1;
-    }
-    // Rounding up the largest half gives the bits of infinity
-    return uint16_t(sign | result);
+    return uint16_t(to_bits<binary16_format>(x, rounding));
 }
 
 //! The value of the half whose bits are h, which double holds exactly
 constexpr double from_half_bits(uint16_t h)
 {
-    const uint64_t sign = uint64_t(h & 0x8000) << 48;
-    const unsigned exponent = (h >> 10) & 0x1f;
-    const uint64_t mantissa = h & 0x3ff;
-    if (exponent == 0x1f)
-        return std::bit_cast<double>(sign | 0x7ff0000000000000 | (mantissa << 42));
-    if (exponent == 0) {
-        const double magnitude = double(mantissa) * 0x1p-24;
-        return sign != 0 ? -magnitude : magnitude;
-    }
-    return std::bit_cast<double>(sign | (uint64_t(exponent - 15 + 1023) << 52) | (mantissa << 42));
+    return from_bits<binary16_format>(h);
 }
 
 }
@@ -250,14 +189,10 @@ constexpr bool is_nan(__half h)
     return (__half_raw(h).x & 0x7fff) > 0x7c00;
 }
 
-//! a * b + c, rounded once. The product is exact in double. The sum keeps
-//! every bit of c (halves are multiples of 2^-24, and finite sums are below
-//! 2^17), so it can only lose low bits of a product far smaller than c, whose
-//! sum with c then lies strictly between c and the next tie: rounding the
-//! double sum to nearest gives the correctly rounded half.
+//! a * b + c, rounded once (see fma_bits)
 constexpr __half fma(__half a, __half b, __half c)
 {
-    return to_half(to_double(a) * to_double(b) + to_double(c));
+    return __half_raw{uint16_t(fma_bits<binary16_format>(to_double(a), to_double(b), to_double(c)))};
 }
 
 template <typename F>
@@ -417,6 +352,15 @@ constexpr __half2 __hsub2_sat(__half2 a, __half2 b) { return detail::lanes(a, b,
 constexpr __half2 __hmul2_sat(__half2 a, __half2 b) { return detail::lanes(a, b, __hmul_sat); }
 inline __half2 __hfma2_sat(__half2 a, __half2 b, __half2 c) { return {__hfma_sat(a.x, b.x, c.x), __hfma_sat(a.y, b.y, c.y)}; }
 inline __half2 __hfma2_relu(__half2 a, __half2 b, __half2 c) { return {__hfma_relu(a.x, b.x, c.x), __hfma_relu(a.y, b.y, c.y)}; }
+
+//! a * b + c for complex numbers, held as (real, imaginary) pairs, computed
+//! in double and rounded to the type of the parts
+constexpr __half2 __hcmadd(__half2 a, __half2 b, __half2 c)
+{
+    using detail::to_double;
+    return {detail::to_half(to_double(a.x) * to_double(b.x) - to_double(a.y) * to_double(b.y) + to_double(c.x)),
+            detail::to_half(to_double(a.x) * to_double(b.y) + to_double(a.y) * to_double(b.x) + to_double(c.y))};
+}
 
 //
 // Comparisons. The plain ones are false when an operand is NaN, the ones

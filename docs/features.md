@@ -42,12 +42,21 @@
   correctly rounded, subnormals included, and conversions honor their
   `_rn`/`_rz`/`_rd`/`_ru` suffix. The other math functions round their
   double precision result, so they are at least as accurate as CUDA's.
+- bfloat16 (`cuda_bf16.h`): `__nv_bfloat16` and `__nv_bfloat162`
+  (`nv_bfloat16`, `nv_bfloat162`), with the same intrinsics as half, under
+  the same names for arithmetic, comparisons and math (`__hadd`, `__hlt`,
+  `hsqrt`, ...) and their own for conversions (`__float2bfloat16_rz`,
+  `__bfloat162int_rn`, `__floats2bfloat162_rn`, `__bfloat1622float2`, ...),
+  rounded as correctly. `__hcmadd` (complex multiply-add) is there for both
+  `half2` and `__nv_bfloat162`.
 - Math: the C++ standard library, plus `rsqrtf`, `rsqrt` and the fast
   intrinsics `__expf`, `__exp10f`, `__logf`, `__log2f`, `__log10f`, `__sinf`,
   `__cosf`, `__tanf`, `__sincosf`, `__powf`, `__fdividef` and `__saturatef`.
   They are computed at full precision.
 - Integer intrinsics: `__popc`, `__popcll`, `__clz`, `__clzll`, `__ffs`,
-  `__ffsll`, `__brev`, `__brevll`, `__mul24`, `__umul24`, and `__ldg`
+  `__ffsll`, `__brev`, `__brevll`, `__mul24`, `__umul24`, `__ldg`, and the
+  loads and stores with cache hints (`__ldcg`, `__ldcs`, `__stwb`, ...),
+  which are ordinary ones
 - `min` and `max` for integer and floating-point arguments, as in CUDA
 - Arithmetic with explicit rounding (`__fadd_rd`, `__dmul_ru`, `__fsqrt_rz`,
   ... for float and double), conversions with explicit rounding
@@ -72,7 +81,7 @@
 | More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool, `cudaMemPoolCreate`, `cudaMemPoolDestroy`), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`, `cudaHostGetFlags`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`, and `cudaMemRangeGetAttribute`/`cudaMemRangeGetAttributes`, which return them). All memory is host memory, so the hints and pool settings have no effect, but the hints are recorded per page. |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc`, and the default streams `cudaStreamLegacy` and `cudaStreamPerThread` (one per OS thread) |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
-| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cuda_fp16.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cuda_fp16.h`, `cuda_bf16.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
 | Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
 | Stream capture | `cudaStreamBeginCapture`, `cudaStreamBeginCaptureToGraph`, `cudaStreamEndCapture`, `cudaStreamIsCapturing`, `cudaStreamGetCaptureInfo`, `cudaStreamUpdateCaptureDependencies`, and fork and join through events. Kernel launches, async copies and memsets, `cudaLaunchHostFunc`, `cudaMallocAsync` and `cudaFreeAsync` are captured. |
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
