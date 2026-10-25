@@ -6,15 +6,14 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 129 of 154 pass today; most of the rest need
+shows what blocks real programs. 130 of 154 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
   `surf2Dwrite`, CUDA arrays): 10 programs.
 - **Dynamic parallelism**: kernels that launch kernels. 2 programs.
 - **Smaller API gaps**, one program each: libcu++ headers (`<cuda/...>`),
-  device-side `assert` reported as a launch error, `hip/hip_complex.h`, green
-  contexts.
+  device-side `assert` reported as a launch error, green contexts.
 - **Kernel language:** `__reduce_*_sync`, `memcpy_async`, 16-bit integer
   atomics.
 - **Platforms:** CI on AArch64, where the portable context switch

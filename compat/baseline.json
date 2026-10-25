@@ -67,7 +67,7 @@
   "rocm-examples/bit_extract": "passed",
   "rocm-examples/call_stack_management": "passed",
   "rocm-examples/calling_global_functions": "passed",
-  "rocm-examples/complex_math": "build_failed",
+  "rocm-examples/complex_math": "passed",
   "rocm-examples/constant_memory": "passed",
   "rocm-examples/cooperative_groups": "passed",
   "rocm-examples/data_prefetching": "passed",

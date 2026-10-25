@@ -13,6 +13,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/reduce.h
             ${CUDA4CPU_INCLUDE_DIR}/cooperative_groups/scan.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda.h
+            ${CUDA4CPU_INCLUDE_DIR}/cuComplex.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp8.h
@@ -29,6 +30,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_cooperative_groups.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_ext.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_bf16.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/hip_complex.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_fp8.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_runtime.h
