@@ -161,7 +161,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template
   also becomes `cuda4cpu-hipcc` (`CUDA4CPU_DRIVER_MODE` is `hip`), which
-  compiles every C++ source as HIP and drops hipcc's options for AMD GPUs.
+  compiles every C++ source as HIP and drops hipcc's options for AMD GPUs,
+  and `cuda4cpu-nvcc` (`nvcc`), which takes nvcc's command line:
+  `translate_nvcc` turns it into the host compiler's, from `NVCC_OPTIONS`
+  (each nvcc option's names, spelled with one dash or two, with `=value` or
+  the next argument), and handles nvcc's own steps (`--version`, `-v`,
+  `--dryrun`, `-dlink`, `-lib`, `-cuda`). It defines `__NVCC__` and
+  `__CUDACC_VER_*__` (12.0.140, as `CUDART_VERSION`). The nvcc and hip
+  drivers raise an older `-std` to C++23 (`raise_standard`): cuda4cpu's
+  headers don't compile with less.
   Both handle `.hip` files and `-x cu`/`-x hip`. The rewritten sources go in
   `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
   after the compile: their paths reach the command line and the
@@ -173,6 +181,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   run itself, and any other such loop stops at once: the driver sets
   `CUDA4CPU_DRIVER_RUNNING` for the compiler, and fails if it starts with it.
   (A driver running itself until the timeout used up the machine's memory.)
+- `cmake/cuda4cpu-toolkit.cmake`: a directory laid out like a CUDA toolkit
+  (`build/<preset>/toolkit`, installed as `<libdir>/cuda4cpu/toolkit`), for
+  build systems written for nvcc: `bin/nvcc` links to `cuda4cpu-nvcc`,
+  `include` to the headers, and `lib64` has `libcudart.so`,
+  `libcudart_static.a` and `libcuda.so` as linker scripts
+  (`INPUT(-lcuda4cpu <OpenMP>)`, so they resolve through `-L` wherever it's
+  installed), next to links to libcuda4cpu and its soname.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -295,8 +310,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
     `cuda4cpu-c++`, in one step and with separate compile and link, with its
-    default compiler and `CXX` set to the driver itself. `driver_hipcc` and `driver_x_hip` build a HIP `.cpp` file with
-    `cuda4cpu-hipcc` (and an AMD-only option) and with `cuda4cpu-c++ -x hip`.
+    default compiler and `CXX` set to the driver itself. `driver_hipcc` and
+    `driver_x_hip` build a HIP `.cpp` file with `cuda4cpu-hipcc` (and an
+    AMD-only option) and with `cuda4cpu-c++ -x hip`. `driver_nvcc` builds it
+    with `cuda4cpu-nvcc` and nvcc's options for the GPU, and
+    `driver_nvcc_options` (`driver/test_nvcc.py`) checks the translation of
+    nvcc's options (with `--dryrun`), its steps (`-dc`, `-dlink`, `-lib`) in
+    a build that runs, and the toolkit: its `bin/nvcc`, and a program that
+    the host compiler links with `-lcudart`.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):
     `hip_runtime` (errors and their names, device queries and attributes,
     host memory, driver-API copies and memsets, symbols, `hipStreamDefault`
