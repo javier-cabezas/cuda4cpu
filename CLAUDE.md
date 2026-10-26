@@ -229,9 +229,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   one; findings come from cuda4cpu's `cuda4cpu: warning:` reports (warn
   mode), AddressSanitizer's and UBSan's reports (`user_frame` picks the
   first frame in the program's directories), time-outs and crashes. Keep its
-  patterns in sync with the reports' wording in `lib/`. `capabilities`
-  reads `features.md` and `limitations.md` from the docs, which are
-  installed to `<datadir>/doc/cuda4cpu` for it.
+  patterns in sync with the reports' wording in `lib/`. `test_kernel`
+  generates a program (`HARNESS`, filled in by `harness_of`) that launches
+  one kernel with arguments given as values or generators, compares its
+  outputs with expected values or a `reference` function, and prints
+  `CUDA4CPU_TEST` JSON lines, which `test_results` reads; it then goes
+  through `check_program`. The harness's placeholders are `__CUDA4CPU_X__`:
+  `@X@` would be replaced by `configure_file`. `capabilities` reads
+  `features.md` and `limitations.md` from the docs, which are installed to
+  `<datadir>/doc/cuda4cpu` for it.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -367,7 +373,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `check` on programs with known bugs (the `examples/bugs` programs, a
     divergent barrier, a copy in the wrong direction, signed overflow, a
     failure, a hang, varying output), each found at its line, and nothing in
-    a correct program.
+    a correct program; and `test_kernel` on correct and wrong kernels
+    (mismatches by index, an order-dependent kernel, an overflow inside an
+    allocation's rounding, templates, HIP, invalid requests).
   - `driver_hipcc_tools` (`driver/test_hipcc.py`): `hipconfig`'s answers,
     `hipcc --version`, the `HIPCC_*` variables, `--emit-static-lib`, and a
     program the host compiler links with `-L<toolkit>/lib -lamdhip64`.
@@ -640,9 +648,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   HIP's pointer functions look up any pointer into them
   (`find_allocation`, which then asks `graphs.cpp` for graph allocations),
   and `cudaFree`/`cudaFreeHost` reject pointers that aren't the start of an
-  allocation, as CUDA does. The unified memory hints are kept there too, as
-  disjoint ranges of pages that updates split: they cover whole pages, and a
-  new allocation erases the hints left on its pages. The state is never
+  allocation, as CUDA does. Allocations are rounded up to
+  `allocation_alignment` (256 bytes); under AddressSanitizer (weak
+  `__asan_poison_memory_region`), `allocate_aligned` poisons the rest and
+  `release_allocation` unpoisons it before freeing, so an access just past
+  the end is a `use-after-poison` instead of going unnoticed. The unified
+  memory hints are kept there too, as disjoint ranges of pages that updates
+  split: they cover whole pages, and a new allocation erases the hints left
+  on its pages. The state is never
   destroyed, because static objects may free memory after `main` returns.
 - HIP's virtual memory: physical memory is a `memfd` (`vmm_allocation`,
   reference-counted by its handle and its mappings), a reserved range is a

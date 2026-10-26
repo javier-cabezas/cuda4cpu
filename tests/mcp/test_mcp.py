@@ -22,7 +22,8 @@
 and each tool on programs whose problems are known. check must find each bug
 (a missing __syncthreads(), an out-of-bounds access, a divergent barrier, a
 copy in the wrong direction, undefined behavior, a failure, a hang) where it
-is, and nothing in a correct program.
+is, and nothing in a correct program. test_kernel must pass correct kernels
+and name the elements that wrong ones get wrong.
 
 Usage: test_mcp.py <cuda4cpu-mcp> <examples/bugs>
 """
@@ -67,6 +68,7 @@ class Client:
     def close(self):
         self.process.stdin.close()
         self.process.wait(timeout=30)
+        self.process.stdout.close()
 
 
 CLIENT = None
@@ -141,7 +143,7 @@ class Protocol(unittest.TestCase):
 
     def test_tools(self):
         tools = CLIENT.request('tools/list')['result']['tools']
-        self.assertEqual([t['name'] for t in tools], ['compile', 'run', 'check', 'capabilities'])
+        self.assertEqual([t['name'] for t in tools], ['compile', 'run', 'check', 'test_kernel', 'capabilities'])
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])
@@ -245,7 +247,7 @@ class Check(unittest.TestCase):
     def test_out_of_bounds(self):
         content = self.check(paths=[os.path.join(BUGS, 'out_of_bounds.cu')])
         finding = content['findings'][0]
-        self.assertEqual(finding['kind'], 'AddressSanitizer: heap-buffer-overflow')
+        self.assertEqual(finding['kind'], 'AddressSanitizer: allocation-overflow')
         location = finding['locations'][0]
         self.assertTrue(location['file'].endswith('out_of_bounds.cu'))
         self.assertEqual(location['line'], 27)
@@ -308,6 +310,114 @@ __global__ void kernel(int *d)
         self.assertEqual(content['verdict'], 'no problems found')
         content = self.check(files={'timing.cu': timing}, sanitizers=False, ignore_patterns=['^clock'])
         self.assertTrue(content['deterministic_output'])
+
+
+SAXPY = {
+    'kernel': '__global__ void saxpy(float a, const float *x, float *y, int n)\n'
+              '{\n'
+              '    int i = blockIdx.x * blockDim.x + threadIdx.x;\n'
+              '    if (i < n)\n'
+              '        y[i] = a * x[i] + y[i];\n'
+              '}\n',
+    'name': 'saxpy', 'grid': 4, 'block': 64,
+    'arguments': [{'name': 'a', 'type': 'float', 'value': 2.5},
+                  {'name': 'x', 'type': 'const float*', 'data': {'random': [-1, 1], 'count': 250, 'seed': 7}},
+                  {'name': 'y', 'type': 'float*', 'data': {'range': [0, 0.5], 'count': 250}, 'output': True},
+                  {'name': 'n', 'type': 'int', 'value': 250}],
+    'reference': 'void reference(float a, const float *x, float *y, int n)\n'
+                 '{\n    for (int i = 0; i < n; ++i)\n        y[i] = a * x[i] + y[i];\n}\n',
+    'seeds': [1],
+}
+
+
+class TestKernel(unittest.TestCase):
+
+    def call_tool(self, **arguments):
+        result, content = CLIENT.call('test_kernel', **arguments)
+        self.assertFalse(result['isError'], result)
+        return result, content
+
+    def test_correct_kernel(self):
+        result, content = self.call_tool(**SAXPY)
+        self.assertTrue(content['passed'], content)
+        self.assertEqual(content['outputs'], [{'output': 'y', 'elements': 250, 'first_mismatches': [],
+                                               'mismatches': 0, 'max_abs_error': content['outputs'][0]['max_abs_error']}])
+        self.assertEqual(content['verdict'], 'no problems found')
+        self.assertTrue(result['content'][0]['text'].startswith('passed'))
+
+    def test_wrong_element(self):
+        wrong = dict(SAXPY, kernel=SAXPY['kernel'].replace('i < n', 'i <= n'),
+                     arguments=SAXPY['arguments'][:3] + [{'name': 'n', 'type': 'int', 'value': 249}])
+        _, content = self.call_tool(**wrong)
+        self.assertFalse(content['passed'])
+        output = content['outputs'][0]
+        self.assertEqual(output['mismatches'], 1)
+        self.assertEqual(output['first_mismatches'][0]['index'], 249)
+
+    def test_expected_values_and_template(self):
+        kernel = ('template <typename T>\n__global__ void square(T *d)\n{\n'
+                  '    d[threadIdx.x] = d[threadIdx.x] * d[threadIdx.x];\n}\n')
+        _, content = self.call_tool(kernel=kernel, name='square<long long>', grid=1, block=[4, 1, 1],
+                               arguments=[{'type': 'long long *', 'data': [1, -2, 3, 3000000000],
+                                           'expected': [1, 4, 9, 9000000000000000000]}], check=False)
+        self.assertTrue(content['passed'], content)
+        _, content = self.call_tool(kernel=kernel, name='square<int>', grid=1, block=3,
+                               arguments=[{'type': 'int*', 'data': [1, 2, 3], 'expected': [1, 4, 10]}], check=False)
+        self.assertFalse(content['passed'])
+        self.assertEqual(content['outputs'][0]['first_mismatches'], [{'index': 2, 'got': 9, 'expected': 10}])
+
+    def test_order_dependent_kernel(self):
+        """Each thread reads its predecessor's element of shared memory
+        without a barrier: right in the default order only"""
+        kernel = ('__global__ void shift(int *d)\n{\n    __shared__ int s[64];\n'
+                  '    s[threadIdx.x] = d[threadIdx.x];\n'
+                  '    d[threadIdx.x] = threadIdx.x > 0 ? s[threadIdx.x - 1] : 0;\n}\n')
+        _, content = self.call_tool(kernel=kernel, name='shift', grid=1, block=64, seeds=[1],
+                               arguments=[{'type': 'int*', 'data': {'range': [1, 1], 'count': 64},
+                                           'expected': {'range': [0, 1], 'count': 64}}])
+        self.assertEqual(content['outputs'][0]['mismatches'], 0)
+        self.assertFalse(content['passed'])
+        self.assertEqual([f['kind'] for f in content['findings']], ['depends on the thread order'])
+
+    def test_overflow_within_an_allocation_s_rounding(self):
+        """128 threads write 100 ints: the overflow fits in the rounding of
+        the allocation to 256 bytes, which cuda4cpu poisons"""
+        kernel = '__global__ void inc(int *y)\n{\n    y[blockIdx.x * blockDim.x + threadIdx.x] += 1;\n}\n'
+        _, content = self.call_tool(kernel=kernel, name='inc', grid=2, block=64, seeds=[1],
+                               arguments=[{'type': 'int*', 'data': {'fill': 0, 'count': 100},
+                                           'expected': {'fill': 1, 'count': 100}}])
+        self.assertFalse(content['passed'])
+        finding = content['findings'][0]
+        self.assertEqual(finding['kind'], 'AddressSanitizer: allocation-overflow')
+        self.assertEqual((finding['locations'][0]['file'], finding['locations'][0]['line']), ('kernel.cu', 3))
+
+    def test_hip_kernel(self):
+        kernel = ('#include <hip/hip_runtime.h>\n__global__ void halve(double *d) '
+                  '{ d[hipThreadIdx_x] /= 2; }\n')
+        _, content = self.call_tool(language='hip', kernel=kernel, name='halve', grid=1, block=8, check=False,
+                               tolerance={'absolute': 0, 'relative': 1e-12},
+                               arguments=[{'type': 'double*', 'data': {'fill': 3, 'count': 8},
+                                           'expected': {'fill': 1.5, 'count': 8}}])
+        self.assertTrue(content['passed'], content)
+        self.assertEqual(content['language'], 'hip')
+
+    def test_compile_error_in_the_kernel(self):
+        kernel = '__global__ void k(int *d)\n{\n    d[threadIdx.x] = undeclared;\n}\n'
+        _, content = self.call_tool(kernel=kernel, name='k', grid=1, block=1,
+                               arguments=[{'type': 'int*', 'data': [0], 'expected': [0]}])
+        self.assertFalse(content['compiled'])
+        error = [d for d in content['diagnostics'] if d['severity'] == 'error'][0]
+        self.assertEqual((error['file'], error['line']), ('kernel.cu', 3))
+
+    def test_invalid_requests(self):
+        for bad in ({'arguments': [{'type': 'struct params', 'value': 1}]},
+                    {'arguments': [{'type': 'int*', 'data': [0]}]},              # no output
+                    {'arguments': [{'type': 'int*', 'data': [0, 1], 'expected': [0]}]},
+                    {'arguments': [{'type': 'int*', 'data': [0], 'output': True}]},   # no expected, no reference
+                    {'arguments': [{'type': 'int*', 'data': [0], 'expected': [0]}], 'block': 2048}):
+            request = dict({'kernel': '__global__ void k(int *) {}', 'name': 'k', 'grid': 1, 'block': 1}, **bad)
+            result, _ = CLIENT.call('test_kernel', **request)
+            self.assertTrue(result['isError'], bad)
 
 
 class Capabilities(unittest.TestCase):

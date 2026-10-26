@@ -55,6 +55,15 @@
 
 #include "cuda4cpu.hpp"
 
+// AddressSanitizer's interface, called only when the program is built with
+// it, so that the same build of the library works without: allocations are
+// rounded up to allocation_alignment, and the rest is poisoned, so that a
+// kernel that runs a few elements past the end is reported
+extern "C" {
+[[gnu::weak]] void __asan_poison_memory_region(void const volatile *addr, size_t size);
+[[gnu::weak]] void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+}
+
 namespace cuda4cpu::detail {
 
 //! Physical memory of HIP's virtual memory management. It is freed once its
@@ -310,10 +319,12 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
     if (size > SIZE_MAX - allocation_alignment)
         return nullptr;
 
-    void *ptr = std::aligned_alloc(allocation_alignment,
-                                   (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment);
+    const size_t rounded = (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment;
+    void *ptr = std::aligned_alloc(allocation_alignment, rounded);
     if (ptr == nullptr)
         return nullptr;
+    if (__asan_poison_memory_region != nullptr && rounded > size)
+        __asan_poison_memory_region(static_cast<char *>(ptr) + size, rounded - size);
 
     // Memory that a program registered and then freed without unregistering
     // may come back: those registrations are stale, as are hints on it
@@ -438,14 +449,18 @@ bool check_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind)
 bool release_allocation(void *ptr)
 {
     auto &s = state();
+    size_t size;
     {
         std::lock_guard lock(s.mutex);
         auto it = s.allocations.find(reinterpret_cast<uintptr_t>(ptr));
         if (it == s.allocations.end() || it->second.kind == memory_kind::registered ||
             it->second.kind == memory_kind::mapped || it->second.kind == memory_kind::symbol)
             return false;
+        size = it->second.size;
         s.allocations.erase(it);
     }
+    if (__asan_unpoison_memory_region != nullptr)
+        __asan_unpoison_memory_region(ptr, (size + allocation_alignment - 1) / allocation_alignment * allocation_alignment);
     std::free(ptr);
     return true;
 }
