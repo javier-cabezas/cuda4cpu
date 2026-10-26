@@ -43,8 +43,9 @@ translated (-Xcompiler, -ccbin, --compiler-options, -dc, ...), and
 __CUDACC_VER_MAJOR__, __CUDACC_VER_MINOR__ and __CUDACC_VER_BUILD__, and
 reads NVCC_PREPEND_FLAGS and NVCC_APPEND_FLAGS.
 
-cuda4cpu needs C++23: cuda4cpu-nvcc and cuda4cpu-hipcc raise an older -std
-(c++17, gnu++20, ...) to it, of the same dialect, as drop-ins must.
+cuda4cpu's headers need C++23, so the drivers raise an older -std (c++17,
+gnu++20, ...) to it, of the same dialect: a build system that asks for
+C++17 still compiles, and host code that includes cuda_runtime.h too.
 
 The driver adds the C++ standard, OpenMP and the cuda4cpu include directory,
 and links libcuda4cpu when it links. The compiler is $CUDA4CPU_CXX, $CXX
@@ -63,6 +64,10 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@'))
 LIBRARY_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_LIBRARY_DIR@'))
 REWRITE = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_REWRITE@'))
+# The directory laid out like a CUDA toolkit (cmake/cuda4cpu-toolkit.cmake)
+TOOLKIT = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_TOOLKIT_DIR@'))
+# cuda4cpu-c++, which cuda4cpu-nvcc links with, as nvcc with its host compiler
+HOST_DRIVER = os.path.join(HERE, 'cuda4cpu-c++')
 
 # 'hip' for cuda4cpu-hipcc, which compiles C++ sources as HIP, as hipcc does,
 # and 'nvcc' for cuda4cpu-nvcc, which takes nvcc's options
@@ -112,6 +117,9 @@ HIPCC_DROPPED = {'--hip-link', '--offload-device-only', '--offload-host-only', '
 # The version of CUDA that cuda4cpu implements (CUDART_VERSION), as nvcc's
 NVCC_VERSION = (12, 0, 140)
 
+# The architecture nvcc 12.0 compiles for by default, which -v reports
+NVCC_DEFAULT_ARCHITECTURE = 52
+
 DROP, DROP_VALUE = 'drop', 'drop value'
 
 NVCC_OPTIONS = {
@@ -143,7 +151,7 @@ NVCC_OPTIONS = {
     'x': ['-x'], 'language': ['-x'],
     # Handled by translate_nvcc
     **dict.fromkeys(['Xcompiler', 'compiler-options', 'Xlinker', 'linker-options', 'ccbin', 'compiler-bindir',
-                     'std', 'Werror'], 'special value'),
+                     'std', 'Werror', 'options-file', 'optf'], 'special value'),
     **dict.fromkeys(['dlink', 'device-link', 'lib', 'cuda', 'version', 'V', 'v', 'verbose', 'dryrun', 'dry-run',
                      'help', 'h', 'ptx', 'cubin', 'fatbin', 'optix-ir', 'ltoir'], 'special'),
 }
@@ -253,6 +261,11 @@ def translate_nvcc(argv):
             args += ['-Wl,' + item for item in value.split(',') if item]
         elif name in ('ccbin', 'compiler-bindir'):
             request.host_compiler = host_compiler_for(value)
+        elif name in ('options-file', 'optf'):
+            # More options, from files, as CMake passes long command lines
+            for path in value.split(','):
+                with open(path) as f:
+                    argv[i:i] = shlex.split(f.read())
         elif name == 'std':
             args.append(raise_standard('-std=' + value))
         elif name == 'Werror':
@@ -354,10 +367,29 @@ def find_compiler(host_compiler=None):
 RUNNING = 'CUDA4CPU_DRIVER_RUNNING'
 
 
+def nvcc_echo(command):
+    """command as nvcc shows it, with its -I and -L options in double quotes,
+    as CMake expects to find nvcc's INCLUDES and LIBRARIES in it"""
+    return ' '.join(f'"{a}"' if a.startswith(('-I', '-L')) else shlex.quote(a) for a in command)
+
+
+def nvcc_environment():
+    """What nvcc -v shows before its commands: the variables of its
+    configuration, from which CMake learns the toolkit's root, include and
+    library directories, and the default architecture"""
+    lines = [f'_NVVM_BRANCH_=nvvm', f'_HERE_={os.path.join(TOOLKIT, "bin")}', f'TOP={TOOLKIT}',
+             f'NVVMIR_LIBRARY_DIR={os.path.join(TOOLKIT, "nvvm", "libdevice")}',
+             f'PATH={os.path.join(TOOLKIT, "bin")}:{os.environ.get("PATH", "")}',
+             f'INCLUDES="-I{os.path.join(TOOLKIT, "include")}"', 'SYSTEM_INCLUDES=',
+             f'LIBRARIES=  "-L{os.path.join(TOOLKIT, "lib64")}"',
+             f'_CUDA4CPU_ARCHITECTURE_=-arch compute_{NVCC_DEFAULT_ARCHITECTURE}']
+    return ''.join('#$ ' + line + '\n' for line in lines)
+
+
 def run(command, request, env=None):
     """Runs command, or with nvcc's -v or --dryrun shows it first, or only"""
     if request is not None and (request.verbose or request.dry_run):
-        sys.stderr.write('#$ ' + shlex.join(command) + '\n')
+        sys.stderr.write('#$ ' + nvcc_echo(command) + '\n')
         if request.dry_run:
             return 0
     return subprocess.call(command, env=env)
@@ -399,6 +431,8 @@ def main(argv):
     request = None
     if MODE == 'nvcc':
         argv, request = translate_nvcc(argv)
+        if request.verbose or request.dry_run:
+            sys.stderr.write(nvcc_environment())
         if request.step == 'version':
             sys.stdout.write(nvcc_version(find_compiler(request.host_compiler)))
             return 0
@@ -419,7 +453,10 @@ def main(argv):
         # here, the rewritten file preprocessed
         sources = [a for a in argv if not a.startswith('-') and source_language(a, None) is not None]
         argv = argv + ['-E'] + ([] if '-o' in argv or len(sources) != 1 else ['-o', os.path.basename(sources[0]) + '.cpp.ii'])
-    work = work_directory(argv)
+    # Made for the first source that needs rewriting: a link through
+    # cuda4cpu-c++ by cuda4cpu-nvcc must leave the sources it rewrote in the
+    # same directory alone
+    work = None
     try:
         args = []
         rewritten = False
@@ -430,7 +467,7 @@ def main(argv):
             if MODE == 'hip' and (arg in HIPCC_DROPPED or arg.startswith(HIPCC_DROPPED_PREFIXES)):
                 i += 1
                 continue
-            if MODE == 'hip' and arg.startswith('-std='):
+            if arg.startswith('-std='):
                 arg = raise_standard(arg)
             if arg == '-x' and i + 1 < len(argv) or arg.startswith('-x') and len(arg) > 2:
                 value = argv[i + 1] if arg == '-x' else arg[2:]
@@ -450,6 +487,8 @@ def main(argv):
                 continue
             language = source_language(arg, x_language)
             if language is not None:
+                if work is None:
+                    work = work_directory(argv)
                 # Keep the file name, so that the default object name stays the same
                 out = os.path.join(work, str(i), os.path.basename(arg))
                 os.makedirs(os.path.dirname(out))
@@ -475,13 +514,24 @@ def main(argv):
             front += ['-D__NVCC__', f'-D__CUDACC_VER_MAJOR__={major}', f'-D__CUDACC_VER_MINOR__={minor}',
                       f'-D__CUDACC_VER_BUILD__={build}']
 
+        links = not NO_LINK.intersection(args)
+        if MODE == 'nvcc' and links:
+            # nvcc links with its host compiler and the CUDA runtime; here,
+            # cuda4cpu-c++ with libcuda4cpu (and the toolkit's
+            # libcudart_static, which is it), with the same compiler. CMake
+            # reads this command in -v's output, and links CUDA programs with
+            # the program it starts with.
+            return run([HOST_DRIVER] + front + args + ['-L' + os.path.join(TOOLKIT, 'lib64'), '-lcudart_static'],
+                       request, env=dict(os.environ, CUDA4CPU_CXX=compiler))
+
         back = []
-        if not NO_LINK.intersection(args):
+        if links:
             back = ['-L' + LIBRARY_DIR, '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
 
         return run([compiler] + front + args + back, request, env=dict(os.environ, **{RUNNING: '1'}))
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == '__main__':

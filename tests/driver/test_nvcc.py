@@ -49,11 +49,13 @@ def nvcc(*args, env=None, cwd=None):
 
 
 def commands(*args, env=None):
-    """The commands --dryrun shows, each as a list of arguments"""
+    """The commands --dryrun shows, each as a list of arguments (without the
+    lines that show nvcc's configuration, NAME=value)"""
     result = nvcc('--dryrun', *args, env=env)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
-    return [shlex.split(line[3:]) for line in result.stderr.splitlines() if line.startswith('#$ ')]
+    return [shlex.split(line[3:]) for line in result.stderr.splitlines()
+            if line.startswith('#$ ') and not re.match(r'#\$ [^= ]+=', line)]
 
 
 def compile_command(*args, env=None):
@@ -111,7 +113,37 @@ class Translation(unittest.TestCase):
         self.assertNotIn('cuda', command)
         self.assertIn('-lm', command)
         self.assertIn('pthread', command)
-        self.assertIn('-lcuda4cpu', command)
+        # Links go through cuda4cpu-c++, which adds libcuda4cpu, with the
+        # toolkit's libcudart_static, as nvcc links its static runtime
+        self.assertEqual(os.path.basename(command[0]), 'cuda4cpu-c++')
+        self.assertIn('-L' + os.path.join(TOOLKIT, 'lib64'), command)
+        self.assertIn('-lcudart_static', command)
+
+    def test_verbose_shows_configuration(self):
+        """What CMake reads in nvcc -v's output: the toolkit's root, include
+        and library directories, the default architecture, and a link line
+        with the library directory, whose first word links CUDA programs"""
+        output = nvcc('--dryrun', '-o', 'app', PROGRAM).stderr
+        lib64 = os.path.join(TOOLKIT, 'lib64')
+        self.assertIn(f'#$ TOP={TOOLKIT}\n', output)
+        self.assertIn(f'#$ NVVMIR_LIBRARY_DIR={os.path.join(TOOLKIT, "nvvm", "libdevice")}\n', output)
+        self.assertIn(f'#$ INCLUDES="-I{os.path.join(TOOLKIT, "include")}"\n', output)
+        self.assertIn(f'#$ LIBRARIES=  "-L{lib64}"\n', output)
+        self.assertRegex(output, r'-arch compute_52')
+        link = output.splitlines()[-1]
+        self.assertIn(f'"-L{lib64}"', link)
+        self.assertTrue(link.startswith('#$ ' + os.path.join(os.path.dirname(NVCC), 'cuda4cpu-c++') + ' '), link)
+        self.assertTrue(os.path.isdir(os.path.join(TOOLKIT, 'nvvm', 'libdevice')))
+
+    def test_options_file(self):
+        with tempfile.TemporaryDirectory() as work:
+            options = os.path.join(work, 'options.txt')
+            with open(options, 'w') as f:
+                f.write('-DFROM_FILE "-I/a dir" -arch=sm_80\n')
+            command = compile_command('--options-file', options, '-c', PROGRAM)
+            self.assertIn('-DFROM_FILE', command)
+            self.assertIn('-I/a dir', command)
+            self.assertFalse([a for a in command if 'sm_80' in a])
 
     def test_host_compiler(self):
         self.assertEqual(compile_command('-ccbin', 'gcc-14', '-c', PROGRAM)[0], 'g++-14')

@@ -28,12 +28,21 @@
 # LD_LIBRARY_PATH (lib64 has a link to its soname too), unless it's
 # installed where the dynamic loader looks. It's toolkit/ in the build tree,
 # and <libdir>/cuda4cpu/toolkit in the installation.
+#
+# cuda4cpu.cmake there is a toolchain file for CMake projects with LANGUAGES
+# CUDA (or HIP): CUDA (and HIP) compile with bin/nvcc, and C++ with
+# bin/cuda4cpu-c++, for host code that includes CUDA's headers.
 
 # Writes the toolkit into directory: nvcc and include are what bin/nvcc and
 # include link to, and libdir where lib64's links to libcuda4cpu point
 function(cuda4cpu_toolkit directory nvcc include libdir)
-    file(MAKE_DIRECTORY ${directory}/bin ${directory}/lib64)
+    # nvvm/libdevice, which holds nvcc's device libraries, only for CMake to
+    # find (it checks that the toolkit has one)
+    file(MAKE_DIRECTORY ${directory}/bin ${directory}/lib64 ${directory}/nvvm/libdevice)
     file(CREATE_LINK ${nvcc} ${directory}/bin/nvcc SYMBOLIC)
+    cmake_path(REPLACE_FILENAME nvcc cuda4cpu-c++ OUTPUT_VARIABLE cxx)
+    file(CREATE_LINK ${cxx} ${directory}/bin/cuda4cpu-c++ SYMBOLIC)
+    configure_file(${PROJECT_SOURCE_DIR}/cmake/cuda4cpu-toolchain.cmake ${directory}/cuda4cpu.cmake COPYONLY)
     file(CREATE_LINK ${include} ${directory}/include SYMBOLIC)
     if(BUILD_SHARED_LIBS)
         set(names ${CMAKE_SHARED_LIBRARY_PREFIX}cuda4cpu${CMAKE_SHARED_LIBRARY_SUFFIX})
@@ -54,6 +63,10 @@ function(cuda4cpu_toolkit directory nvcc include libdir)
     foreach(name IN ITEMS libcudart.so libcudart_static.a libcuda.so)
         file(WRITE ${directory}/lib64/${name} "/* cuda4cpu: the CUDA runtime is libcuda4cpu */\nINPUT(${inputs})\n")
     endforeach()
+
+    # The device runtime, which CMake links with CUDA programs: there's no
+    # device code, so an empty archive
+    file(WRITE ${directory}/lib64/libcudadevrt.a "!<arch>\n")
 endfunction()
 
 cuda4cpu_toolkit(${PROJECT_BINARY_DIR}/toolkit ${PROJECT_BINARY_DIR}/tools/cuda4cpu-nvcc

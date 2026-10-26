@@ -89,6 +89,34 @@ or `FetchContent`. The functions and the target are then available.
 [examples/cmake-project](../examples/cmake-project) is a complete project that
 fetches cuda4cpu from GitHub.
 
+### Projects written for CMake's CUDA or HIP language
+
+A project that already builds with nvcc through CMake's own CUDA support
+(`project(... LANGUAGES CUDA)`, `enable_language(CUDA)`,
+`find_package(CUDAToolkit)` and `CUDA::cudart`) builds unchanged with a
+toolchain file, with CMake 4.1 or later (older CMake only accepts NVIDIA's
+own nvcc):
+
+```sh
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=<prefix>/lib/cuda4cpu/toolkit/cuda4cpu.cmake
+```
+
+In the build tree, it's `build/<preset>/toolkit/cuda4cpu.cmake`. It makes
+`cuda4cpu-nvcc` the CUDA compiler, which CMake identifies as NVIDIA's nvcc
+12.0, with the toolkit directory (below) as the CUDA toolkit. It makes
+`cuda4cpu-c++` the C++ compiler, so that `.cpp` files that include
+`cuda_runtime.h` get what cuda4cpu's headers need (C++23, OpenMP and the
+include path), and programs get an rpath to libcuda4cpu. CMake's CUDA
+architectures, separable compilation (`CUDA_SEPARABLE_COMPILATION`, device
+linking), `CUDA_STANDARD` and the toolkit's runtime target
+(`CUDA::cudart`) work; libraries that cuda4cpu doesn't
+implement (cuBLAS, ...) aren't found. With it, all 43 of NVIDIA's samples that
+pass in the compatibility suite build with their own `CMakeLists.txt` and
+pass.
+
+The same file sets up HIP on its NVIDIA platform (`project(... LANGUAGES
+HIP)`, with `CMAKE_HIP_PLATFORM=nvidia`), whose compiler is nvcc.
+
 ### Without CMake
 
 `cuda4cpu-c++` is a compiler driver: use it like your C++ compiler, with `.cu`
@@ -156,8 +184,8 @@ cuda4cpu-nvcc -lib -o libkernels.a kernels.o dlink.o
   nvcc does.
 - cuda4cpu needs C++23, so an older `-std` (`c++17`, `gnu++20`, ...) is
   raised to it, in the same dialect: nvcc's default is C++17, and host code
-  that includes `cuda_runtime.h` needs C++23 too. `cuda4cpu-hipcc` does the
-  same.
+  that includes `cuda_runtime.h` needs C++23 too. `cuda4cpu-c++` and
+  `cuda4cpu-hipcc` do the same.
 
 Build systems that look for nvcc in a CUDA toolkit (`$(CUDA_PATH)/bin/nvcc`,
 `-I$(CUDA_PATH)/include`, `-L$(CUDA_PATH)/lib64 -lcudart`) find one in
