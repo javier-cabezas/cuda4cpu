@@ -32,16 +32,29 @@
 # cuda4cpu.cmake there is a toolchain file for CMake projects with LANGUAGES
 # CUDA (or HIP): CUDA (and HIP) compile with bin/nvcc, and C++ with
 # bin/cuda4cpu-c++, for host code that includes CUDA's headers.
+#
+# It's laid out like a ROCm installation too, for HIP_PATH and ROCM_PATH:
+# bin/hipcc and bin/hipconfig, and lib with libamdhip64 (a linker script like
+# lib64's) and HIP's CMake package (lib/cmake/hip, for find_package(hip)).
 
 # Writes the toolkit into directory: nvcc and include are what bin/nvcc and
 # include link to, and libdir where lib64's links to libcuda4cpu point
 function(cuda4cpu_toolkit directory nvcc include libdir)
     # nvvm/libdevice, which holds nvcc's device libraries, only for CMake to
     # find (it checks that the toolkit has one)
-    file(MAKE_DIRECTORY ${directory}/bin ${directory}/lib64 ${directory}/nvvm/libdevice)
+    file(MAKE_DIRECTORY ${directory}/bin ${directory}/lib64 ${directory}/lib/cmake/hip ${directory}/nvvm/libdevice)
     file(CREATE_LINK ${nvcc} ${directory}/bin/nvcc SYMBOLIC)
-    cmake_path(REPLACE_FILENAME nvcc cuda4cpu-c++ OUTPUT_VARIABLE cxx)
-    file(CREATE_LINK ${cxx} ${directory}/bin/cuda4cpu-c++ SYMBOLIC)
+    foreach(tool IN ITEMS cuda4cpu-c++ hipcc hipconfig)
+        set(target cuda4cpu-${tool})
+        if(tool STREQUAL "cuda4cpu-c++")
+            set(target ${tool})
+        endif()
+        cmake_path(REPLACE_FILENAME nvcc ${target} OUTPUT_VARIABLE path)
+        file(CREATE_LINK ${path} ${directory}/bin/${tool} SYMBOLIC)
+    endforeach()
+    foreach(file IN ITEMS hip-config.cmake hip-config-version.cmake)
+        configure_file(${PROJECT_SOURCE_DIR}/cmake/${file} ${directory}/lib/cmake/hip/${file} COPYONLY)
+    endforeach()
     configure_file(${PROJECT_SOURCE_DIR}/cmake/cuda4cpu-toolchain.cmake ${directory}/cuda4cpu.cmake COPYONLY)
     file(CREATE_LINK ${include} ${directory}/include SYMBOLIC)
     if(BUILD_SHARED_LIBS)
@@ -51,7 +64,9 @@ function(cuda4cpu_toolkit directory nvcc include libdir)
         set(names ${CMAKE_STATIC_LIBRARY_PREFIX}cuda4cpu${CMAKE_STATIC_LIBRARY_SUFFIX})
     endif()
     foreach(name IN LISTS names)
-        file(CREATE_LINK ${libdir}/${name} ${directory}/lib64/${name} SYMBOLIC)
+        foreach(dir IN ITEMS lib64 lib)
+            file(CREATE_LINK ${libdir}/${name} ${directory}/${dir}/${name} SYMBOLIC)
+        endforeach()
     endforeach()
 
     # A static libcuda4cpu needs its own dependencies too
@@ -60,8 +75,8 @@ function(cuda4cpu_toolkit directory nvcc include libdir)
         list(APPEND inputs ${NUMA_LIBRARY})
     endif()
     list(JOIN inputs " " inputs)
-    foreach(name IN ITEMS libcudart.so libcudart_static.a libcuda.so)
-        file(WRITE ${directory}/lib64/${name} "/* cuda4cpu: the CUDA runtime is libcuda4cpu */\nINPUT(${inputs})\n")
+    foreach(name IN ITEMS lib64/libcudart.so lib64/libcudart_static.a lib64/libcuda.so lib/libamdhip64.so)
+        file(WRITE ${directory}/${name} "/* cuda4cpu: the CUDA and HIP runtime is libcuda4cpu */\nINPUT(${inputs})\n")
     endforeach()
 
     # The device runtime, which CMake links with CUDA programs: there's no
