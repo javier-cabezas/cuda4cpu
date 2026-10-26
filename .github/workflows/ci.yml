@@ -81,7 +81,7 @@ jobs:
           key: ${{ steps.setup.outputs.ccache-key }}
 
   # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
-  # test suite must run clean. (The driver and CMake language tests build
+  # test suite must run clean. (The driver, CMake language and MCP tests build
   # programs without the sanitizer flags against the instrumented library.)
   sanitizers:
     name: gcc-14 / AddressSanitizer and UBSan
@@ -104,7 +104,7 @@ jobs:
         run: |
           cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           cmake --build --preset debug
-          ctest --preset debug -E '^(driver|cmake_language)'
+          ctest --preset debug -E '^(driver|cmake_language|mcp)'
 
       - name: Save the compiler cache
         if: always()
