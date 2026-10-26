@@ -1,0 +1,2 @@
+# The Rodinia patch has CRLF lines, as the file it patches
+*.patch -text

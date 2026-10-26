@@ -1,0 +1,17 @@
+diff --git a/cpp/5_Domain_Specific/SobolQRNG/sobol.cpp b/cpp/5_Domain_Specific/SobolQRNG/sobol.cpp
+index 0523a19..4a20499 100644
+--- a/cpp/5_Domain_Specific/SobolQRNG/sobol.cpp
++++ b/cpp/5_Domain_Specific/SobolQRNG/sobol.cpp
+@@ -295,9 +295,9 @@ int main(int argc, char *argv[])
+     // Cleanup and terminate
+     std::cout << "Shutting down..." << std::endl;
+     sdkDeleteTimer(&hTimer);
+-    delete h_directions;
+-    delete h_outputCPU;
+-    delete h_outputGPU;
++    delete[] h_directions;
++    delete[] h_outputCPU;
++    delete[] h_outputGPU;
+     checkCudaErrors(cudaFree(d_directions));
+     checkCudaErrors(cudaFree(d_output));
+ 

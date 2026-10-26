@@ -1,0 +1,13 @@
+diff --git a/cpp/3_CUDA_Features/graphMemoryNodes/graphMemoryNodes.cu b/cpp/3_CUDA_Features/graphMemoryNodes/graphMemoryNodes.cu
+index bba8e2a..53adf3d 100644
+--- a/cpp/3_CUDA_Features/graphMemoryNodes/graphMemoryNodes.cu
++++ b/cpp/3_CUDA_Features/graphMemoryNodes/graphMemoryNodes.cu
+@@ -392,6 +392,8 @@ void prepareRefArrays(negSquareArrays *hostArrays, negSquareArrays *deviceRefArr
+         cudaMemcpy(deviceRefArrays->negSquare, hostArrays->negSquare, hostArrays->bytes, cudaMemcpyHostToDevice));
+ 
+     checkCudaErrors(cudaMallocManaged((void **)foundValidationFailure, sizeof(bool)));
++    // Managed memory isn't initialized
++    **foundValidationFailure = false;
+ }
+ 
+ int checkValidationFailure(bool *foundValidationFailure)

@@ -1,0 +1,74 @@
+diff --git a/cuda/srad/srad_v2/srad_kernel.cu b/cuda/srad/srad_v2/srad_kernel.cu
+index 2d8fa5f..ca2fe99 100755
+--- a/cuda/srad/srad_v2/srad_kernel.cu
++++ b/cuda/srad/srad_v2/srad_kernel.cu
+@@ -42,25 +42,34 @@ srad_cuda_1(
+   __shared__ float  west[BLOCK_SIZE][BLOCK_SIZE];
+ 
+   //load data to shared memory
+-  north[ty][tx] = J_cuda[index_n]; 
+-  south[ty][tx] = J_cuda[index_s];
++  // index_n is above the first row of blocks, and index_s below the last
+   if ( by == 0 ){
+   north[ty][tx] = J_cuda[BLOCK_SIZE * bx + tx]; 
+   }
+-  else if ( by == gridDim.y - 1 ){
++  else {
++  north[ty][tx] = J_cuda[index_n];
++  }
++  if ( by == gridDim.y - 1 ){
+   south[ty][tx] = J_cuda[cols * BLOCK_SIZE * (gridDim.y - 1) + BLOCK_SIZE * bx + cols * ( BLOCK_SIZE - 1 ) + tx];
++  }
++  else {
++  south[ty][tx] = J_cuda[index_s];
+   }
+    __syncthreads();
+  
+-  west[ty][tx] = J_cuda[index_w];
+-  east[ty][tx] = J_cuda[index_e];
+-
++  // index_w is before the first column of blocks, and index_e after the last
+   if ( bx == 0 ){
+   west[ty][tx] = J_cuda[cols * BLOCK_SIZE * by + cols * ty]; 
+   }
+-  else if ( bx == gridDim.x - 1 ){
++  else {
++  west[ty][tx] = J_cuda[index_w];
++  }
++  if ( bx == gridDim.x - 1 ){
+   east[ty][tx] = J_cuda[cols * BLOCK_SIZE * by + BLOCK_SIZE * ( gridDim.x - 1) + cols * ty + BLOCK_SIZE-1];
+   }
++  else {
++  east[ty][tx] = J_cuda[index_e];
++  }
+  
+   __syncthreads();
+   
+@@ -197,19 +206,23 @@ srad_cuda_2(
+ 
+     __syncthreads();
+ 	 
+-	south_c[ty][tx] = C_cuda[index_s];
+-
++	// index_s is below the last row of blocks
+ 	if ( by == gridDim.y - 1 ){
+ 	south_c[ty][tx] = C_cuda[cols * BLOCK_SIZE * (gridDim.y - 1) + BLOCK_SIZE * bx + cols * ( BLOCK_SIZE - 1 ) + tx];
+ 	}
++	else {
++	south_c[ty][tx] = C_cuda[index_s];
++	}
+ 	__syncthreads();
+ 	 
+ 	 
+-	east_c[ty][tx] = C_cuda[index_e];
+-	
++	// index_e is after the last column of blocks
+ 	if ( bx == gridDim.x - 1 ){
+ 	east_c[ty][tx] = C_cuda[cols * BLOCK_SIZE * by + BLOCK_SIZE * ( gridDim.x - 1) + cols * ty + BLOCK_SIZE-1];
+ 	}
++	else {
++	east_c[ty][tx] = C_cuda[index_e];
++	}
+ 	 
+     __syncthreads();
+   

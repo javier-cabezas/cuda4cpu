@@ -1,0 +1,28 @@
+diff --git a/cpp/5_Domain_Specific/dxtc/CudaMath.h b/cpp/5_Domain_Specific/dxtc/CudaMath.h
+index c1ae0ac..3bedd1d 100644
+--- a/cpp/5_Domain_Specific/dxtc/CudaMath.h
++++ b/cpp/5_Domain_Specific/dxtc/CudaMath.h
+@@ -59,14 +59,15 @@ inline __device__ void colorSums(const float3 *colors, float3 *sums, cg::thread_
+     const int idx = threadIdx.x;
+ 
+     sums[idx] = colors[idx];
+-    cg::sync(tile);
+-    sums[idx] += sums[idx ^ 8];
+-    cg::sync(tile);
+-    sums[idx] += sums[idx ^ 4];
+-    cg::sync(tile);
+-    sums[idx] += sums[idx ^ 2];
+-    cg::sync(tile);
+-    sums[idx] += sums[idx ^ 1];
++
++    // Each thread reads its partner's sum before either overwrites it: the
++    // threads of a tile don't run in lockstep since Volta
++    for (int mask = 8; mask > 0; mask >>= 1) {
++        cg::sync(tile);
++        const float3 partner = sums[idx ^ mask];
++        cg::sync(tile);
++        sums[idx] += partner;
++    }
+ }
+ 
+ inline __device__ float3 bestFitLine(const float3 *colors, float3 color_sum, cg::thread_group tile)
