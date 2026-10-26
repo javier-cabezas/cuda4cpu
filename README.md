@@ -256,6 +256,12 @@ slowest.
 **Is it an emulator?** No. Kernels compile to native code for your CPU, with
 your compiler's optimizations, and run on all cores. Nothing interprets PTX.
 
+**Can I keep my Makefile?** Usually: `cuda4cpu-nvcc` takes nvcc's options,
+and `<prefix>/lib/cuda4cpu/toolkit` is laid out like a CUDA toolkit, so
+`make CUDA_PATH=<prefix>/lib/cuda4cpu/toolkit` builds projects that call
+`$(CUDA_PATH)/bin/nvcc` (see [Build scripts written for
+nvcc](docs/usage.md#build-scripts-written-for-nvcc)).
+
 **Does it need CUDA installed?** No. cuda4cpu provides its own
 `cuda_runtime.h`, `cooperative_groups.h`, `cuda_fp16.h` and the rest.
 

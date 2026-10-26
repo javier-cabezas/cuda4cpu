@@ -35,6 +35,17 @@ Installed as cuda4cpu-hipcc, it treats every C++ source file as a HIP
 source, as hipcc does, and drops hipcc's options for AMD GPUs
 (--offload-arch=..., -fgpu-rdc, ...).
 
+Installed as cuda4cpu-nvcc, it takes nvcc's command line, so that build
+scripts written for nvcc work unchanged: options for the GPU and for nvcc's
+own steps are dropped, nvcc's names of the host compiler's options are
+translated (-Xcompiler, -ccbin, --compiler-options, -dc, ...), and
+--version, -v and --dryrun answer as nvcc does. It defines __NVCC__ and
+__CUDACC_VER_MAJOR__, __CUDACC_VER_MINOR__ and __CUDACC_VER_BUILD__, and
+reads NVCC_PREPEND_FLAGS and NVCC_APPEND_FLAGS.
+
+cuda4cpu needs C++23: cuda4cpu-nvcc and cuda4cpu-hipcc raise an older -std
+(c++17, gnu++20, ...) to it, of the same dialect, as drop-ins must.
+
 The driver adds the C++ standard, OpenMP and the cuda4cpu include directory,
 and links libcuda4cpu when it links. The compiler is $CUDA4CPU_CXX, $CXX
 (unless it is a cuda4cpu driver, as in CXX=cuda4cpu-c++ make), the compiler
@@ -42,6 +53,7 @@ that built libcuda4cpu, or c++.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,8 +64,10 @@ INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@
 LIBRARY_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_LIBRARY_DIR@'))
 REWRITE = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_REWRITE@'))
 
-# 'hip' for cuda4cpu-hipcc, which compiles C++ sources as HIP, as hipcc does
+# 'hip' for cuda4cpu-hipcc, which compiles C++ sources as HIP, as hipcc does,
+# and 'nvcc' for cuda4cpu-nvcc, which takes nvcc's options
 MODE = '@CUDA4CPU_DRIVER_MODE@'
+VERSION = '@PROJECT_VERSION@'
 
 # The compiler that built libcuda4cpu. Another one would link its own OpenMP
 # runtime: with GCC's libgomp next to Clang's libomp, a process has two pools
@@ -86,6 +100,204 @@ HIPCC_DROPPED_PREFIXES = ('--offload-arch=', '--amdgpu-target=', '--cuda-gpu-arc
 HIPCC_DROPPED = {'--hip-link', '--offload-device-only', '--offload-host-only', '-fhip-new-launch-api',
                  '-D__HIP_PLATFORM_AMD__', '-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__',
                  '-D__HIP_PLATFORM_HCC__=1'}
+
+
+#
+# nvcc's command line. Each option has a name of its own and nvcc's short
+# one, either spelled with one dash or two, and its value inline (=value) or
+# in the next argument. NVCC_OPTIONS maps the names to what cuda4cpu-nvcc
+# does with them.
+#
+
+# The version of CUDA that cuda4cpu implements (CUDART_VERSION), as nvcc's
+NVCC_VERSION = (12, 0, 140)
+
+DROP, DROP_VALUE = 'drop', 'drop value'
+
+NVCC_OPTIONS = {
+    # The GPU and its code, and nvcc's steps that make it: nothing to do on
+    # the CPU
+    **dict.fromkeys(['arch', 'gpu-architecture', 'code', 'gpu-code', 'gencode', 'generate-code',
+                     'Xptxas', 'ptxas-options', 'Xnvlink', 'nvlink-options', 'Xfatbin', 'fatbin-options',
+                     'Xcudafe', 'Xarchive', 'archive-options', 'maxrregcount', 't', 'threads', 'split-compile',
+                     'keep-dir', 'odir', 'output-directory', 'cudart', 'cudadevrt', 'default-stream',
+                     'diag-suppress', 'diag-warn', 'diag-error', 'ftz', 'prec-div', 'prec-sqrt', 'fmad',
+                     'dopt', 'Ofast-compile', 'rdc', 'relocatable-device-code', 'machine', 'm',
+                     'ewp', 'extensible-whole-program', 'Xnvvm', 'nvvm-options', 'Xnvlink'], DROP_VALUE),
+    **dict.fromkeys(['expt-relaxed-constexpr', 'expt-extended-lambda', 'extended-lambda', 'use_fast_math',
+                     'use-fast-math', 'lineinfo', 'generate-line-info', 'res-usage', 'resource-usage', 'keep',
+                     'src-in-ptx', 'source-in-ptx', 'restrict', 'forward-unknown-to-host-compiler',
+                     'forward-unknown-opts', 'forward-unknown-to-host-linker', 'Wno-deprecated-gpu-targets',
+                     'Wext-lambda-captures-this', 'Wdefault-stream-launch', 'Wmissing-launch-bounds',
+                     'display-error-number', 'no-display-error-number', 'noprof', 'no-host-device-initializer-list',
+                     'no-host-device-move-forward', 'allow-unsupported-compiler', 'static-global-template-stub',
+                     'qpp-config'], DROP),
+    # nvcc's names of the host compiler's options
+    'include-path': ['-I'], 'library-path': ['-L'], 'library': ['-l'], 'define-macro': ['-D'],
+    'undefine-macro': ['-U'], 'output-file': ['-o'], 'pre-include': ['-include'], 'system-include': ['-isystem'],
+    'dependency-output': ['-MF'], 'dependency-target-name': ['-MT'], 'optimize': ['-O'],
+    'compile': '-c', 'device-c': '-c', 'dc': '-c', 'device-w': '-c', 'dw': '-c', 'preprocess': '-E',
+    'debug': '-g', 'device-debug': '-g', 'G': '-g', 'shared': '-shared',
+    'generate-dependencies': '-M', 'generate-nonsystem-dependencies': '-MM',
+    'generate-dependencies-with-compile': '-MD', 'generate-nonsystem-dependencies-with-compile': '-MMD',
+    'x': ['-x'], 'language': ['-x'],
+    # Handled by translate_nvcc
+    **dict.fromkeys(['Xcompiler', 'compiler-options', 'Xlinker', 'linker-options', 'ccbin', 'compiler-bindir',
+                     'std', 'Werror'], 'special value'),
+    **dict.fromkeys(['dlink', 'device-link', 'lib', 'cuda', 'version', 'V', 'v', 'verbose', 'dryrun', 'dry-run',
+                     'help', 'h', 'ptx', 'cubin', 'fatbin', 'optix-ir', 'ltoir'], 'special'),
+}
+
+# Libraries that libcuda4cpu provides
+NVCC_PROVIDED_LIBRARIES = {'cudart', 'cudart_static', 'cuda', 'cudadevrt', 'nvToolsExt', 'nvtx3interop'}
+
+# nvcc's warning kinds, the value of its -Werror
+NVCC_WARNING_KINDS = {'cross-execution-space-call', 'reorder', 'default-stream-launch', 'missing-launch-bounds',
+                      'ext-lambda-captures-this', 'deprecated-declarations'}
+
+
+class NvccRequest:
+    """What an nvcc command line asks for, besides the host compiler's options"""
+
+    def __init__(self):
+        self.host_compiler = None       # from -ccbin
+        self.step = None                # 'version', 'help', 'dlink' or 'lib', or None for a compile or link
+        self.verbose = False            # -v: show the commands
+        self.dry_run = False            # --dryrun: only show them
+
+
+def nvcc_name(arg):
+    """The name and inline value of arg if it's one of NVCC_OPTIONS, spelled
+    with one or two dashes; else (None, None)"""
+    if not arg.startswith('-') or arg == '-':
+        return None, None
+    body = arg[2:] if arg.startswith('--') else arg[1:]
+    name, equals, value = body.partition('=')
+    if name in NVCC_OPTIONS:
+        return name, (value if equals else None)
+    return None, None
+
+
+def host_compiler_for(ccbin):
+    """The C++ compiler that -ccbin names: a directory that holds one, or a C
+    or C++ compiler, whose C++ counterpart is used (gcc-14 gives g++-14)"""
+    if os.path.isdir(ccbin):
+        for name in ('g++', 'clang++', 'c++'):
+            if os.path.exists(os.path.join(ccbin, name)):
+                return os.path.join(ccbin, name)
+        return ccbin
+    directory, name = os.path.split(ccbin)
+    for c, cxx in (('gcc', 'g++'), ('clang', 'clang++'), ('cc', 'c++')):
+        if name == c or name.startswith(c + '-'):
+            return os.path.join(directory, cxx + name[len(c):])
+    return ccbin
+
+
+def raise_standard(arg):
+    """-std=X raised to C++23 if X is an older C++ standard, in the same
+    dialect (c++ or gnu++)"""
+    value = arg[len('-std='):]
+    for dialect in ('c++', 'gnu++'):
+        if value.startswith(dialect) and value[len(dialect):] in ('98', '03', '0x', '11', '1y', '14', '1z', '17',
+                                                                  '2a', '20'):
+            return '-std=' + dialect + '23'
+    return arg
+
+
+def translate_nvcc(argv):
+    """nvcc's command line as the host compiler's, and what else it asks for"""
+    argv = (shlex.split(os.environ.get('NVCC_PREPEND_FLAGS', '')) + argv +
+            shlex.split(os.environ.get('NVCC_APPEND_FLAGS', '')))
+    request = NvccRequest()
+    args = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        name, value = nvcc_name(arg)
+        action = NVCC_OPTIONS.get(name)
+        takes_value = action in (DROP_VALUE, 'special value') or isinstance(action, list)
+        if takes_value and value is None and name != 'Werror':
+            if i + 1 >= len(argv):
+                args.append(arg)
+                break
+            value = argv[i + 1]
+            i += 1
+        i += 1
+        if name is None:
+            if arg == '-l' and i < len(argv):                     # -l name
+                if argv[i] not in NVCC_PROVIDED_LIBRARIES:
+                    args += [arg, argv[i]]
+                i += 1
+            elif arg.startswith('-l') and arg[2:] in NVCC_PROVIDED_LIBRARIES:
+                pass
+            elif arg.startswith('-std='):
+                args.append(raise_standard(arg))
+            elif arg.endswith('.c') and not arg.startswith('-'):
+                args += ['-x', 'c', arg, '-x', 'none']          # host C, as nvcc compiles it
+            else:
+                args.append(arg)
+        elif action in (DROP, DROP_VALUE):
+            pass
+        elif isinstance(action, list):                          # an option of the host compiler, with a value
+            if action == ['-l'] and value in NVCC_PROVIDED_LIBRARIES:
+                continue
+            args += ['-O' + value] if action == ['-O'] else action + [value]
+        elif action != 'special' and action != 'special value':
+            args.append(action)                                 # one without a value
+        elif name in ('Xcompiler', 'compiler-options'):
+            # A comma-separated list, of which each item may hold several
+            # options separated by spaces
+            for item in value.split(','):
+                args += shlex.split(item)
+        elif name in ('Xlinker', 'linker-options'):
+            args += ['-Wl,' + item for item in value.split(',') if item]
+        elif name in ('ccbin', 'compiler-bindir'):
+            request.host_compiler = host_compiler_for(value)
+        elif name == 'std':
+            args.append(raise_standard('-std=' + value))
+        elif name == 'Werror':
+            # nvcc's -Werror takes kinds of warnings; all-warnings is the host
+            # compiler's -Werror
+            if value is None and i < len(argv) and set(argv[i].split(',')) <= NVCC_WARNING_KINDS | {'all-warnings'}:
+                value = argv[i]
+                i += 1
+            if value is None or 'all-warnings' in value.split(','):
+                args.append('-Werror')
+        elif name in ('version', 'V'):
+            request.step = 'version'
+        elif name in ('help', 'h'):
+            request.step = 'help'
+        elif name in ('dlink', 'device-link'):
+            request.step = 'dlink'
+        elif name == 'lib':
+            request.step = 'lib'
+        elif name == 'cuda':
+            request.step = 'cuda'
+        elif name in ('ptx', 'cubin', 'fatbin', 'optix-ir', 'ltoir'):
+            request.step = 'gpu ' + name
+        elif name in ('v', 'verbose'):
+            request.verbose = True
+        elif name in ('dryrun', 'dry-run'):
+            request.dry_run = True
+    return args, request
+
+
+def nvcc_version(compiler):
+    major, minor, build = NVCC_VERSION
+    return (f'nvcc: cuda4cpu Cuda compiler driver\n'
+            f'cuda4cpu {VERSION}, which compiles CUDA for the CPU with {compiler}\n'
+            f'Cuda compilation tools, release {major}.{minor}, V{major}.{minor}.{build}\n'
+            f'Build cuda4cpu_{VERSION}\n')
+
+
+NVCC_HELP = """Usage: cuda4cpu-nvcc [options] <inputs>
+
+cuda4cpu-nvcc compiles CUDA for the CPU, and takes nvcc's options. Options for
+the GPU (-arch, -gencode, -Xptxas, --expt-relaxed-constexpr, ...) are
+accepted and ignored. nvcc's names for the host compiler's options
+(--compiler-options, -Xcompiler, -ccbin, -dc, --include-path, ...) are
+translated, and any other option goes to the host compiler as it is.
+"""
 
 
 def source_language(path, x_language):
@@ -123,9 +335,11 @@ def is_driver(command):
     return os.path.dirname(path) == HERE and os.path.basename(path).startswith('cuda4cpu-')
 
 
-def find_compiler():
+def find_compiler(host_compiler=None):
     if os.environ.get('CUDA4CPU_CXX'):
         return os.environ['CUDA4CPU_CXX']
+    if host_compiler:
+        return host_compiler
     cxx = os.environ.get('CXX')
     if cxx and not is_driver(cxx):
         return cxx
@@ -140,12 +354,71 @@ def find_compiler():
 RUNNING = 'CUDA4CPU_DRIVER_RUNNING'
 
 
+def run(command, request, env=None):
+    """Runs command, or with nvcc's -v or --dryrun shows it first, or only"""
+    if request is not None and (request.verbose or request.dry_run):
+        sys.stderr.write('#$ ' + shlex.join(command) + '\n')
+        if request.dry_run:
+            return 0
+    return subprocess.call(command, env=env)
+
+
+def output_of(args, default):
+    for i, arg in enumerate(args):
+        if arg == '-o' and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith('-o') and len(arg) > 2:
+            return arg[2:]
+    return default
+
+
+def nvcc_device_link(compiler, args, request):
+    """nvcc -dlink links the device code of relocatable objects into one
+    more object. The CPU has no device code, so that object is empty."""
+    command = [compiler, '-x', 'c++', '-c', os.devnull, '-o', output_of(args, 'a_dlink.o')]
+    return run(command + [a for a in args if a in ('-fPIC', '-fpic', '-fPIE', '-fpie')], request)
+
+
+def nvcc_library(args, request):
+    """nvcc -lib archives objects into a static library"""
+    sources = [a for a in args if not a.startswith('-') and source_language(a, None) is not None]
+    if sources:
+        sys.stderr.write('cuda4cpu-nvcc: -lib archives object files; compile ' + ' '.join(sources) +
+                         ' with -c first\n')
+        return 1
+    output = output_of(args, 'a.a')
+    objects = [a for a in args if a.endswith(('.o', '.obj', '.a')) and a != output]
+    return run([os.environ.get('AR', 'ar'), 'rcs', output] + objects, request)
+
+
 def main(argv):
     if os.environ.get(RUNNING):
         sys.stderr.write(f'{os.path.basename(sys.argv[0])}: run as the compiler of a cuda4cpu driver; '
                          'set CUDA4CPU_CXX to a C++ compiler\n')
         return 1
-    compiler = find_compiler()
+    request = None
+    if MODE == 'nvcc':
+        argv, request = translate_nvcc(argv)
+        if request.step == 'version':
+            sys.stdout.write(nvcc_version(find_compiler(request.host_compiler)))
+            return 0
+        if request.step == 'help':
+            sys.stdout.write(NVCC_HELP)
+            return 0
+    compiler = find_compiler(request.host_compiler if request else None)
+    if request is not None and request.step == 'dlink':
+        return nvcc_device_link(compiler, argv, request)
+    if request is not None and request.step == 'lib':
+        return nvcc_library(argv, request)
+    if request is not None and request.step and request.step.startswith('gpu '):
+        sys.stderr.write(f'cuda4cpu-nvcc: -{request.step[4:]} makes GPU code, which runs on no CPU; cuda4cpu '
+                         'compiles kernels with the host code\n')
+        return 1
+    if request is not None and request.step == 'cuda':
+        # nvcc -cuda writes the host code of each .cu file to <file>.cpp.ii:
+        # here, the rewritten file preprocessed
+        sources = [a for a in argv if not a.startswith('-') and source_language(a, None) is not None]
+        argv = argv + ['-E'] + ([] if '-o' in argv or len(sources) != 1 else ['-o', os.path.basename(sources[0]) + '.cpp.ii'])
     work = work_directory(argv)
     try:
         args = []
@@ -157,6 +430,8 @@ def main(argv):
             if MODE == 'hip' and (arg in HIPCC_DROPPED or arg.startswith(HIPCC_DROPPED_PREFIXES)):
                 i += 1
                 continue
+            if MODE == 'hip' and arg.startswith('-std='):
+                arg = raise_standard(arg)
             if arg == '-x' and i + 1 < len(argv) or arg.startswith('-x') and len(arg) > 2:
                 value = argv[i + 1] if arg == '-x' else arg[2:]
                 i += 2 if arg == '-x' else 1
@@ -178,8 +453,8 @@ def main(argv):
                 # Keep the file name, so that the default object name stays the same
                 out = os.path.join(work, str(i), os.path.basename(arg))
                 os.makedirs(os.path.dirname(out))
-                status = subprocess.call([sys.executable, REWRITE, arg, '-o', out, '--language', language,
-                                          '--shadow-dir', os.path.join(work, str(i), 'headers')])
+                status = run([sys.executable, REWRITE, arg, '-o', out, '--language', language,
+                              '--shadow-dir', os.path.join(work, str(i), 'headers')], request)
                 if status != 0:
                     return status
                 args += ['-x', 'c++', out, '-x', 'none']
@@ -195,12 +470,16 @@ def main(argv):
             front.append('-fopenmp')
         if rewritten:
             front += ['-include', 'cuda_runtime.h']
+        if MODE == 'nvcc':
+            major, minor, build = NVCC_VERSION
+            front += ['-D__NVCC__', f'-D__CUDACC_VER_MAJOR__={major}', f'-D__CUDACC_VER_MINOR__={minor}',
+                      f'-D__CUDACC_VER_BUILD__={build}']
 
         back = []
         if not NO_LINK.intersection(args):
             back = ['-L' + LIBRARY_DIR, '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
 
-        return subprocess.call([compiler] + front + args + back, env=dict(os.environ, **{RUNNING: '1'}))
+        return run([compiler] + front + args + back, request, env=dict(os.environ, **{RUNNING: '1'}))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

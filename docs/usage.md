@@ -105,9 +105,9 @@ include directory, and links `libcuda4cpu` when it links. It runs
 `CXX=cuda4cpu-c++ make`), or else the compiler that built `libcuda4cpu`. Use
 the same kind of compiler as the library: GCC and Clang have their own
 OpenMP runtimes, and a program with both has two pools of threads. It takes
-the compiler's options, not
-nvcc's. `.hip` files are HIP sources, and `-x cu` or `-x hip` set the
-language of the files after them, as with clang.
+the compiler's options; `cuda4cpu-nvcc` (below) takes nvcc's. `.hip` files
+are HIP sources, and `-x cu` or `-x hip` set the language of the files after
+them, as with clang.
 
 `cuda4cpu-hipcc` is the same driver for HIP projects. Like hipcc, it compiles
 every C++ source file (`.cpp`, `.cc`, `.cu`, `.hip`, ...) as HIP. It drops
@@ -119,6 +119,61 @@ cuda4cpu-hipcc -O2 --offload-arch=gfx90a -o my_app main.cpp kernels.cpp
 ```
 
 To run the rewriter on its own: `cuda4cpu-rewrite kernels.cu -o kernels.cpp`.
+
+### Build scripts written for nvcc
+
+`cuda4cpu-nvcc` takes nvcc's command line, so Makefiles and scripts that call
+nvcc build unchanged:
+
+```sh
+cuda4cpu-nvcc -O3 -arch=sm_80 -Xcompiler -Wall,-fPIC -std=c++17 \
+    --expt-relaxed-constexpr -lineinfo -o my_app main.cu -lcudart
+cuda4cpu-nvcc -dc -o kernels.o kernels.cu          # separate compilation:
+cuda4cpu-nvcc -dlink -o dlink.o kernels.o          #   an empty object
+cuda4cpu-nvcc -lib -o libkernels.a kernels.o dlink.o
+```
+
+- Options for the GPU and for nvcc's own steps are accepted and ignored:
+  `-arch`, `-gencode`, `-code`, `-Xptxas`, `-rdc`, `-maxrregcount`,
+  `--expt-relaxed-constexpr`, `--extended-lambda`, `-lineinfo`,
+  `-use_fast_math`, `--default-stream`, `-Wno-deprecated-gpu-targets`, ...
+- nvcc's names for the host compiler's options are translated:
+  `-Xcompiler`/`--compiler-options` (comma-separated), `-Xlinker`, `-ccbin`
+  (`-ccbin gcc-14` compiles with `g++-14`), `-dc`, `-G`, `--include-path`,
+  `--define-macro`, `--generate-dependencies-with-compile`, ... Other options
+  go to the host compiler as they are.
+- `-lcudart`, `-lcudart_static`, `-lcuda`, `-lcudadevrt` and `-lnvToolsExt`
+  are dropped: libcuda4cpu provides them.
+- `-cuda` preprocesses each `.cu` file into `<file>.cpp.ii`, `-dlink` writes
+  an empty object (there's no device code to link), and `-lib` archives
+  objects. `-ptx`, `-cubin` and `-fatbin` fail: they make GPU code.
+- `--version` prints a banner with nvcc's version line (12.0, the version of
+  CUDA that cuda4cpu implements), `-v` shows each command before it runs, and
+  `--dryrun` only shows them. `NVCC_PREPEND_FLAGS` and `NVCC_APPEND_FLAGS`
+  add options, as with nvcc.
+- It defines `__NVCC__`, `__CUDACC_VER_MAJOR__` (12), `__CUDACC_VER_MINOR__`
+  and `__CUDACC_VER_BUILD__`, as nvcc does. `.c` files are compiled as C, as
+  nvcc does.
+- cuda4cpu needs C++23, so an older `-std` (`c++17`, `gnu++20`, ...) is
+  raised to it, in the same dialect: nvcc's default is C++17, and host code
+  that includes `cuda_runtime.h` needs C++23 too. `cuda4cpu-hipcc` does the
+  same.
+
+Build systems that look for nvcc in a CUDA toolkit (`$(CUDA_PATH)/bin/nvcc`,
+`-I$(CUDA_PATH)/include`, `-L$(CUDA_PATH)/lib64 -lcudart`) find one in
+`<prefix>/lib/cuda4cpu/toolkit` (`build/<preset>/toolkit` in the build
+tree): `bin/nvcc` is `cuda4cpu-nvcc`, `include` has cuda4cpu's headers, and
+`lib64`'s `libcudart.so`, `libcudart_static.a` and `libcuda.so` link
+libcuda4cpu and its OpenMP runtime.
+
+```sh
+make CUDA_PATH=/usr/local/lib/cuda4cpu/toolkit
+```
+
+Programs that `cuda4cpu-nvcc` links find libcuda4cpu at run time by
+themselves. Those that the host compiler links with `-lcudart` find it as
+programs find CUDA's: through `LD_LIBRARY_PATH=<toolkit>/lib64`, unless
+cuda4cpu is installed where the dynamic loader looks.
 
 ## Porting a CUDA program
 

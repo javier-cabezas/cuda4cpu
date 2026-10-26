@@ -208,6 +208,21 @@ set_tests_properties(driver PROPERTIES
                      ENVIRONMENT_MODIFICATION "CUDA4CPU_CXX=unset:;CXX=set:${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++"
                      TIMEOUT 60)
 
+# cuda4cpu-nvcc: nvcc's options as the host compiler's, a build with nvcc's
+# steps, the toolkit directory, then the usual builds with nvcc's options for
+# the GPU
+add_test(NAME driver_nvcc_options
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/driver/test_nvcc.py
+                 ${PROJECT_BINARY_DIR}/tools/cuda4cpu-nvcc ${CMAKE_CURRENT_SOURCE_DIR}/samples/vector_add.cu
+                 ${PROJECT_BINARY_DIR}/toolkit ${CMAKE_CXX_COMPILER})
+add_test(NAME driver_nvcc
+         COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-nvcc
+                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/samples/vector_add.cu
+                 -DFLAGS=-arch=sm_80|-gencode|arch=compute_80,code=sm_80|-Xcompiler|-Wall,-Wextra|-std=c++17|--expt-relaxed-constexpr|-lineinfo
+                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/driver_nvcc
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
+set_tests_properties(driver_nvcc_options driver_nvcc PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
+
 # cuda4cpu-hipcc compiles a .cpp file as HIP, and drops options for AMD GPUs;
 # cuda4cpu-c++ does with -x hip
 add_test(NAME driver_hipcc
