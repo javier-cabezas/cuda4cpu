@@ -224,7 +224,12 @@ add_test(NAME driver_nvcc
 set_tests_properties(driver_nvcc_options driver_nvcc PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
 
 # Projects written for CMake's CUDA and HIP languages, configured with the
-# toolkit's toolchain file
+# toolkit's toolchain file. CMake before 4.1 accepts only NVIDIA's nvcc
+# banner in --version, which cuda4cpu-nvcc doesn't print.
+if(CMAKE_VERSION VERSION_LESS 4.1)
+    message(STATUS "cuda4cpu: CMake ${CMAKE_VERSION} can't use cuda4cpu-nvcc for CMake's CUDA language "
+                   "(4.1 or later can), so the cmake_language tests are left out")
+else()
 foreach(language IN ITEMS cuda hip)
     set(programs host|single)
     if(language STREQUAL "hip")
@@ -239,6 +244,7 @@ foreach(language IN ITEMS cuda hip)
 endforeach()
 set_tests_properties(cmake_language_cuda cmake_language_hip PROPERTIES
                      ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}" TIMEOUT 600)
+endif()
 
 # cuda4cpu-hipcc compiles a .cpp file as HIP, and drops options for AMD GPUs;
 # cuda4cpu-c++ does with -x hip

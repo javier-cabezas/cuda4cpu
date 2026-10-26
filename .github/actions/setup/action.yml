@@ -54,6 +54,37 @@ runs:
         path: ~/debs
         key: ${{ steps.debs.outputs.cache-primary-key }}
 
+    # CMake 4.1 or later, which the tests of CMake's CUDA and HIP languages
+    # need: older CMake accepts only NVIDIA's nvcc banner. The runner image's
+    # is older, so Kitware's build, cached.
+    - name: Restore CMake
+      id: cmake
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/cmake
+        key: cmake-4.2.3-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Download CMake
+      if: steps.cmake.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p "$HOME/cmake"
+        curl -fsSL https://github.com/Kitware/CMake/releases/download/v4.2.3/cmake-4.2.3-linux-x86_64.tar.gz |
+          tar -xz -C "$HOME/cmake" --strip-components=1
+
+    - name: Save CMake
+      if: steps.cmake.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/cmake
+        key: ${{ steps.cmake.outputs.cache-primary-key }}
+
+    - name: Use CMake
+      shell: bash
+      run: |
+        echo "$HOME/cmake/bin" >> "$GITHUB_PATH"
+        "$HOME/cmake/bin/cmake" --version | head -n 1
+
     # The latest compiler cache of the job: from this branch, or from main for
     # a new pull request
     - name: Restore the compiler cache

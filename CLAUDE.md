@@ -178,7 +178,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`HOST_DRIVER`), with the toolkit's `-lcudart_static`. A driver creates
   its work directory only when it rewrites a source, or that link would
   delete the sources nvcc mode rewrote. `--options-file` reads CMake's
-  response files.
+  response files. CMake before 4.1 accepts only NVIDIA's exact banner (`nvcc:
+  NVIDIA (R) Cuda compiler driver`), which cuda4cpu-nvcc doesn't print, so
+  the CMake languages need 4.1 or later. CI's setup action installs
+  Kitware's CMake 4.2.3, cached, for that.
   Both handle `.hip` files and `-x cu`/`-x hip`. The rewritten sources go in
   `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
   after the compile: their paths reach the command line and the

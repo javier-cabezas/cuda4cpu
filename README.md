@@ -258,7 +258,8 @@ your compiler's optimizations, and run on all cores. Nothing interprets PTX.
 
 **Can I keep my build system?** Usually. CMake projects written for CUDA
 (`LANGUAGES CUDA`, `find_package(CUDAToolkit)`) build with
-`-DCMAKE_TOOLCHAIN_FILE=<prefix>/lib/cuda4cpu/toolkit/cuda4cpu.cmake`, and so
+`-DCMAKE_TOOLCHAIN_FILE=<prefix>/lib/cuda4cpu/toolkit/cuda4cpu.cmake` (CMake
+4.1 or later), and so
 do NVIDIA's samples with their own `CMakeLists.txt`. `cuda4cpu-nvcc` takes
 nvcc's options, and `<prefix>/lib/cuda4cpu/toolkit` is laid out like a CUDA
 toolkit, so `make CUDA_PATH=<prefix>/lib/cuda4cpu/toolkit` builds Makefiles

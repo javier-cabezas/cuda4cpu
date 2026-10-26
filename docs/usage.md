@@ -94,7 +94,8 @@ fetches cuda4cpu from GitHub.
 A project that already builds with nvcc through CMake's own CUDA support
 (`project(... LANGUAGES CUDA)`, `enable_language(CUDA)`,
 `find_package(CUDAToolkit)` and `CUDA::cudart`) builds unchanged with a
-toolchain file:
+toolchain file, with CMake 4.1 or later (older CMake only accepts NVIDIA's
+own nvcc):
 
 ```sh
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=<prefix>/lib/cuda4cpu/toolkit/cuda4cpu.cmake
