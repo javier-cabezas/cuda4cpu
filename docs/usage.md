@@ -1,6 +1,55 @@
 # Building and using cuda4cpu
 
+## Installing a release
+
+Each release has an archive for Linux on x86-64, built with GCC 14 on
+Ubuntu 24.04: it runs where glibc is 2.39 or later (Ubuntu 24.04, Debian
+13, Fedora 40, ...), and its drivers need GCC 14 or later and Python 3. It's
+relocatable: extract it anywhere, and put its `bin` on the `PATH`.
+
+```sh
+mkdir -p ~/.local
+curl -fsSL https://github.com/javier-cabezas/cuda4cpu/releases/latest/download/cuda4cpu-linux-x86_64.tar.gz |
+    tar -xz -C ~/.local --strip-components=1
+```
+
+CMake finds the package of a prefix whose `bin` is on the `PATH`, so
+`find_package(cuda4cpu)` needs nothing more. The drivers run the compiler
+the archive was built with, `g++-14`, or `c++` without it; `CXX` chooses
+another. A Clang build of cuda4cpu uses Clang's OpenMP runtime, so build it
+from source for Clang. The archive is built without libnuma, and assumes a
+single NUMA node.
+
+**Docker.** `ghcr.io/javier-cabezas/cuda4cpu` has cuda4cpu in `/usr/local`
+(with libnuma), GCC 14, CMake and make, and runs the MCP server by default
+(`docker run -i --rm ghcr.io/javier-cabezas/cuda4cpu`). To compile and run
+programs in the current directory with it:
+
+```sh
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src ghcr.io/javier-cabezas/cuda4cpu \
+    sh -c 'cuda4cpu-nvcc -O2 app.cu -o app && ./app'
+```
+
+**GitHub Actions.** `javier-cabezas/cuda4cpu` is also an action, which
+installs a release on a Linux runner:
+
+```yaml
+- uses: javier-cabezas/cuda4cpu@v0.4.0
+  id: cuda4cpu
+- run: make CUDA_PATH=${{ steps.cuda4cpu.outputs.toolkit }}
+```
+
+It puts the drivers on the `PATH` and the prefix in `CMAKE_PREFIX_PATH`. Its
+`version` input picks another release (`latest`, or a tag; the default is
+the release the action is used at, or the latest one), and `archive`
+installs an archive from a path or URL. Its outputs are the `prefix`, the
+`toolkit` directory and the `toolchain-file` for CMake's CUDA and HIP
+languages. It installs `g++-14` if the runner doesn't have it and `CXX`
+isn't set: `ubuntu-24.04` has it.
+
 ## Requirements
+
+To build cuda4cpu from source:
 
 | Requirement | Notes |
 |---|---|

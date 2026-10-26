@@ -123,7 +123,14 @@ MCP client, for example Claude Code:
 
 ```sh
 claude mcp add cuda4cpu -- /usr/local/bin/cuda4cpu-mcp     # or build/<preset>/tools/cuda4cpu-mcp
+claude mcp add cuda4cpu -- docker run -i --rm -v "$PWD:$PWD" ghcr.io/javier-cabezas/cuda4cpu
 ```
+
+In Docker, the server sees only the directories you mount: `paths` must be
+in one of them (`-v "$PWD:$PWD"` mounts the current directory at the same
+path), and `files` work without any. The server is in the
+[MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.javier-cabezas/cuda4cpu`, with the Docker image as its package.
 
 `compile`, `run` and `check` take the sources inline (`files`, contents by
 file name) or by path (`paths`), nvcc's or hipcc's `options`, and for runs

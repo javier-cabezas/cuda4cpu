@@ -49,33 +49,44 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 
 ## Quick start
 
-You need Linux (or WSL 2) on x86-64, GCC 14+ or Clang 18+, CMake 3.25+,
-Ninja and Python 3. On Ubuntu 24.04:
+You need Linux (or WSL 2) on x86-64, with GCC 14 or later and Python 3, as
+on Ubuntu 24.04 (`sudo apt-get install g++-14 python3`). Install the latest
+release in `~/.local`:
 
 ```sh
-sudo apt-get install g++-14 cmake ninja-build python3
-export CXX=g++-14
+mkdir -p ~/.local
+curl -fsSL https://github.com/javier-cabezas/cuda4cpu/releases/latest/download/cuda4cpu-linux-x86_64.tar.gz |
+    tar -xz -C ~/.local --strip-components=1
 ```
 
-Build cuda4cpu and run its tests:
+Then compile any `.cu` file with `cuda4cpu-c++`, which takes the same
+options as your C++ compiler, or with `cuda4cpu-nvcc`, which takes nvcc's:
+
+```sh
+cuda4cpu-c++ -O2 vecadd.cu -o vecadd
+./vecadd
+```
+
+**With Docker**, there's nothing else to install: the image has cuda4cpu,
+GCC and CMake.
+
+```sh
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src ghcr.io/javier-cabezas/cuda4cpu \
+    cuda4cpu-nvcc -O2 vecadd.cu -o vecadd
+```
+
+**From source**, which needs CMake 3.25+ and Ninja too, and builds and runs
+the tests:
 
 ```sh
 git clone https://github.com/javier-cabezas/cuda4cpu.git
 cd cuda4cpu
 cmake --workflow --preset release
+cmake --install build/release --prefix /usr/local
 ```
 
-Then compile any `.cu` file with the compiler driver in the build tree. It
-takes the same options as your C++ compiler:
-
-```sh
-build/release/tools/cuda4cpu-c++ -O2 examples/cmake-project/vecadd.cu -o vecadd
-./vecadd
-```
-
-To install it (the compiler drivers, the MCP server and the CMake package):
-`cmake --install build/release --prefix /usr/local`. See
-[docs/usage.md](docs/usage.md) for the build options.
+See [docs/usage.md](docs/usage.md) for the other ways to install it and the
+build options.
 
 ## See it catch bugs
 
@@ -154,13 +165,17 @@ with cuda4cpu, and runs the checks above for it. Register it with your
 agent, for example Claude Code:
 
 ```sh
-claude mcp add cuda4cpu -- cuda4cpu-mcp    # or build/release/tools/cuda4cpu-mcp
+claude mcp add cuda4cpu -- cuda4cpu-mcp    # installed from a release, or build/release/tools/cuda4cpu-mcp
+claude mcp add cuda4cpu -- docker run -i --rm -v "$PWD:$PWD" ghcr.io/javier-cabezas/cuda4cpu
 ```
 
 Other clients take the same command, for example in Cursor's `mcp.json` or
 Claude Desktop's configuration: `{"mcpServers": {"cuda4cpu": {"command":
-"cuda4cpu-mcp"}}}`. The server speaks MCP over stdio and needs only
-Python 3.
+"cuda4cpu-mcp"}}}`. The server speaks MCP over stdio, and is listed in the
+[MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.javier-cabezas/cuda4cpu`. In Docker, it sees only the
+directories you mount (`-v "$PWD:$PWD"` above): sources given inline need
+none.
 
 | Tool | What the agent gets |
 | --- | --- |
@@ -209,7 +224,7 @@ describes every tool and its arguments.
 include(FetchContent)
 FetchContent_Declare(cuda4cpu
     GIT_REPOSITORY https://github.com/javier-cabezas/cuda4cpu.git
-    GIT_TAG v0.3.0)
+    GIT_TAG v0.4.0)
 FetchContent_MakeAvailable(cuda4cpu)
 
 add_executable(my_app main.cpp)
@@ -230,7 +245,8 @@ cuda4cpu-hipcc -O2 --offload-arch=gfx90a -o my_app main.cpp kernels.cpp
 ```
 
 **GitHub Actions.** Hosted runners have no GPU, but they can run your CUDA
-tests with cuda4cpu. With the CMake setup above:
+tests with cuda4cpu. The action installs a release, with the drivers on the
+`PATH` and the CMake package where `find_package(cuda4cpu)` finds it:
 
 ```yaml
 jobs:
@@ -240,14 +256,19 @@ jobs:
       CXX: g++-14
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y g++-14 ninja-build
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - uses: javier-cabezas/cuda4cpu@v0.4.0
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
       # Again with the threads of each block in another order, which exposes
       # missing __syncthreads()
       - run: CUDA4CPU_SCHEDULE=reverse ctest --test-dir build --output-on-failure
 ```
+
+Its outputs give the `toolkit` directory, for Makefiles written for nvcc
+(`make CUDA_PATH=...`), and the `toolchain-file` for CMake's CUDA and HIP
+languages. A project that fetches cuda4cpu with `FetchContent` needs no
+action.
 
 ## What's supported
 

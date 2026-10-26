@@ -269,8 +269,24 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`FETCHCONTENT_SOURCE_DIR_CUDA4CPU`) and checks that the bugs are exposed,
   including the line AddressSanitizer reports in `out_of_bounds.cu`.
   The project and the README's `FetchContent` snippet pin the latest release
-  (`GIT_TAG v0.3.0`): update both, and the `VERSION` in the top-level
-  `CMakeLists.txt`, when tagging a new one.
+  (`GIT_TAG v0.4.0`): update both, the `VERSION` in the top-level
+  `CMakeLists.txt`, `server.json`'s `version` and image tag, and the
+  action's `@v0.4.0` in the README and `docs/usage.md`, when tagging a new
+  one. The `Packages` workflow fails a release whose tag doesn't match.
+- Packages (`.github/workflows/release.yml`, the `Packages` workflow): the
+  release archive (`cuda4cpu-linux-x86_64.tar.gz`, with a versioned top
+  directory, so that `releases/latest/download/` finds it; built with GCC 14
+  and without libnuma; the install is relocatable), the Docker image
+  (`Dockerfile`: `ghcr.io/javier-cabezas/cuda4cpu`, cuda4cpu in
+  `/usr/local` with GCC 14 and CMake, the MCP server by default, labeled
+  with its MCP Registry name) and the MCP Registry entry (`server.json`,
+  published with `mcp-publisher` through GitHub's OIDC). `action.yml` at the
+  root makes the repository an action that installs an archive.
+  `packaging/smoke-test.sh <prefix>` checks an installation: the drivers,
+  the CMake package, the toolchain file (CMake 4.1+), and the MCP server's
+  `check` and `test_kernel`. Pull requests build the archive, install it with
+  the action and test it, and build and test the image; a published release
+  uploads the archive, pushes the image and publishes `server.json`.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
   performance claim, and compare medians: run-to-run noise is large.
 - `tests/`: each test returns non-zero on failure.

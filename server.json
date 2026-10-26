@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.javier-cabezas/cuda4cpu",
+  "title": "cuda4cpu",
+  "description": "Compile, run and check CUDA and HIP kernels without a GPU: wrong results, races, memory errors",
+  "repository": {
+    "url": "https://github.com/javier-cabezas/cuda4cpu",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/javier-cabezas/cuda4cpu/blob/main/docs/debugging.md#checking-kernels-from-an-ai-agent-mcp",
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/javier-cabezas/cuda4cpu:0.4.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+# CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
+#
+# Copyright (C) 2014 Javier Cabezas
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Set up cuda4cpu
+description: >
+  Installs cuda4cpu, which runs CUDA and HIP programs on the CPU, so that
+  jobs on runners without a GPU can build and test them: nvcc and hipcc
+  drivers, a CUDA toolkit directory and a CMake package
+author: Javier Cabezas
+branding:
+  icon: cpu
+  color: green
+inputs:
+  version:
+    description: >
+      The release to install, such as v0.4.0, or latest. By default, the
+      release the action is used at (javier-cabezas/cuda4cpu@v0.4.0), or the
+      latest one for a branch or commit.
+    required: false
+    default: ''
+  archive:
+    description: A release archive to install instead, as a path or URL
+    required: false
+    default: ''
+outputs:
+  prefix:
+    description: The installation prefix, with bin, include and lib
+    value: ${{ steps.install.outputs.prefix }}
+  toolkit:
+    description: The directory laid out like a CUDA toolkit (CUDA_PATH for Makefiles written for nvcc)
+    value: ${{ steps.install.outputs.toolkit }}
+  toolchain-file:
+    description: The CMake toolchain file for projects with LANGUAGES CUDA or HIP (CMake 4.1 or later)
+    value: ${{ steps.install.outputs.toolkit }}/cuda4cpu.cmake
+runs:
+  using: composite
+  steps:
+    - name: Install cuda4cpu
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ARCHIVE: ${{ inputs.archive }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        if [ "$(uname -s)-$(uname -m)" != Linux-x86_64 ]; then
+          echo "::error::cuda4cpu's release archives are for Linux on x86-64"
+          exit 1
+        fi
+        if [ -z "$ARCHIVE" ]; then
+          if [ -z "$VERSION" ]; then
+            [[ "$ACTION_REF" =~ ^v[0-9] ]] && VERSION=$ACTION_REF || VERSION=latest
+          fi
+          if [ "$VERSION" = latest ]; then
+            ARCHIVE=https://github.com/javier-cabezas/cuda4cpu/releases/latest/download/cuda4cpu-linux-x86_64.tar.gz
+          else
+            ARCHIVE=https://github.com/javier-cabezas/cuda4cpu/releases/download/$VERSION/cuda4cpu-linux-x86_64.tar.gz
+          fi
+        fi
+        prefix="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/cuda4cpu"
+        rm -rf "$prefix"
+        mkdir -p "$prefix"
+        if [[ "$ARCHIVE" =~ ^https?:// ]]; then
+          echo "Downloading $ARCHIVE"
+          curl -fsSL --retry 3 "$ARCHIVE" | tar -xz -C "$prefix" --strip-components=1
+        else
+          tar -xzf "$ARCHIVE" -C "$prefix" --strip-components=1
+        fi
+        # The archive is built with GCC 14, which the drivers run unless CXX
+        # names another compiler
+        if [ -z "${CXX:-}" ] && ! command -v g++-14 > /dev/null; then
+          sudo apt-get update -q
+          sudo apt-get install -y -q g++-14
+        fi
+        echo "$prefix/bin" >> "$GITHUB_PATH"
+        echo "CMAKE_PREFIX_PATH=$prefix${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}" >> "$GITHUB_ENV"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "toolkit=$prefix/lib/cuda4cpu/toolkit" >> "$GITHUB_OUTPUT"
+        "$prefix/bin/cuda4cpu-nvcc" --version | grep "^cuda4cpu "
