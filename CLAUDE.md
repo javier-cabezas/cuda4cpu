@@ -269,9 +269,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`FETCHCONTENT_SOURCE_DIR_CUDA4CPU`) and checks that the bugs are exposed,
   including the line AddressSanitizer reports in `out_of_bounds.cu`.
   The project and the README's `FetchContent` snippet pin the latest release
-  (`GIT_TAG v0.4.0`): update both, the `VERSION` in the top-level
+  (`GIT_TAG v0.4.1`): update both, the `VERSION` in the top-level
   `CMakeLists.txt`, `server.json`'s `version` and image tag, and the
-  action's `@v0.4.0` in the README and `docs/usage.md`, when tagging a new
+  action's `@v0.4.1` in the README and `docs/usage.md`, when tagging a new
   one. The `Packages` workflow fails a release whose tag doesn't match.
 - Packages (`.github/workflows/release.yml`, the `Packages` workflow): the
   release archive (`cuda4cpu-linux-x86_64.tar.gz`, with a versioned top

@@ -17,10 +17,8 @@
 # limitations under the License.
 
 name: Set up cuda4cpu
-description: >
-  Installs cuda4cpu, which runs CUDA and HIP programs on the CPU, so that
-  jobs on runners without a GPU can build and test them: nvcc and hipcc
-  drivers, a CUDA toolkit directory and a CMake package
+# The Marketplace takes descriptions shorter than 125 characters
+description: Installs cuda4cpu to build and test CUDA and HIP programs on runners without a GPU
 author: Javier Cabezas
 branding:
   icon: cpu
@@ -28,8 +26,8 @@ branding:
 inputs:
   version:
     description: >
-      The release to install, such as v0.4.0, or latest. By default, the
-      release the action is used at (javier-cabezas/cuda4cpu@v0.4.0), or the
+      The release to install, such as v0.4.1, or latest. By default, the
+      release the action is used at (javier-cabezas/cuda4cpu@v0.4.1), or the
       latest one for a branch or commit.
     required: false
     default: ''

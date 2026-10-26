@@ -44,6 +44,10 @@ jobs:
           if [ "${{ github.event_name }}" = release ]; then
             test "${{ github.event.release.tag_name }}" = "v$version"
           fi
+          # The Marketplace lists the action only with a description shorter
+          # than 125 characters
+          description=$(sed -n 's/^description: //p' action.yml)
+          test -n "$description" && test "${#description}" -lt 125
 
       # Without libnuma, which machines that run the archive may not have
       - name: Build and install
@@ -162,8 +166,8 @@ jobs:
         run: |
           archive=mcp-publisher_linux_amd64.tar.gz
           base_url="https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION"
-          curl -fsSL -o "$archive" "$base_url/$archive"
-          curl -fsSL -o "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          curl -fsSL --retry 5 -o "$archive" "$base_url/$archive"
+          curl -fsSL --retry 5 -o "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
           cosign verify-blob --bundle "$archive.sigstore.json" \
             --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/$MCP_PUBLISHER_VERSION" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \

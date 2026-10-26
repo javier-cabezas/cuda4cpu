@@ -224,7 +224,7 @@ describes every tool and its arguments.
 include(FetchContent)
 FetchContent_Declare(cuda4cpu
     GIT_REPOSITORY https://github.com/javier-cabezas/cuda4cpu.git
-    GIT_TAG v0.4.0)
+    GIT_TAG v0.4.1)
 FetchContent_MakeAvailable(cuda4cpu)
 
 add_executable(my_app main.cpp)
@@ -256,7 +256,7 @@ jobs:
       CXX: g++-14
     steps:
       - uses: actions/checkout@v4
-      - uses: javier-cabezas/cuda4cpu@v0.4.0
+      - uses: javier-cabezas/cuda4cpu@v0.4.1
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
