@@ -146,6 +146,14 @@ and `-D__HIP_PLATFORM_AMD__`, so build scripts written for hipcc work unchanged:
 cuda4cpu-hipcc -O2 --offload-arch=gfx90a -o my_app main.cpp kernels.cpp
 ```
 
+As hipcc, it answers `--version` (HIP 7.2.0), builds a static library from
+sources with `--emit-static-lib`, adds `HIPCC_COMPILE_FLAGS_APPEND` (and
+`HIPCC_LINK_FLAGS_APPEND` when it links), and shows its commands with
+`HIPCC_VERBOSE=1`. `cuda4cpu-hipconfig` answers as HIP's `hipconfig`:
+`--platform` is `nvidia`, `--compiler` `nvcc`, `--path` and `--rocmpath` the
+toolkit directory (below, or `HIP_PATH`/`ROCM_PATH`), and `--cpp_config`,
+`--version` and `--full` what HIP's print.
+
 To run the rewriter on its own: `cuda4cpu-rewrite kernels.cu -o kernels.cpp`.
 
 ### Build scripts written for nvcc
@@ -202,6 +210,20 @@ Programs that `cuda4cpu-nvcc` links find libcuda4cpu at run time by
 themselves. Those that the host compiler links with `-lcudart` find it as
 programs find CUDA's: through `LD_LIBRARY_PATH=<toolkit>/lib64`, unless
 cuda4cpu is installed where the dynamic loader looks.
+
+The toolkit is laid out like a ROCm installation too, for build systems
+written for hipcc (`$(ROCM_PATH)/bin/hipcc`, `HIP_PATH`, `hipconfig`,
+`-L$(ROCM_PATH)/lib -lamdhip64`, `find_package(hip)`): `bin/hipcc` is
+`cuda4cpu-hipcc`, `bin/hipconfig` `cuda4cpu-hipconfig`, and `lib` has
+`libamdhip64.so` (which links libcuda4cpu) and HIP's CMake package
+(`hip::host`, `hip::device`). With it, AMD's rocm-examples build with their
+own Makefiles (`make ROCM_INSTALL_DIR=<toolkit>`, or `GPU_RUNTIME=CUDA` with
+the toolkit's nvcc) and their own CMake files (the toolchain file, with
+`-DROCM_ROOT=<toolkit>` and `GPU_RUNTIME` `HIP` or `CUDA`): of the 70 that
+pass in the compatibility suite, 56 to 62 build and run that way, depending
+on the build. Most of the others use AMD's own tools (assembly, LLVM IR,
+hipify) or AMD-only build steps. A few compile with the plain C++ compiler,
+which `CXX=<toolkit>/bin/cuda4cpu-c++` fixes.
 
 ## Porting a CUDA program
 

@@ -7,6 +7,13 @@ apart takes its NVIDIA branch. That branch uses CUDA features cuda4cpu
 implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
 builtins.
 
+HIP projects build with `cuda4cpu-hipcc` in place of hipcc, and the toolkit
+directory (`<prefix>/lib/cuda4cpu/toolkit`) is laid out like a ROCm
+installation, with `bin/hipcc`, `bin/hipconfig`, `libamdhip64` and HIP's
+CMake package, for Makefiles and `find_package(hip)`. CMake's HIP language
+works too, with HIP's NVIDIA platform and the toolkit's toolchain file. See
+[Using cuda4cpu in your project](usage.md#using-cuda4cpu-in-your-project).
+
 - **Headers:** `hip/hip_runtime.h`, `hip/hip_runtime_api.h`, `hip/hip_ext.h`,
   `hip/hip_cooperative_groups.h`, `hip/hip_fp16.h`, `hip/hip_bf16.h`
   (`__hip_bfloat16`, `__hip_bfloat162` and the `HIPRT_*_BF16` constants, on

@@ -33,7 +33,10 @@ macros such as HIP_TEMPLATE_KERNEL_LAUNCH that configure it. -x cu and
 
 Installed as cuda4cpu-hipcc, it treats every C++ source file as a HIP
 source, as hipcc does, and drops hipcc's options for AMD GPUs
-(--offload-arch=..., -fgpu-rdc, ...).
+(--offload-arch=..., -fgpu-rdc, ...). --emit-static-lib compiles the sources
+into a static library, as hipcc does. As hipcc, it answers --version, adds
+HIPCC_COMPILE_FLAGS_APPEND (and HIPCC_LINK_FLAGS_APPEND when it links), and
+shows its commands with HIPCC_VERBOSE=1.
 
 Installed as cuda4cpu-nvcc, it takes nvcc's command line, so that build
 scripts written for nvcc work unchanged: options for the GPU and for nvcc's
@@ -164,8 +167,13 @@ NVCC_WARNING_KINDS = {'cross-execution-space-call', 'reorder', 'default-stream-l
                       'ext-lambda-captures-this', 'deprecated-declarations'}
 
 
+# HIP's version (include/hip/hip_version.h), as hipcc --version reports it
+HIP_VERSION = '7.2.0'
+
+
 class NvccRequest:
-    """What an nvcc command line asks for, besides the host compiler's options"""
+    """What an nvcc (or hipcc) command line asks for, besides the host
+    compiler's options"""
 
     def __init__(self):
         self.host_compiler = None       # from -ccbin
@@ -387,9 +395,10 @@ def nvcc_environment():
 
 
 def run(command, request, env=None):
-    """Runs command, or with nvcc's -v or --dryrun shows it first, or only"""
+    """Runs command, or with nvcc's -v or --dryrun (hipcc's HIPCC_VERBOSE)
+    shows it first, or only"""
     if request is not None and (request.verbose or request.dry_run):
-        sys.stderr.write('#$ ' + nvcc_echo(command) + '\n')
+        sys.stderr.write(('hipcc-cmd: ' if MODE == 'hip' else '#$ ') + nvcc_echo(command) + '\n')
         if request.dry_run:
             return 0
     return subprocess.call(command, env=env)
@@ -423,6 +432,46 @@ def nvcc_library(args, request):
     return run([os.environ.get('AR', 'ar'), 'rcs', output] + objects, request)
 
 
+def hipcc_static_library(argv, request):
+    """hipcc --emit-static-lib: compiles each source, and archives the
+    objects (and any objects given) as the output"""
+    argv = [a for a in argv if a != '--emit-static-lib']
+    output = output_of(argv, 'a.out')
+    sources, options, objects = [], [], []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == '-o':
+            i += 2
+            continue
+        if arg.startswith('-o') and len(arg) > 2:
+            pass
+        elif arg in OPTIONS_WITH_VALUE and i + 1 < len(argv):
+            options += [arg, argv[i + 1]]
+            i += 2
+            continue
+        elif arg.endswith(('.o', '.obj', '.a')):
+            objects.append(arg)
+        elif not arg.startswith('-') and source_language(arg, None) is not None:
+            sources.append(arg)
+        else:
+            options.append(arg)
+        i += 1
+    work = tempfile.mkdtemp(prefix='cuda4cpu-lib-')
+    try:
+        for n, source in enumerate(sources):
+            obj = os.path.join(work, f'{n}-{os.path.basename(source)}.o')
+            status = main(options + ['-c', source, '-o', obj])
+            if status != 0:
+                return status
+            objects.append(obj)
+        if os.path.exists(output):
+            os.remove(output)
+        return run([os.environ.get('AR', 'ar'), 'rcs', output] + objects, request)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main(argv):
     if os.environ.get(RUNNING):
         sys.stderr.write(f'{os.path.basename(sys.argv[0])}: run as the compiler of a cuda4cpu driver; '
@@ -439,6 +488,18 @@ def main(argv):
         if request.step == 'help':
             sys.stdout.write(NVCC_HELP)
             return 0
+    if MODE == 'hip':
+        request = NvccRequest()
+        request.verbose = (int(os.environ.get('HIPCC_VERBOSE') or '0', 0) & 1) != 0
+        if '--version' in argv:
+            sys.stdout.write(f'HIP version: {HIP_VERSION}-cuda4cpu-{VERSION}\n')
+            sys.stdout.flush()
+            return subprocess.call([find_compiler(), '--version'], env=dict(os.environ, **{RUNNING: '1'}))
+        if '--emit-static-lib' in argv:
+            return hipcc_static_library(argv, request)
+        argv = argv + shlex.split(os.environ.get('HIPCC_COMPILE_FLAGS_APPEND', ''))
+        if not NO_LINK.intersection(argv):
+            argv = argv + shlex.split(os.environ.get('HIPCC_LINK_FLAGS_APPEND', ''))
     compiler = find_compiler(request.host_compiler if request else None)
     if request is not None and request.step == 'dlink':
         return nvcc_device_link(compiler, argv, request)

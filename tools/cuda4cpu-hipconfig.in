@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+#
+# CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
+#
+# Copyright (C) 2014 Javier Cabezas
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""hipconfig for cuda4cpu: what HIP's hipconfig prints, for cuda4cpu's HIP,
+which is HIP's NVIDIA platform. Its HIP installation (--path, --rocmpath) is
+the toolkit directory, whose bin has hipcc and hipconfig. Build systems ask
+it for the platform (CMake does, to choose the HIP compiler), the paths, the
+compiler options and the version.
+
+As hipconfig, each option prints its value without a newline, unless -n is
+given too; with none, it prints the full configuration.
+"""
+
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+TOOLKIT = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_TOOLKIT_DIR@'))
+CUDA4CPU_VERSION = '@PROJECT_VERSION@'
+# HIP's version in include/hip/hip_version.h
+HIP_VERSION = '7.2.0'
+
+USAGE = """usage: hipconfig [OPTIONS]
+  --path,  -p        : print HIP_PATH (from the environment, or cuda4cpu's toolkit)
+  --rocmpath, -R     : print ROCM_PATH (from the environment, or cuda4cpu's toolkit)
+  --cpp_config, -C   : print C++ compiler options
+  --compiler, -c     : print compiler (nvcc)
+  --platform, -P     : print platform (nvidia)
+  --runtime, -r      : print runtime (cuda)
+  --hipclangpath, -l : print HIP_CLANG_PATH (none: HIP compiles with nvcc)
+  --full, -f         : print full config
+  --version, -v      : print hip version
+  --check            : check configuration
+  --newline, -n      : print newline
+  --help, -h         : print help message
+"""
+
+
+def hip_path():
+    return os.environ.get('HIP_PATH') or TOOLKIT
+
+
+def rocm_path():
+    return os.environ.get('ROCM_PATH') or TOOLKIT
+
+
+def cpp_config():
+    return f'-D__HIP_PLATFORM_NVIDIA__= -I{os.path.join(hip_path(), "include")}'
+
+
+def version():
+    return f'{HIP_VERSION}-cuda4cpu-{CUDA4CPU_VERSION}'
+
+
+def full():
+    return (f'HIP version: {version()}\n\n'
+            f'== hipconfig\n'
+            f'HIP_PATH           : {hip_path()}\n'
+            f'ROCM_PATH          : {rocm_path()}\n'
+            f'HIP_COMPILER       : nvcc\n'
+            f'HIP_PLATFORM       : nvidia\n'
+            f'HIP_RUNTIME        : cuda\n'
+            f'CPP_CONFIG         : {cpp_config()}\n\n'
+            f'== cuda4cpu\n'
+            f'HIP runs on the CPU with cuda4cpu {CUDA4CPU_VERSION}, as HIP\'s NVIDIA platform: hipcc and nvcc in\n'
+            f'{os.path.join(TOOLKIT, "bin")} are cuda4cpu-hipcc and cuda4cpu-nvcc.\n')
+
+
+VALUES = {
+    '--path': hip_path, '-p': hip_path,
+    '--rocmpath': rocm_path, '-R': rocm_path,
+    '--cpp_config': cpp_config, '-C': cpp_config, '--cxx_config': cpp_config,
+    '--compiler': lambda: 'nvcc', '-c': lambda: 'nvcc',
+    '--platform': lambda: 'nvidia', '-P': lambda: 'nvidia',
+    '--runtime': lambda: 'cuda', '-r': lambda: 'cuda',
+    '--hipclangpath': lambda: '', '-l': lambda: '',
+    '--version': version, '-v': version,
+    '--full': full, '-f': full,
+}
+
+
+def main(argv):
+    newline = '-n' in argv or '--newline' in argv
+    printed = False
+    for arg in argv:
+        if arg in ('-n', '--newline'):
+            continue
+        if arg in ('--help', '-h'):
+            sys.stdout.write(USAGE)
+            return 0
+        if arg == '--check':
+            sys.stdout.write(f'HIP_PATH={hip_path()}: {"ok" if os.path.isdir(hip_path()) else "not found"}\n')
+            printed = True
+            continue
+        if arg not in VALUES:
+            sys.stderr.write(f'hipconfig: unknown option {arg}\n' + USAGE)
+            return 1
+        sys.stdout.write(VALUES[arg]() + ('\n' if newline else ''))
+        printed = True
+    if not printed:
+        sys.stdout.write(full())
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

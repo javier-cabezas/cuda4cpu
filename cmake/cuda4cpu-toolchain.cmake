@@ -35,4 +35,7 @@ set(CMAKE_HIP_PLATFORM "nvidia" CACHE STRING "HIP's platform: cuda4cpu's HIP is 
 # Where CMake looks for HIP's installation (on the NVIDIA platform, it only
 # checks there is one): the toolkit, which has HIP's headers
 set(CMAKE_HIP_COMPILER_ROCM_ROOT "${CMAKE_CURRENT_LIST_DIR}" CACHE PATH "HIP's installation: cuda4cpu's toolkit")
+# HIP's version, which CMake's HIP language sets only on AMD's platform, from
+# hip-lang's package; projects test it
+set(hip-lang_VERSION 7.2.0)
 set(CMAKE_CXX_COMPILER "${CMAKE_CURRENT_LIST_DIR}/bin/cuda4cpu-c++" CACHE FILEPATH "The C++ compiler: cuda4cpu-c++")

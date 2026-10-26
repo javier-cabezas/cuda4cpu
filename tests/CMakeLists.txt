@@ -223,6 +223,13 @@ add_test(NAME driver_nvcc
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
 set_tests_properties(driver_nvcc_options driver_nvcc PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
 
+# The toolkit as a HIP installation: hipconfig, hipcc's environment and
+# --version, and a program linked with ROCm's -lamdhip64
+add_test(NAME driver_hipcc_tools
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/driver/test_hipcc.py ${PROJECT_BINARY_DIR}/toolkit
+                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake-language/hip/vector.hip ${CMAKE_CXX_COMPILER})
+set_tests_properties(driver_hipcc_tools PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
+
 # Projects written for CMake's CUDA and HIP languages, configured with the
 # toolkit's toolchain file. CMake before 4.1 accepts only NVIDIA's nvcc
 # banner in --version, which cuda4cpu-nvcc doesn't print.

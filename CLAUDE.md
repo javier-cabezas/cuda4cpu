@@ -206,7 +206,19 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `LANGUAGES CUDA` or `HIP`: nvcc for CUDA and HIP (`CMAKE_HIP_PLATFORM`
   nvidia, with the toolkit as `CMAKE_HIP_COMPILER_ROCM_ROOT`), and
   `cuda4cpu-c++` for C++, so that host `.cpp` files that include CUDA's
-  headers get C++23 and OpenMP, and programs an rpath.
+  headers get C++23 and OpenMP, and programs an rpath. It's laid out like a
+  ROCm installation too: `bin/hipcc`, `bin/hipconfig`, and `lib` with
+  `libamdhip64.so` (a linker script), links to libcuda4cpu, and HIP's CMake
+  package (`lib/cmake/hip`, from `cmake/hip-config.cmake`: `hip::host`,
+  `hip::device`). The toolchain file sets `hip-lang_VERSION`, which
+  projects test and CMake sets only on AMD.
+- `tools/cuda4cpu-hipconfig.in`: HIP's `hipconfig`, for HIP's NVIDIA
+  platform (`--platform` nvidia, `--compiler` nvcc), with the toolkit as
+  HIP's and ROCm's path. Values print without a newline unless `-n`, as
+  hipconfig's. `cuda4cpu-hipcc` also answers `--version`, reads
+  `HIPCC_COMPILE_FLAGS_APPEND`, `HIPCC_LINK_FLAGS_APPEND` and
+  `HIPCC_VERBOSE` (`hipcc-cmd:` lines), and `--emit-static-lib` compiles
+  the sources (calling `main` for each) and archives them.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -337,6 +349,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     nvcc's options (with `--dryrun`), its steps (`-dc`, `-dlink`, `-lib`) in
     a build that runs, and the toolkit: its `bin/nvcc`, and a program that
     the host compiler links with `-lcudart`.
+  - `driver_hipcc_tools` (`driver/test_hipcc.py`): `hipconfig`'s answers,
+    `hipcc --version`, the `HIPCC_*` variables, `--emit-static-lib`, and a
+    program the host compiler links with `-L<toolkit>/lib -lamdhip64`.
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
