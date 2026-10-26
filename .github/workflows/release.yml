@@ -44,6 +44,10 @@ jobs:
           if [ "${{ github.event_name }}" = release ]; then
             test "${{ github.event.release.tag_name }}" = "v$version"
           fi
+          # The Marketplace lists the action only with a description shorter
+          # than 125 characters
+          description=$(sed -n 's/^description: //p' action.yml)
+          test -n "$description" && test "${#description}" -lt 125
 
       # Without libnuma, which machines that run the archive may not have
       - name: Build and install

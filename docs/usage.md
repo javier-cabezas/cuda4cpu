@@ -34,7 +34,7 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src ghcr.io/javier-cab
 installs a release on a Linux runner:
 
 ```yaml
-- uses: javier-cabezas/cuda4cpu@v0.4.0
+- uses: javier-cabezas/cuda4cpu@v0.4.1
   id: cuda4cpu
 - run: make CUDA_PATH=${{ steps.cuda4cpu.outputs.toolkit }}
 ```
