@@ -163,7 +163,7 @@ jobs:
           archive=mcp-publisher_linux_amd64.tar.gz
           base_url="https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION"
           curl -fsSL --retry 5 -o "$archive" "$base_url/$archive"
-          curl -fsSL -o "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          curl -fsSL --retry 5 -o "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
           cosign verify-blob --bundle "$archive.sigstore.json" \
             --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/$MCP_PUBLISHER_VERSION" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
