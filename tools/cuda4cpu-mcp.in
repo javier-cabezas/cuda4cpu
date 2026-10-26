@@ -1,0 +1,718 @@
+#!/usr/bin/env python3
+#
+# CUDA for CPU allows you to compile and execute CUDA kernels on CPUs.
+#
+# Copyright (C) 2014 Javier Cabezas
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""An MCP server (Model Context Protocol, over stdio) that compiles, runs and
+checks CUDA and HIP programs on the CPU with cuda4cpu, so that an agent can
+validate kernels without a GPU.
+
+Tools:
+  compile       compile sources (files, or contents given inline) with
+                cuda4cpu-nvcc or cuda4cpu-hipcc; diagnostics at the sources'
+                own lines, and the features cuda4cpu doesn't implement
+  run           compile and run a program: exit code, output, and the
+                problems cuda4cpu and the C++ runtime report
+  check         run a program in several thread orders, with cuda4cpu's
+                checks and with AddressSanitizer and UBSan, and report what
+                makes it depend on the order or misbehave
+  capabilities  what cuda4cpu implements, and what it doesn't
+
+Register it with an MCP client, e.g. `claude mcp add cuda4cpu -- cuda4cpu-mcp`.
+Programs run with the user's permissions, in a temporary directory, with a
+time limit; nothing else isolates them.
+
+It uses Python's standard library only, and speaks the protocol's JSON-RPC
+messages, one per line, on stdin and stdout.
+"""
+
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+VERSION = '@PROJECT_VERSION@'
+DOCS_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_DOCS_DIR@'))
+NVCC = os.path.join(HERE, 'cuda4cpu-nvcc')
+HIPCC = os.path.join(HERE, 'cuda4cpu-hipcc')
+
+PROTOCOL_VERSIONS = ('2025-06-18', '2025-03-26', '2024-11-05')
+
+# How much of a program's output a result carries
+OUTPUT_LIMIT = 16384
+
+DEFAULT_TIMEOUT = 60
+MAX_TIMEOUT = 600
+
+# Options for the builds that check: debug information for locations, and
+# the sanitizers' (leaks off: CUDA programs often don't free their memory)
+SANITIZER_OPTIONS = ['-O1', '-g', '-fno-omit-frame-pointer', '-fsanitize=address,undefined',
+                     '-fno-sanitize-recover=undefined']
+SANITIZER_ENVIRONMENT = {'ASAN_OPTIONS': 'detect_leaks=0:abort_on_error=0', 'UBSAN_OPTIONS': 'print_stacktrace=1'}
+
+INSTRUCTIONS = """cuda4cpu runs CUDA and HIP programs on the CPU: kernels compile unchanged, \
+and each CUDA thread is a fiber on a CPU core. Use compile to see whether code \
+builds (and what cuda4cpu doesn't implement), run to see what it prints, and \
+check to look for bugs a GPU would hide or reveal at random: missing \
+__syncthreads() or __syncwarp() (results that depend on the order threads \
+run in), divergent barriers, out-of-bounds and use-after-free accesses, \
+undefined behavior and copies in the wrong direction. A clean check finds no \
+problem in the orders and checks it ran; it doesn't prove there's none. \
+Performance on the CPU says nothing about a GPU's."""
+
+
+#
+# Sources and builds
+#
+
+class ToolError(Exception):
+    """A request the tool can't serve, reported as the tool's error"""
+
+
+def safe_name(name):
+    """A relative path inside the work directory, from a name given inline"""
+    norm = os.path.normpath(name)
+    if os.path.isabs(norm) or norm.startswith('..') or not norm or norm == '.':
+        raise ToolError(f'file name {name!r} must be a relative path inside the program')
+    return norm
+
+
+SOURCE_EXTENSIONS = ('.cu', '.hip', '.cpp', '.cc', '.cxx', '.c')
+
+
+class Program:
+    """The sources of a request: files given inline, written to a work
+    directory, and existing files, used where they are"""
+
+    def __init__(self, arguments, work):
+        self.work = work
+        self.sources = []           # paths to compile
+        self.names = {}             # path in the work directory -> name given inline
+        files = arguments.get('files') or {}
+        if not isinstance(files, dict):
+            raise ToolError('files must map file names to their contents')
+        for name, content in files.items():
+            if not isinstance(content, str):
+                raise ToolError(f'the contents of {name} must be a string')
+            relative = safe_name(name)
+            path = os.path.join(work, 'src', relative)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(content)
+            self.names[path] = relative
+            if relative.endswith(SOURCE_EXTENSIONS):
+                self.sources.append(path)
+        for path in arguments.get('paths') or []:
+            full = os.path.abspath(os.path.expanduser(path))
+            if not os.path.isfile(full):
+                raise ToolError(f'{path}: no such file')
+            self.sources.append(full)
+        if not self.sources:
+            raise ToolError('give the sources to compile: files (contents by name) or paths')
+        language = arguments.get('language')
+        if language not in (None, 'cuda', 'hip'):
+            raise ToolError("language must be 'cuda' or 'hip'")
+        if language is None:
+            language = 'hip' if any(s.endswith('.hip') for s in self.sources) else 'cuda'
+        self.language = language
+        options = arguments.get('options') or []
+        if not isinstance(options, list) or not all(isinstance(o, str) for o in options):
+            raise ToolError('options must be a list of strings')
+        self.options = options
+        directory = arguments.get('working_directory')
+        if directory is not None:
+            self.cwd = os.path.abspath(os.path.expanduser(directory))
+        elif arguments.get('paths'):
+            self.cwd = os.path.dirname(self.sources[-1])
+        else:
+            self.cwd = os.path.join(work, 'src')
+        if not os.path.isdir(self.cwd):
+            raise ToolError(f'{self.cwd}: no such directory')
+
+    def display(self, path):
+        """How a path appears in results: inline files by their names"""
+        if path in self.names:
+            return self.names[path]
+        prefix = os.path.join(self.work, 'src') + os.sep
+        if path.startswith(prefix):
+            return path[len(prefix):]
+        return path
+
+    def build(self, output, extra):
+        """Compiles and links the sources into output, with the driver for
+        the language: (succeeded, compiler output)"""
+        driver = HIPCC if self.language == 'hip' else NVCC
+        command = [driver] + self.options + extra + ['-o', output] + self.sources
+        if self.names:
+            command.insert(1, '-I' + os.path.join(self.work, 'src'))
+        result = subprocess.run(command, capture_output=True, text=True, cwd=os.path.join(self.work, 'src')
+                                if self.names else self.cwd)
+        return result.returncode == 0, result.stdout + result.stderr
+
+
+DIAGNOSTIC = re.compile(r'^(?P<file>[^:\n]+?):(?P<line>\d+):(?:(?P<column>\d+):)? '
+                        r'(?P<severity>fatal error|error|warning|note): (?P<message>.*)$')
+UNDEFINED_REFERENCE = re.compile(r"undefined reference to [`'](?P<symbol>[^']+)'")
+
+# What cuda4cpu doesn't implement, recognized in diagnostics: a pattern of the
+# compiler's messages, and what to tell the user
+UNSUPPORTED = [
+    (r'cudaTextureObject_t|cudaSurfaceObject_t|\btex[123]D\w*|\btex1Dfetch|\btexture<|\bsurf[123]D\w*|'
+     r'cudaArray\b|cudaMallocArray|cudaCreateChannelDesc|cudaReadModeElementType|cudaBindTexture',
+     'textures and surfaces (texture objects, tex1D/tex2D/tex3D, surf2Dwrite, CUDA arrays) are not '
+     'implemented'),
+    (r'no such instruction|unknown pseudo-op|invalid instruction suffix|%laneid|%tid\b|\bptx\b',
+     'inline PTX (asm(...) with PTX instructions) is not supported: it is GPU assembly'),
+    (r'cuda/(std|atomic|barrier|pipeline|cmath|ptx|annotated_ptr|memory_resource)|<cuda/',
+     'libcu++ headers (<cuda/...>, cuda::std) are not provided'),
+    (r'cublas|cufft|curand|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|thrust/|cub/|hipblas|hipfft|rocblas|'
+     r'hiprand|rocrand|hipcub',
+     'the CUDA and ROCm libraries (cuBLAS, cuFFT, cuRAND, Thrust, CUB, ...) are not provided'),
+    (r'__reduce_(add|min|max|and|or|xor)_sync', '__reduce_*_sync is not implemented yet'),
+    (r'memcpy_async|cuda::pipeline|__pipeline_', 'memcpy_async and pipelines are not implemented yet'),
+    (r'GL/gl|glew|glut|cudaGraphicsGL|cudaGraphicsResource|EGL', 'graphics interop is out of scope'),
+    (r"\bcu(Init|Device\w*|Ctx\w*|Module\w*|Mem\w*|Launch\w*|Stream\w*|Event\w*|Func\w*)\b.*(not declared|"
+     r'was not declared|undeclared)',
+     'the CUDA driver API (cuInit, cuModuleLoad, cuLaunchKernel, ...) is not implemented'),
+    (r'hiprtc|hipModule(Load|GetFunction|LaunchKernel)', 'HIPRTC and HIP\'s module API are not implemented'),
+]
+
+
+def diagnostics_of(output, program):
+    """The compiler's diagnostics, at the sources' own lines (cuda4cpu's
+    rewriter keeps them), and linker errors"""
+    found = []
+    for line in output.splitlines():
+        m = DIAGNOSTIC.match(line)
+        if m:
+            found.append({'file': program.display(m['file']), 'line': int(m['line']),
+                          'column': int(m['column']) if m['column'] else None,
+                          'severity': 'error' if m['severity'] == 'fatal error' else m['severity'],
+                          'message': m['message']})
+            continue
+        m = UNDEFINED_REFERENCE.search(line)
+        if m:
+            found.append({'file': None, 'line': None, 'column': None, 'severity': 'error',
+                          'message': f"undefined reference to '{m['symbol']}' (linking)"})
+    return found
+
+
+def unsupported_in(output):
+    notes = []
+    for pattern, note in UNSUPPORTED:
+        if re.search(pattern, output) and note not in notes:
+            notes.append(note)
+    return notes
+
+
+def clip(text):
+    """At most OUTPUT_LIMIT characters: the start and the end"""
+    if len(text) <= OUTPUT_LIMIT:
+        return text
+    half = OUTPUT_LIMIT // 2
+    return text[:half] + f'\n[... {len(text) - OUTPUT_LIMIT} characters left out ...]\n' + text[-half:]
+
+
+def compile_result(program, succeeded, output):
+    result = {'compiled': succeeded, 'language': program.language, 'diagnostics': diagnostics_of(output, program)}
+    if not succeeded:
+        notes = unsupported_in(output)
+        if notes:
+            result['unsupported'] = notes
+        result['compiler_output'] = clip(output)
+    return result
+
+
+#
+# Runs
+#
+
+def timeout_of(arguments):
+    timeout = arguments.get('timeout_seconds', DEFAULT_TIMEOUT)
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ToolError('timeout_seconds must be a positive number')
+    return min(float(timeout), MAX_TIMEOUT)
+
+
+def no_core_dumps():
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.setsid()
+
+
+def execute(binary, program, arguments, environment):
+    """Runs binary in its own process group, which a timeout kills whole"""
+    args = arguments.get('args') or []
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ToolError('args must be a list of strings')
+    extra = arguments.get('environment') or {}
+    if not isinstance(extra, dict):
+        raise ToolError('environment must map names to values')
+    env = dict(os.environ)
+    env.update({str(k): str(v) for k, v in extra.items()})
+    env.update(environment)
+    stdin = arguments.get('stdin')
+    timeout = timeout_of(arguments)
+    start = time.monotonic()
+    process = subprocess.Popen([binary] + args, cwd=program.cwd, env=env, stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace',
+                               preexec_fn=no_core_dumps)
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+    code = process.returncode
+    run = {'exit_code': code if code is not None and code >= 0 else None,
+           'signal': signal.Signals(-code).name if code is not None and code < 0 else None,
+           'timed_out': timed_out, 'seconds': round(time.monotonic() - start, 3),
+           'stdout': stdout, 'stderr': stderr}
+    return run
+
+
+CUDA4CPU_REPORT = re.compile(r'^cuda4cpu: (?:warning|error): (?P<message>.*)$', re.MULTILINE)
+SANITIZER_ERROR = re.compile(r'^==\d+==ERROR: (?P<tool>AddressSanitizer|LeakSanitizer): (?P<kind>[\w-]+)(?P<rest>.*)$',
+                             re.MULTILINE)
+UBSAN = re.compile(r'^(?P<file>[^:\n]+):(?P<line>\d+):(?P<column>\d+): runtime error: (?P<message>.*)$',
+                   re.MULTILINE)
+FRAME = re.compile(r'^\s*#\d+ 0x[0-9a-f]+ in (?P<function>.+?) (?P<file>/[^\s:]+):(?P<line>\d+)(?::(?P<column>\d+))?',
+                   re.MULTILINE)
+LOCATION = re.compile(r'(?P<file>[^\s,]+):(?P<line>\d+)')
+
+
+INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@'))
+
+
+def user_frame(stderr, program):
+    """The first frame of a sanitizer's stack in the program's own code: its
+    sources and the directories they're in (frames of rewritten files name
+    the original ones). Failing that, the first frame outside the system's
+    and cuda4cpu's headers."""
+    directories = {os.path.dirname(os.path.realpath(s)) + os.sep for s in program.sources}
+    fallback = None
+    for m in FRAME.finditer(stderr):
+        path = os.path.realpath(m['file'])
+        frame = {'file': program.display(path), 'line': int(m['line']), 'function': m['function']}
+        if path.startswith(tuple(directories)):
+            return frame
+        if fallback is None and not path.startswith(('/usr/', os.path.realpath(INCLUDE_DIR) + os.sep)):
+            fallback = frame
+    return fallback
+
+
+def findings_of(run, program):
+    """The problems a run reports: cuda4cpu's checks, AddressSanitizer,
+    UBSan, and how the run ended"""
+    findings = []
+    stderr = run['stderr']
+    for m in CUDA4CPU_REPORT.finditer(stderr):
+        message = m['message']
+        if 'different __syncthreads()' in message:
+            kind = 'divergent barrier'
+        elif 'warp operations' in message or 'does not include its own lane' in message:
+            kind = 'divergent warp operation'
+        elif 'a copy with' in message:
+            kind = 'copy in the wrong direction'
+        else:
+            kind = 'cuda4cpu report'
+        locations = [{'file': program.display(os.path.realpath(l['file'])) if os.path.isabs(l['file']) else l['file'],
+                      'line': int(l['line'])} for l in LOCATION.finditer(message) if not l['file'].startswith('0x')]
+        findings.append({'kind': kind, 'message': message, 'locations': locations})
+    for m in SANITIZER_ERROR.finditer(stderr):
+        frame = user_frame(stderr[m.end():], program)
+        finding = {'kind': f'{m["tool"]}: {m["kind"]}', 'message': m['kind']}
+        access = re.search(r'^(READ|WRITE) of size \d+', stderr[m.end():], re.MULTILINE)
+        if access:
+            finding['message'] += ': ' + access.group(0)
+        if frame:
+            finding['locations'] = [frame]
+            finding['message'] += f' in {frame["function"]}'
+        findings.append(finding)
+    for m in UBSAN.finditer(stderr):
+        findings.append({'kind': 'undefined behavior', 'message': m['message'],
+                         'locations': [{'file': program.display(os.path.realpath(m['file'])), 'line': int(m['line'])}]})
+    if run['timed_out']:
+        findings.append({'kind': 'timeout', 'message': f'still running after {run["seconds"]} s: a deadlock, '
+                         'a thread that spins on another one, or too much work for the CPU'})
+    elif run['signal'] and not any(f['kind'].startswith('AddressSanitizer') for f in findings):
+        findings.append({'kind': 'crash', 'message': f'killed by {run["signal"]}'})
+    return findings
+
+
+def run_result(run, findings):
+    result = {k: run[k] for k in ('exit_code', 'signal', 'timed_out', 'seconds')}
+    result['stdout'] = clip(run['stdout'])
+    result['stderr'] = clip(run['stderr'])
+    if findings:
+        result['findings'] = findings
+    return result
+
+
+#
+# Tools
+#
+
+FILE_PROPERTIES = {
+    'files': {'type': 'object', 'additionalProperties': {'type': 'string'},
+              'description': 'Sources by file name (relative paths) and their contents: .cu or .hip files, '
+                             '.cpp host files, and headers they include'},
+    'paths': {'type': 'array', 'items': {'type': 'string'},
+              'description': 'Existing source files to compile where they are'},
+    'language': {'type': 'string', 'enum': ['cuda', 'hip'],
+                 'description': 'cuda (cuda4cpu-nvcc, the default) or hip (cuda4cpu-hipcc, the default '
+                                'when a source is a .hip file)'},
+    'options': {'type': 'array', 'items': {'type': 'string'},
+                'description': "Compiler options, as nvcc's (-arch, -Xcompiler, -std, -I, -D, ...) or hipcc's; "
+                               'GPU options are accepted and ignored. Default -O2 -g.'},
+}
+
+RUN_PROPERTIES = {
+    **FILE_PROPERTIES,
+    'args': {'type': 'array', 'items': {'type': 'string'}, 'description': "The program's arguments"},
+    'stdin': {'type': 'string', 'description': 'Input for the program'},
+    'environment': {'type': 'object', 'additionalProperties': {'type': 'string'},
+                    'description': 'More environment variables for the program'},
+    'working_directory': {'type': 'string',
+                          'description': 'Where the program runs: by default, the directory of the last path '
+                                         'given, or the directory of the inline files'},
+    'timeout_seconds': {'type': 'number', 'description': f'Time limit for each run (default {DEFAULT_TIMEOUT}, '
+                                                         f'at most {MAX_TIMEOUT})'},
+}
+
+TOOLS = [
+    {'name': 'compile',
+     'description': 'Compile CUDA or HIP sources with cuda4cpu, as nvcc or hipcc would: whether they build, the '
+                    "compiler's diagnostics at the sources' own lines, and the features the sources use that "
+                    'cuda4cpu does not implement (textures, inline PTX, CUDA libraries, ...).',
+     'inputSchema': {'type': 'object', 'properties': FILE_PROPERTIES}},
+    {'name': 'run',
+     'description': "Compile and run a CUDA or HIP program on the CPU: its exit code, output, and the problems "
+                    "cuda4cpu reports (divergent barriers, copies in the wrong direction). Use check to look for "
+                    'bugs.',
+     'inputSchema': {'type': 'object', 'properties': RUN_PROPERTIES}},
+    {'name': 'check',
+     'description': 'Look for bugs in a CUDA or HIP program without a GPU. Runs it with the threads of each block '
+                    'in several orders (forward, reverse, random with several seeds, warp orders): a result that '
+                    'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
+                    "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
+                    'direction) and runs a build with AddressSanitizer and UBSan (out-of-bounds and '
+                    'use-after-free accesses, undefined behavior), with source lines. The program should check '
+                    'its own results or print them; output that varies between identical runs (timings) is '
+                    'compared by exit code only, unless ignore_patterns removes the lines that vary.',
+     'inputSchema': {'type': 'object', 'properties': {
+         **RUN_PROPERTIES,
+         'seeds': {'type': 'array', 'items': {'type': 'integer'},
+                   'description': 'Seeds of the random orders (default 1, 2, 3)'},
+         'sanitizers': {'type': 'boolean', 'description': 'Also run with AddressSanitizer and UBSan (default true)'},
+         'ignore_patterns': {'type': 'array', 'items': {'type': 'string'},
+                             'description': 'Regular expressions of output lines to leave out of the comparison '
+                                            'between orders, such as timings'},
+     }}},
+    {'name': 'capabilities',
+     'description': 'What cuda4cpu implements of CUDA and HIP, what it does not, and how its checks work: read it '
+                    'before relying on a feature.',
+     'inputSchema': {'type': 'object', 'properties': {}}},
+]
+
+
+def tool_compile(arguments):
+    with tempfile.TemporaryDirectory(prefix='cuda4cpu-mcp-') as work:
+        program = Program(arguments, work)
+        succeeded, output = program.build(os.path.join(work, 'program'), [] if program.options else ['-O2', '-g'])
+        return compile_result(program, succeeded, output)
+
+
+def tool_run(arguments):
+    with tempfile.TemporaryDirectory(prefix='cuda4cpu-mcp-') as work:
+        program = Program(arguments, work)
+        binary = os.path.join(work, 'program')
+        succeeded, output = program.build(binary, [] if program.options else ['-O2', '-g'])
+        result = compile_result(program, succeeded, output)
+        if not succeeded:
+            return result
+        run = execute(binary, program, arguments, {})
+        result.update(run_result(run, findings_of(run, program)))
+        return result
+
+
+ORDER_NOTES = {
+    'reverse': 'the threads of each block in reverse order',
+    'warp_reverse': 'the warps of each block in reverse order, each warp\'s lanes in order',
+    'random': 'the threads of each block in a random order',
+    'warp_random': 'the warps of each block in a random order',
+}
+
+
+def comparable(run, patterns):
+    lines = [line for line in run['stdout'].splitlines() if not any(p.search(line) for p in patterns)]
+    return run['exit_code'], run['signal'], '\n'.join(lines)
+
+
+def first_difference(a, b):
+    a_lines, b_lines = a.splitlines(), b.splitlines()
+    for i in range(max(len(a_lines), len(b_lines))):
+        x = a_lines[i] if i < len(a_lines) else '<no line>'
+        y = b_lines[i] if i < len(b_lines) else '<no line>'
+        if x != y:
+            return {'line': i + 1, 'forward': x[:500], 'this_order': y[:500]}
+    return None
+
+
+def tool_check(arguments):
+    seeds = arguments.get('seeds', [1, 2, 3])
+    if not isinstance(seeds, list) or not all(isinstance(s, int) and s >= 0 for s in seeds):
+        raise ToolError('seeds must be a list of non-negative integers')
+    try:
+        patterns = [re.compile(p) for p in arguments.get('ignore_patterns') or []]
+    except re.error as e:
+        raise ToolError(f'ignore_patterns: {e}')
+    with tempfile.TemporaryDirectory(prefix='cuda4cpu-mcp-') as work:
+        program = Program(arguments, work)
+        binary = os.path.join(work, 'program')
+        succeeded, output = program.build(binary, [] if program.options else ['-O2', '-g'])
+        result = compile_result(program, succeeded, output)
+        if not succeeded:
+            result['verdict'] = 'does not compile'
+            return result
+
+        checks = {'CUDA4CPU_DIVERGENT_BARRIERS': 'warn', 'CUDA4CPU_MEMCPY_DIRECTION': 'warn'}
+        runs, findings = [], []
+
+        def record(name, run, note):
+            found = findings_of(run, program)
+            runs.append({'order': name, 'description': note, 'exit_code': run['exit_code'], 'signal': run['signal'],
+                         'timed_out': run['timed_out'], 'seconds': run['seconds']})
+            for f in found:
+                f['run'] = name
+                if not any(f['kind'] == g['kind'] and f['message'] == g['message'] for g in findings):
+                    findings.append(f)
+            return found
+
+        def finish(verdict=None, note=None):
+            result['runs'] = runs
+            result['findings'] = findings
+            if note:
+                result['note'] = note
+            result['verdict'] = verdict or ('problems found' if findings else 'no problems found')
+            if not findings:
+                result['caveat'] = ('no problem showed up in these orders and checks; that does not prove the '
+                                    'program free of races, and timing on the CPU says nothing about a GPU')
+            return result
+
+        # First with the sanitizers: memory errors make every other result
+        # unreliable, and a program that corrupts its heap may hang
+        if arguments.get('sanitizers', True):
+            sanitized = os.path.join(work, 'program-sanitized')
+            built, output = program.build(sanitized, SANITIZER_OPTIONS)
+            if built:
+                run = execute(sanitized, program, arguments,
+                              dict(checks, CUDA4CPU_SCHEDULE='forward', **SANITIZER_ENVIRONMENT))
+                found = record('sanitizers', run, 'the default order, built with AddressSanitizer and UBSan')
+                if any(f['kind'].startswith(('AddressSanitizer', 'LeakSanitizer')) or
+                       f['kind'] in ('undefined behavior', 'crash', 'timeout') for f in found):
+                    result['sanitizers'] = run_result(run, [])
+                    return finish(note='the build with AddressSanitizer and UBSan found errors, so the other '
+                                       'orders were not run: their results would not be reliable. Fix these '
+                                       'and check again.')
+            else:
+                result['sanitizer_build'] = {'compiled': False, 'compiler_output': clip(output)}
+
+        environment = dict(checks, CUDA4CPU_SCHEDULE='forward')
+        base = execute(binary, program, arguments, environment)
+        record('forward', base, 'the default order: each block\'s threads in index order')
+        result['forward'] = run_result(base, [])
+        if base['timed_out'] or base['signal']:
+            return finish(note='the program does not finish in the default order, so the other orders were '
+                               'not run')
+        if base['exit_code'] != 0:
+            findings.append({'kind': 'fails in the default order', 'run': 'forward',
+                             'message': f'exits with code {base["exit_code"]} in the default order: a failure it '
+                                        'detected itself, or an error (see its output); orders that fail the same '
+                                        'way are not reported'})
+        again = execute(binary, program, arguments, environment)
+        deterministic = comparable(base, patterns) == comparable(again, patterns)
+        result['deterministic_output'] = deterministic
+
+        orders = [('reverse', 'reverse'), ('warp_reverse', 'warp_reverse')]
+        for seed in seeds:
+            orders += [(f'random:{seed}', 'random'), (f'warp_random:{seed}', 'warp_random')]
+        changed = []                        # (order, family, run) of the orders that change the result
+        for order, family in orders:
+            run = execute(binary, program, arguments, dict(checks, CUDA4CPU_SCHEDULE=order))
+            record(order, run, ORDER_NOTES[family])
+            same = (comparable(run, patterns) == comparable(base, patterns) if deterministic else
+                    (run['exit_code'], run['signal']) == (base['exit_code'], base['signal']))
+            if not same:
+                changed.append((order, family, run))
+        if changed:
+            order, family, run = changed[0]
+            if (run['exit_code'], run['signal']) != (base['exit_code'], base['signal']):
+                how = (f'running {ORDER_NOTES[family]} ({order}) ends with '
+                       f'{"exit code " + str(run["exit_code"]) if run["signal"] is None else run["signal"]}'
+                       f'{" (timed out)" if run["timed_out"] else ""} instead of exit code {base["exit_code"]}')
+            else:
+                how = f'running {ORDER_NOTES[family]} ({order}) changes the output'
+            finding = {'kind': 'depends on the thread order',
+                       'message': f'{how}; {len(changed)} of {len(orders)} other orders change the result',
+                       'orders': [o for o, _, _ in changed],
+                       'meaning': 'a thread reads data that another thread of its block writes without a '
+                                  '__syncthreads() between them (or, within a warp, a __syncwarp()), or threads '
+                                  'race on the same data. On a GPU, such code works or fails depending on '
+                                  'timing.'}
+            if deterministic:
+                difference = first_difference(comparable(base, patterns)[2], comparable(run, patterns)[2])
+                if difference:
+                    finding['first_difference'] = difference
+            findings.append(finding)
+        note = None
+        if not deterministic:
+            note = ('the output differs between two runs in the default order (timings, addresses, unordered '
+                    'output), so the orders were compared by exit code only; give ignore_patterns for the lines '
+                    'that vary to compare the rest')
+        return finish(note=note)
+
+
+def tool_capabilities(arguments):
+    text = [f'cuda4cpu {VERSION}: CUDA and HIP on the CPU. Kernels compile unchanged; each CUDA thread runs as a '
+            'fiber, 32 to a warp, and blocks run in parallel on the CPU cores. CUDA 12.0\'s runtime API '
+            '(CUDART_VERSION 12000) and HIP 7.2 on HIP\'s NVIDIA platform.']
+    for name in ('features.md', 'limitations.md'):
+        path = os.path.join(DOCS_DIR, name)
+        if os.path.exists(path):
+            with open(path) as f:
+                text.append(f.read())
+    if len(text) == 1:
+        text.append(f'(cuda4cpu\'s documentation is not installed in {DOCS_DIR})')
+    return {'text': '\n\n'.join(text)}
+
+
+HANDLERS = {'compile': tool_compile, 'run': tool_run, 'check': tool_check, 'capabilities': tool_capabilities}
+
+
+def summary(name, result):
+    """A short text for clients that show text: the verdict or outcome, and
+    the findings and diagnostics; the full result follows as JSON"""
+    if name == 'capabilities':
+        return result['text']
+    lines = []
+    if not result.get('compiled', True):
+        lines.append('does not compile')
+        for note in result.get('unsupported', []):
+            lines.append(f'  unsupported: {note}')
+        for d in result.get('diagnostics', [])[:20]:
+            if d['severity'] == 'error':
+                where = f'{d["file"]}:{d["line"]}: ' if d['file'] else ''
+                lines.append(f'  {where}{d["message"]}')
+    elif name == 'check':
+        lines.append(result['verdict'])
+        for f in result['findings']:
+            where = ', '.join(f'{l["file"]}:{l["line"]}' for l in f.get('locations', []) if l.get('file'))
+            lines.append(f'  [{f["kind"]}] {f["message"]}' + (f' at {where}' if where else ''))
+            if f.get('meaning'):
+                lines.append(f'    {f["meaning"]}')
+        if result.get('note'):
+            lines.append(f'  note: {result["note"]}')
+    elif name == 'run':
+        lines.append(f'exit code {result["exit_code"]}' if result['exit_code'] is not None else
+                     ('timed out' if result['timed_out'] else f'killed by {result["signal"]}'))
+        for f in result.get('findings', []):
+            lines.append(f'  [{f["kind"]}] {f["message"]}')
+    else:
+        lines.append('compiles')
+    return '\n'.join(lines) + '\n\n' + json.dumps(result, indent=1)
+
+
+#
+# The protocol
+#
+
+def respond(message_id, result=None, error=None):
+    reply = {'jsonrpc': '2.0', 'id': message_id}
+    if error is not None:
+        reply['error'] = error
+    else:
+        reply['result'] = result
+    sys.stdout.write(json.dumps(reply) + '\n')
+    sys.stdout.flush()
+
+
+def handle(message):
+    method = message.get('method')
+    params = message.get('params') or {}
+    if method == 'initialize':
+        requested = params.get('protocolVersion')
+        return {'protocolVersion': requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
+                'capabilities': {'tools': {'listChanged': False}},
+                'serverInfo': {'name': 'cuda4cpu', 'version': VERSION},
+                'instructions': INSTRUCTIONS}
+    if method == 'ping':
+        return {}
+    if method == 'tools/list':
+        return {'tools': TOOLS}
+    if method == 'tools/call':
+        name = params.get('name')
+        if name not in HANDLERS:
+            raise LookupError(f'no tool named {name!r}')
+        arguments = params.get('arguments') or {}
+        try:
+            result = HANDLERS[name](arguments)
+        except ToolError as e:
+            return {'content': [{'type': 'text', 'text': str(e)}], 'isError': True}
+        except Exception:
+            return {'content': [{'type': 'text', 'text': 'cuda4cpu-mcp failed:\n' + traceback.format_exc()}],
+                    'isError': True}
+        return {'content': [{'type': 'text', 'text': summary(name, result)}], 'structuredContent': result,
+                'isError': False}
+    raise NotImplementedError(method)
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as e:
+            respond(None, error={'code': -32700, 'message': f'parse error: {e}'})
+            continue
+        if 'id' not in message:
+            continue                        # a notification (initialized, cancelled): nothing to answer
+        try:
+            respond(message['id'], handle(message))
+        except NotImplementedError as e:
+            respond(message['id'], error={'code': -32601, 'message': f'method not found: {e}'})
+        except LookupError as e:
+            respond(message['id'], error={'code': -32602, 'message': str(e)})
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

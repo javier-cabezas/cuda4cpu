@@ -223,6 +223,13 @@ add_test(NAME driver_nvcc
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
 set_tests_properties(driver_nvcc_options driver_nvcc PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
 
+# cuda4cpu-mcp, driven over stdio as an MCP client does: the protocol, and
+# each tool on programs whose bugs (and their lines) are known
+add_test(NAME mcp_server
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/mcp/test_mcp.py ${PROJECT_BINARY_DIR}/tools/cuda4cpu-mcp
+                 ${PROJECT_SOURCE_DIR}/examples/bugs)
+set_tests_properties(mcp_server PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}" TIMEOUT 900)
+
 # The toolkit as a HIP installation: hipconfig, hipcc's environment and
 # --version, and a program linked with ROCm's -lamdhip64
 add_test(NAME driver_hipcc_tools

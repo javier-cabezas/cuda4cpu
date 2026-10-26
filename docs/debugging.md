@@ -109,3 +109,53 @@ to make `cudaMalloc` return `cudaErrorMemoryAllocation` instead.
 **Valgrind.** Build cuda4cpu with `-DCUDA4CPU_ENABLE_VALGRIND=ON`, so that it
 registers its fiber stacks with Valgrind. Otherwise Valgrind reports false
 errors in the context switch.
+
+## Checking kernels from an AI agent (MCP)
+
+`cuda4cpu-mcp` is an MCP server (Model Context Protocol, over stdio) that
+compiles, runs and checks CUDA and HIP programs with cuda4cpu, so that an
+agent can validate kernels on a machine without a GPU. Register it with an
+MCP client, for example Claude Code:
+
+```sh
+claude mcp add cuda4cpu -- /usr/local/bin/cuda4cpu-mcp     # or build/<preset>/tools/cuda4cpu-mcp
+```
+
+Each tool takes the sources inline (`files`, contents by file name) or by
+path (`paths`), nvcc's or hipcc's `options`, and for runs the `args`,
+`stdin`, `environment`, `working_directory` and `timeout_seconds` (60 by
+default) of the program. Results are JSON, with a short summary first.
+
+- **`compile`** builds the sources with `cuda4cpu-nvcc`, or `cuda4cpu-hipcc`
+  for HIP (by default when a source is a `.hip` file). It returns the
+  compiler's diagnostics at the sources' own lines, and names the features
+  they use that cuda4cpu doesn't implement (textures, inline PTX, libcu++,
+  the CUDA libraries, the driver API, ...).
+- **`run`** builds and runs the program: exit code, output (up to 16 KB of
+  each), and the problems cuda4cpu reports along the way.
+- **`check`** looks for bugs, and returns a verdict and findings:
+  1. A build with AddressSanitizer and UBSan, run in the default order:
+     out-of-bounds and use-after-free accesses and undefined behavior, at the
+     kernel's line. If it finds any, the other orders aren't run: memory
+     errors make their results unreliable, and a program that corrupts its
+     heap may hang.
+  2. The default order, twice: an exit code other than 0 is a finding, and
+     output that differs between the two runs (timings) is compared by exit
+     code only, unless `ignore_patterns` removes the lines that vary.
+  3. The other orders (`reverse`, `warp_reverse`, and `random` and
+     `warp_random` with each of `seeds`, 1 to 3 by default). A result that
+     changes with the order is reported once, with the orders that changed
+     it and the first line of output that differs: a thread reads what
+     another writes without a `__syncthreads()` (or `__syncwarp()`) between
+     them, or threads race.
+
+  Every run reports divergent barriers and warp operations and copies in
+  the wrong direction (in warn mode, so that the program's behavior doesn't
+  change), and a time-out stops the check. A clean check means that nothing
+  showed up in those orders and checks, not that the program has no race.
+- **`capabilities`** returns what cuda4cpu implements and doesn't (this
+  documentation's `features.md` and `limitations.md`, installed with it).
+
+Programs run with your permissions, each in its own process group (which a
+time-out kills) in a temporary directory, without core dumps. Nothing else
+isolates them.

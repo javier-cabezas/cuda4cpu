@@ -133,6 +133,18 @@ script adds the built-in variables:
 thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
 ```
 
+**For AI agents.** `cuda4cpu-mcp` is an MCP server that compiles, runs and
+checks CUDA and HIP programs, so an agent can validate kernels without a GPU
+(`claude mcp add cuda4cpu -- cuda4cpu-mcp`). Its `check` tool runs a program
+in several thread orders and with AddressSanitizer and UBSan, and reports
+what it finds with source lines:
+
+```
+problems found
+  [depends on the thread order] running the threads of each block in reverse order (reverse)
+  ends with exit code 1 instead of exit code 0; 8 of 8 other orders change the result
+```
+
 [docs/debugging.md](docs/debugging.md) has the details.
 
 ## Use it in your project

@@ -219,6 +219,19 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `HIPCC_COMPILE_FLAGS_APPEND`, `HIPCC_LINK_FLAGS_APPEND` and
   `HIPCC_VERBOSE` (`hipcc-cmd:` lines), and `--emit-static-lib` compiles
   the sources (calling `main` for each) and archives them.
+- `tools/cuda4cpu-mcp.in`: an MCP server (stdio, JSON-RPC one message per
+  line, standard library only) with `compile`, `run`, `check` and
+  `capabilities` tools, on cuda4cpu-nvcc and cuda4cpu-hipcc next to it.
+  `check` runs a sanitizer build first (memory errors stop it, since other
+  results would be unreliable and a corrupted heap can hang), then the
+  default order twice (exit code, and whether the output is deterministic),
+  then the other `CUDA4CPU_SCHEDULE` orders, comparing with the default
+  one; findings come from cuda4cpu's `cuda4cpu: warning:` reports (warn
+  mode), AddressSanitizer's and UBSan's reports (`user_frame` picks the
+  first frame in the program's directories), time-outs and crashes. Keep its
+  patterns in sync with the reports' wording in `lib/`. `capabilities`
+  reads `features.md` and `limitations.md` from the docs, which are
+  installed to `<datadir>/doc/cuda4cpu` for it.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -349,6 +362,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     nvcc's options (with `--dryrun`), its steps (`-dc`, `-dlink`, `-lib`) in
     a build that runs, and the toolkit: its `bin/nvcc`, and a program that
     the host compiler links with `-lcudart`.
+  - `mcp_server` (`mcp/test_mcp.py`): cuda4cpu-mcp driven over stdio:
+    the protocol (initialize, version negotiation, errors), each tool, and
+    `check` on programs with known bugs (the `examples/bugs` programs, a
+    divergent barrier, a copy in the wrong direction, signed overflow, a
+    failure, a hang, varying output), each found at its line, and nothing in
+    a correct program.
   - `driver_hipcc_tools` (`driver/test_hipcc.py`): `hipconfig`'s answers,
     `hipcc --version`, the `HIPCC_*` variables, `--emit-static-lib`, and a
     program the host compiler links with `-L<toolkit>/lib -lamdhip64`.
