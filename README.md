@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
 [![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-130%20of%20154%20pass-brightgreen)](docs/compatibility.md)
+[![MCP server](https://img.shields.io/badge/MCP-kernel%20checks%20for%20AI%20agents-8A2BE2)](#use-it-from-an-ai-agent-mcp)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](docs/usage.md#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -17,6 +18,10 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 
 - **Test CUDA code where there's no GPU:** in CI on GitHub's hosted runners,
   on a laptop, or in a classroom.
+- **Let AI agents test the kernels they write:** `cuda4cpu-mcp`, an MCP
+  server for Claude Code, Cursor or any MCP client, compiles, runs and checks
+  CUDA and HIP code, and reports wrong results, missing barriers and memory
+  errors at their source lines.
 - **Debug kernels with the tools you already use:** gdb stops in a single CUDA
   thread, and AddressSanitizer, UBSan and Valgrind point at the kernel's
   source line.
@@ -34,6 +39,7 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 
 - [Quick start](#quick-start)
 - [See it catch bugs](#see-it-catch-bugs)
+- [Use it from an AI agent (MCP)](#use-it-from-an-ai-agent-mcp)
 - [Use it in your project](#use-it-in-your-project)
 - [What's supported](#whats-supported)
 - [How it works](#how-it-works)
@@ -67,7 +73,7 @@ build/release/tools/cuda4cpu-c++ -O2 examples/cmake-project/vecadd.cu -o vecadd
 ./vecadd
 ```
 
-To install it (`cuda4cpu-c++`, `cuda4cpu-hipcc` and the CMake package):
+To install it (the compiler drivers, the MCP server and the CMake package):
 `cmake --install build/release --prefix /usr/local`. See
 [docs/usage.md](docs/usage.md) for the build options.
 
@@ -137,19 +143,62 @@ script adds the built-in variables:
 thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
 ```
 
-**For AI agents.** `cuda4cpu-mcp` is an MCP server that compiles, runs and
-checks CUDA and HIP programs, so an agent can validate kernels without a GPU
-(`claude mcp add cuda4cpu -- cuda4cpu-mcp`). Its `check` tool runs a program
-in several thread orders and with AddressSanitizer and UBSan, and reports
-what it finds with source lines:
+[docs/debugging.md](docs/debugging.md) has the details.
+
+## Use it from an AI agent (MCP)
+
+A coding agent on a machine without a GPU can write CUDA, but it can't run
+it, so it can't tell whether a kernel works. `cuda4cpu-mcp` gives it a way
+to find out: an MCP server that compiles, runs and tests CUDA and HIP code
+with cuda4cpu, and runs the checks above for it. Register it with your
+agent, for example Claude Code:
+
+```sh
+claude mcp add cuda4cpu -- cuda4cpu-mcp    # or build/release/tools/cuda4cpu-mcp
+```
+
+Other clients take the same command, for example in Cursor's `mcp.json` or
+Claude Desktop's configuration: `{"mcpServers": {"cuda4cpu": {"command":
+"cuda4cpu-mcp"}}}`. The server speaks MCP over stdio and needs only
+Python 3.
+
+| Tool | What the agent gets |
+| --- | --- |
+| `compile` | nvcc's or hipcc's diagnostics at the source's lines, and the features it uses that cuda4cpu doesn't implement |
+| `run` | the exit code, the output, and cuda4cpu's warnings |
+| `check` | a verdict, and findings with their source lines: memory errors and undefined behavior (AddressSanitizer and UBSan), results that change with the order of a block's threads (a missing `__syncthreads()` or `__syncwarp()`, a race), divergent barriers, copies in the wrong direction, hangs |
+| `test_kernel` | a test of one kernel, without writing a program: the agent gives the launch configuration and the arguments (given or generated), with expected values or a C++ reference function, and gets the elements that differ and the findings of `check` |
+| `capabilities` | what cuda4cpu implements and doesn't, so that the agent can tell a bug in its code from a missing feature |
+
+Results are JSON, with a summary first. For the missing `__syncthreads()`
+above, whose program passes in the default order, `check` answers:
 
 ```
 problems found
   [depends on the thread order] running the threads of each block in reverse order (reverse)
   ends with exit code 1 instead of exit code 0; 8 of 8 other orders change the result
+    a thread reads data that another thread of its block writes without a __syncthreads()
+    between them (or, within a warp, a __syncwarp()), or threads race on the same data.
 ```
 
-[docs/debugging.md](docs/debugging.md) has the details.
+And for a SAXPY that computes its index with `blockDim.y` instead of
+`blockDim.x`, `test_kernel` with a reference that loops over the elements
+answers:
+
+```
+failed
+  argument 3: 998 of 1000 elements differ (largest error 1998)
+    [1] 5, expected 3
+    [2] 13, expected 5
+    ...
+```
+
+A clean `check` means that nothing showed up in the orders and checks it
+ran, not that a program has no race. Programs run with your permissions,
+each in a temporary directory and its own process group, killed at a
+time-out: the server doesn't sandbox them.
+[docs/debugging.md](docs/debugging.md#checking-kernels-from-an-ai-agent-mcp)
+describes every tool and its arguments.
 
 ## Use it in your project
 
