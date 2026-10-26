@@ -348,6 +348,11 @@ def findings_of(run, program):
     for m in SANITIZER_ERROR.finditer(stderr):
         frame = user_frame(stderr[m.end():], program)
         finding = {'kind': f'{m["tool"]}: {m["kind"]}', 'message': m['kind']}
+        if m['kind'] == 'use-after-poison':
+            # cuda4cpu rounds allocations up and poisons the rest
+            finding['kind'] = 'AddressSanitizer: allocation-overflow'
+            finding['message'] = 'out of bounds: past the end of an allocation (cudaMalloc, cudaMallocManaged, ...)'
+
         access = re.search(r'^(READ|WRITE) of size \d+', stderr[m.end():], re.MULTILINE)
         if access:
             finding['message'] += ': ' + access.group(0)
@@ -435,6 +440,53 @@ TOOLS = [
                              'description': 'Regular expressions of output lines to leave out of the comparison '
                                             'between orders, such as timings'},
      }}},
+    {'name': 'test_kernel',
+     'description': 'Test one kernel without writing a program: give its source, the launch configuration, its '
+                    'arguments (scalars, and arrays with their data, given or generated), and the expected '
+                    'outputs, as values or as a host reference function. A generated program launches the '
+                    'kernel, compares each output (exactly for integers, within a tolerance for floating '
+                    'point) and reports the elements that differ. With check (the default), it also runs in '
+                    'the thread orders and with the sanitizers that check uses.',
+     'inputSchema': {'type': 'object', 'required': ['kernel', 'name', 'grid', 'block', 'arguments'], 'properties': {
+         'kernel': {'type': 'string', 'description': 'The source of the kernel, with what it needs (device '
+                                                     'functions, includes, constants)'},
+         'name': {'type': 'string', 'description': 'The kernel to launch (a template with its arguments, '
+                                                   'e.g. scale<float>, works too)'},
+         'grid': {'description': 'Blocks: a number or [x, y, z]', 'type': ['integer', 'array'],
+                  'items': {'type': 'integer'}},
+         'block': {'description': 'Threads per block: a number or [x, y, z]', 'type': ['integer', 'array'],
+                   'items': {'type': 'integer'}},
+         'shared_bytes': {'type': 'integer', 'description': 'Dynamic shared memory per block (default 0)'},
+         'arguments': {'type': 'array', 'description': "The kernel's arguments, in order", 'items': {
+             'type': 'object', 'required': ['type'], 'properties': {
+                 'name': {'type': 'string', 'description': 'A name for the results'},
+                 'type': {'type': 'string', 'description': 'A scalar type (int, unsigned, float, double, '
+                                                           'long long, ...) or a pointer to one (float*): '
+                                                           'pointers are device arrays'},
+                 'value': {'type': 'number', 'description': "A scalar's value"},
+                 'data': {'description': "An array's initial contents: a list of numbers, or a generator: "
+                                         "{fill: v, count: n}, {range: [start, step], count: n}, or "
+                                         "{random: [min, max], count: n, seed: s}"},
+                 'output': {'type': 'boolean', 'description': 'Compare the array after the kernel runs '
+                                                              '(implied by expected)'},
+                 'expected': {'description': "The array's expected contents after the kernel: a list or a "
+                                             'generator as in data'},
+             }}},
+         'reference': {'type': 'string',
+                       'description': 'C++ host code that defines void reference(...) with the kernel\'s '
+                                      'parameters: it gets host copies of the inputs and writes the expected '
+                                      'outputs into the output arrays (those without expected values)'},
+         'tolerance': {'type': 'object', 'properties': {'absolute': {'type': 'number'},
+                                                        'relative': {'type': 'number'}},
+                       'description': 'For floating-point outputs: an element matches if |got - expected| <= '
+                                      'absolute + relative * |expected| (default 1e-5 and 1e-5)'},
+         'language': FILE_PROPERTIES['language'],
+         'options': FILE_PROPERTIES['options'],
+         'check': {'type': 'boolean', 'description': 'Also run in other thread orders and with the sanitizers '
+                                                     '(default true)'},
+         'seeds': {'type': 'array', 'items': {'type': 'integer'}, 'description': "As check's"},
+         'timeout_seconds': RUN_PROPERTIES['timeout_seconds'],
+     }}},
     {'name': 'capabilities',
      'description': 'What cuda4cpu implements of CUDA and HIP, what it does not, and how its checks work: read it '
                     'before relying on a feature.',
@@ -486,6 +538,12 @@ def first_difference(a, b):
 
 
 def tool_check(arguments):
+    with tempfile.TemporaryDirectory(prefix='cuda4cpu-mcp-') as work:
+        return check_program(Program(arguments, work), arguments)
+
+
+def check_program(program, arguments):
+    """check's runs and findings, for a program in its work directory"""
     seeds = arguments.get('seeds', [1, 2, 3])
     if not isinstance(seeds, list) or not all(isinstance(s, int) and s >= 0 for s in seeds):
         raise ToolError('seeds must be a list of non-negative integers')
@@ -493,110 +551,406 @@ def tool_check(arguments):
         patterns = [re.compile(p) for p in arguments.get('ignore_patterns') or []]
     except re.error as e:
         raise ToolError(f'ignore_patterns: {e}')
+    work = program.work
+    binary = os.path.join(work, 'program')
+    succeeded, output = program.build(binary, [] if program.options else ['-O2', '-g'])
+    result = compile_result(program, succeeded, output)
+    if not succeeded:
+        result['verdict'] = 'does not compile'
+        return result
+
+    checks = {'CUDA4CPU_DIVERGENT_BARRIERS': 'warn', 'CUDA4CPU_MEMCPY_DIRECTION': 'warn'}
+    runs, findings = [], []
+
+    def record(name, run, note):
+        found = findings_of(run, program)
+        runs.append({'order': name, 'description': note, 'exit_code': run['exit_code'], 'signal': run['signal'],
+                     'timed_out': run['timed_out'], 'seconds': run['seconds']})
+        for f in found:
+            f['run'] = name
+            if not any(f['kind'] == g['kind'] and f['message'] == g['message'] for g in findings):
+                findings.append(f)
+        return found
+
+    def finish(verdict=None, note=None):
+        result['runs'] = runs
+        result['findings'] = findings
+        if note:
+            result['note'] = note
+        result['verdict'] = verdict or ('problems found' if findings else 'no problems found')
+        if not findings:
+            result['caveat'] = ('no problem showed up in these orders and checks; that does not prove the '
+                                'program free of races, and timing on the CPU says nothing about a GPU')
+        return result
+
+    # First with the sanitizers: memory errors make every other result
+    # unreliable, and a program that corrupts its heap may hang
+    if arguments.get('sanitizers', True):
+        sanitized = os.path.join(work, 'program-sanitized')
+        built, output = program.build(sanitized, SANITIZER_OPTIONS)
+        if built:
+            run = execute(sanitized, program, arguments,
+                          dict(checks, CUDA4CPU_SCHEDULE='forward', **SANITIZER_ENVIRONMENT))
+            found = record('sanitizers', run, 'the default order, built with AddressSanitizer and UBSan')
+            if any(f['kind'].startswith(('AddressSanitizer', 'LeakSanitizer')) or
+                   f['kind'] in ('undefined behavior', 'crash', 'timeout') for f in found):
+                result['sanitizers'] = run_result(run, [])
+                return finish(note='the build with AddressSanitizer and UBSan found errors, so the other '
+                                   'orders were not run: their results would not be reliable. Fix these '
+                                   'and check again.')
+        else:
+            result['sanitizer_build'] = {'compiled': False, 'compiler_output': clip(output)}
+
+    environment = dict(checks, CUDA4CPU_SCHEDULE='forward')
+    base = execute(binary, program, arguments, environment)
+    record('forward', base, 'the default order: each block\'s threads in index order')
+    result['forward'] = run_result(base, [])
+    if base['timed_out'] or base['signal']:
+        return finish(note='the program does not finish in the default order, so the other orders were '
+                           'not run')
+    if base['exit_code'] != 0:
+        findings.append({'kind': 'fails in the default order', 'run': 'forward',
+                         'message': f'exits with code {base["exit_code"]} in the default order: a failure it '
+                                    'detected itself, or an error (see its output); orders that fail the same '
+                                    'way are not reported'})
+    again = execute(binary, program, arguments, environment)
+    deterministic = comparable(base, patterns) == comparable(again, patterns)
+    result['deterministic_output'] = deterministic
+
+    orders = [('reverse', 'reverse'), ('warp_reverse', 'warp_reverse')]
+    for seed in seeds:
+        orders += [(f'random:{seed}', 'random'), (f'warp_random:{seed}', 'warp_random')]
+    changed = []                        # (order, family, run) of the orders that change the result
+    for order, family in orders:
+        run = execute(binary, program, arguments, dict(checks, CUDA4CPU_SCHEDULE=order))
+        record(order, run, ORDER_NOTES[family])
+        same = (comparable(run, patterns) == comparable(base, patterns) if deterministic else
+                (run['exit_code'], run['signal']) == (base['exit_code'], base['signal']))
+        if not same:
+            changed.append((order, family, run))
+    if changed:
+        order, family, run = changed[0]
+        if (run['exit_code'], run['signal']) != (base['exit_code'], base['signal']):
+            how = (f'running {ORDER_NOTES[family]} ({order}) ends with '
+                   f'{"exit code " + str(run["exit_code"]) if run["signal"] is None else run["signal"]}'
+                   f'{" (timed out)" if run["timed_out"] else ""} instead of exit code {base["exit_code"]}')
+        else:
+            how = f'running {ORDER_NOTES[family]} ({order}) changes the output'
+        finding = {'kind': 'depends on the thread order',
+                   'message': f'{how}; {len(changed)} of {len(orders)} other orders change the result',
+                   'orders': [o for o, _, _ in changed],
+                   'meaning': 'a thread reads data that another thread of its block writes without a '
+                              '__syncthreads() between them (or, within a warp, a __syncwarp()), or threads '
+                              'race on the same data. On a GPU, such code works or fails depending on '
+                              'timing.'}
+        if deterministic:
+            difference = first_difference(comparable(base, patterns)[2], comparable(run, patterns)[2])
+            if difference:
+                finding['first_difference'] = difference
+        findings.append(finding)
+    note = None
+    if not deterministic:
+        note = ('the output differs between two runs in the default order (timings, addresses, unordered '
+                'output), so the orders were compared by exit code only; give ignore_patterns for the lines '
+                'that vary to compare the rest')
+    return finish(note=note)
+
+
+#
+# test_kernel: a generated program that launches one kernel
+#
+
+# The element types of arguments: C++ type, and whether it's floating point
+SCALAR_TYPES = {
+    'bool': 'bool', 'char': 'signed char', 'signed char': 'signed char', 'unsigned char': 'unsigned char',
+    'short': 'short', 'unsigned short': 'unsigned short', 'int': 'int', 'unsigned': 'unsigned',
+    'unsigned int': 'unsigned', 'long': 'long', 'unsigned long': 'unsigned long', 'long long': 'long long',
+    'unsigned long long': 'unsigned long long', 'size_t': 'size_t', 'int8_t': 'int8_t', 'uint8_t': 'uint8_t',
+    'int16_t': 'int16_t', 'uint16_t': 'uint16_t', 'int32_t': 'int32_t', 'uint32_t': 'uint32_t',
+    'int64_t': 'int64_t', 'uint64_t': 'uint64_t', 'float': 'float', 'double': 'double',
+}
+FLOATING = {'float', 'double'}
+MAX_ELEMENTS = 1 << 26
+
+
+def dims(value, what):
+    if isinstance(value, int):
+        value = [value]
+    if not isinstance(value, list) or not 1 <= len(value) <= 3 or not all(isinstance(v, int) and v > 0 for v in value):
+        raise ToolError(f'{what} must be a positive number or a list of 1 to 3 of them')
+    return (value + [1, 1])[:3]
+
+
+def literal(value, ctype):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) and ctype != 'bool':
+        raise ToolError(f'{value!r} is not a number')
+    if ctype in FLOATING:
+        if value != value:
+            return f'std::numeric_limits<{ctype}>::quiet_NaN()'
+        if value in (float('inf'), float('-inf')):
+            return f'{"-" if value < 0 else ""}std::numeric_limits<{ctype}>::infinity()'
+        return repr(float(value)) + ('f' if ctype == 'float' else '')
+    if isinstance(value, float) and not value.is_integer():
+        raise ToolError(f'{value} is not an integer, for an array of {ctype}')
+    return f'({ctype})({int(value)}LL)' if int(value) < 0 else f'({ctype})({int(value)}ULL)'
+
+
+def array_code(spec, ctype, variable, what):
+    """C++ that declares std::vector<ctype> variable from a list or a
+    generator, and its element count"""
+    if isinstance(spec, list):
+        if not spec or len(spec) > MAX_ELEMENTS:
+            raise ToolError(f'{what} must have 1 to {MAX_ELEMENTS} elements')
+        values = ', '.join(literal(v, ctype) for v in spec)
+        return f'std::vector<{ctype}> {variable}{{{values}}};', len(spec)
+    if not isinstance(spec, dict) or not isinstance(spec.get('count'), int) or not 0 < spec['count'] <= MAX_ELEMENTS:
+        raise ToolError(f'{what} must be a list of numbers, or a generator with a count of 1 to {MAX_ELEMENTS}')
+    count = spec['count']
+    if 'fill' in spec:
+        return f'std::vector<{ctype}> {variable}({count}, {literal(spec["fill"], ctype)});', count
+    if 'range' in spec:
+        start, step = spec['range'] if isinstance(spec['range'], list) and len(spec['range']) == 2 else (None, None)
+        if not isinstance(start, (int, float)) or not isinstance(step, (int, float)):
+            raise ToolError(f'{what}: range is [start, step]')
+        wide = 'double' if ctype in FLOATING else 'long long'
+        return (f'std::vector<{ctype}> {variable}({count});\n'
+                f'    for (size_t i = 0; i < {count}; ++i) {variable}[i] = ({ctype})(({wide})({start!r}) + ({wide})(i) * '
+                f'({wide})({step!r}));'), count
+    if 'random' in spec:
+        low, high = spec['random'] if isinstance(spec['random'], list) and len(spec['random']) == 2 else (None, None)
+        if not isinstance(low, (int, float)) or not isinstance(high, (int, float)) or low > high:
+            raise ToolError(f'{what}: random is [min, max]')
+        seed = spec.get('seed', 1)
+        if not isinstance(seed, int):
+            raise ToolError(f'{what}: seed must be an integer')
+        if ctype in FLOATING:
+            distribution = f'std::uniform_real_distribution<double> d({low!r}, {high!r});'
+        else:
+            distribution = f'std::uniform_int_distribution<long long> d({int(low)}, {int(high)});'
+        return (f'std::vector<{ctype}> {variable}({count});\n'
+                f'    {{ std::mt19937_64 g({seed}ULL); {distribution}\n'
+                f'      for (auto &v : {variable}) v = ({ctype})(d(g)); }}'), count
+    raise ToolError(f'{what}: a generator is {{fill}}, {{range}} or {{random}}, with a count')
+
+
+HARNESS = r"""#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <random>
+#include <type_traits>
+#include <vector>
+
+// cuda4cpu-mcp's test_kernel: the kernel under test, and the reference, at
+// their own lines
+#line 1 "__CUDA4CPU_DIRECTORY__/kernel.cu"
+__CUDA4CPU_KERNEL__
+#line 1 "__CUDA4CPU_DIRECTORY__/reference.cpp"
+__CUDA4CPU_REFERENCE__
+#line 1 "__CUDA4CPU_DIRECTORY__/test_kernel_main.cu"
+
+template <typename T>
+static void print_value(const char *key, T v)
+{
+    if constexpr (std::is_floating_point_v<T>)
+        std::printf("\"%s\": %.17g", key, double(v));
+    else if constexpr (std::is_signed_v<T>)
+        std::printf("\"%s\": %lld", key, (long long)v);
+    else
+        std::printf("\"%s\": %llu", key, (unsigned long long)v);
+}
+
+//! Compares an output with its expected values, prints its result as a
+//! CUDA4CPU_TEST line, and returns the number of elements that differ
+template <typename T>
+static size_t compare(const char *name, const std::vector<T> &got, const std::vector<T> &expected,
+                      double absolute, double relative)
+{
+    size_t differ = 0, shown = 0;
+    double max_error = 0;
+    std::printf("CUDA4CPU_TEST {\"output\": \"%s\", \"elements\": %zu, \"first_mismatches\": [", name, got.size());
+    for (size_t i = 0; i < got.size(); ++i) {
+        bool same;
+        if constexpr (std::is_floating_point_v<T>) {
+            const double g = got[i], e = expected[i];
+            same = (std::isnan(g) && std::isnan(e)) || g == e || std::fabs(g - e) <= absolute + relative * std::fabs(e);
+            if (!std::isnan(g) && !std::isnan(e) && std::isfinite(g - e))
+                max_error = std::fmax(max_error, std::fabs(g - e));
+        } else {
+            same = got[i] == expected[i];
+        }
+        if (!same) {
+            if (shown < 10) {
+                std::printf("%s{\"index\": %zu, ", shown ? ", " : "", i);
+                print_value("got", got[i]);
+                std::printf(", ");
+                print_value("expected", expected[i]);
+                std::printf("}");
+                ++shown;
+            }
+            ++differ;
+        }
+    }
+    std::printf("], \"mismatches\": %zu, \"max_abs_error\": %.17g}\n", differ, max_error);
+    return differ;
+}
+
+int main()
+{
+__CUDA4CPU_SETUP__
+    __CUDA4CPU_NAME__<<<dim3(__CUDA4CPU_GRID__), dim3(__CUDA4CPU_BLOCK__), __CUDA4CPU_SHARED__>>>(__CUDA4CPU_ARGS__);
+    cudaError_t status = cudaGetLastError();
+    if (status == cudaSuccess)
+        status = cudaDeviceSynchronize();
+    if (status != cudaSuccess) {
+        std::printf("CUDA4CPU_TEST {\"launch_error\": \"%s\"}\n", cudaGetErrorString(status));
+        return 2;
+    }
+__CUDA4CPU_REFERENCE_CALL__
+    size_t differ = 0;
+__CUDA4CPU_COMPARE__
+    std::printf("CUDA4CPU_TEST {\"done\": true}\n");
+    return differ == 0 ? 0 : 1;
+}
+"""
+
+
+def harness_of(arguments, directory):
+    """The test program's source, in directory, and the outputs it compares"""
+    kernel, name = arguments.get('kernel'), arguments.get('name')
+    if not isinstance(kernel, str) or not isinstance(name, str) or not name:
+        raise ToolError('give the kernel\'s source (kernel) and its name')
+    grid, block = dims(arguments.get('grid'), 'grid'), dims(arguments.get('block'), 'block')
+    if block[0] * block[1] * block[2] > 1024:
+        raise ToolError('a block has at most 1024 threads')
+    shared = arguments.get('shared_bytes', 0)
+    if not isinstance(shared, int) or shared < 0:
+        raise ToolError('shared_bytes must be a non-negative integer')
+    specs = arguments.get('arguments')
+    if not isinstance(specs, list):
+        raise ToolError('arguments must be a list, in the kernel\'s order')
+    reference = arguments.get('reference')
+    if reference is not None and not isinstance(reference, str):
+        raise ToolError('reference must be C++ source')
+    tolerance = arguments.get('tolerance') or {}
+    absolute, relative = tolerance.get('absolute', 1e-5), tolerance.get('relative', 1e-5)
+
+    setup, call, reference_call, compare_code, outputs = [], [], [], [], []
+    for i, spec in enumerate(specs):
+        if not isinstance(spec, dict) or not isinstance(spec.get('type'), str):
+            raise ToolError(f'argument {i}: give its type')
+        label = spec.get('name') or f'argument {i}'
+        if not re.fullmatch(r'[A-Za-z0-9_ .\[\]-]{1,64}', label):
+            raise ToolError(f'argument {i}: a name of letters, digits and spaces')
+        raw = ' '.join(spec['type'].split())
+        pointer = raw.endswith('*')
+        base = raw.rstrip('*').strip()
+        if base.startswith('const '):
+            base = base[len('const '):]
+        if base not in SCALAR_TYPES or raw.count('*') > 1:
+            raise ToolError(f'{label}: type {spec["type"]!r} is not a number or a pointer to numbers; for other '
+                            'arguments (structs, textures), write a program and use check')
+        ctype = SCALAR_TYPES[base]
+        if not pointer:
+            if 'value' not in spec:
+                raise ToolError(f'{label}: a scalar needs a value')
+            setup.append(f'    const {ctype} a{i} = {literal(spec["value"], ctype)};')
+            call.append(f'a{i}')
+            reference_call.append(f'a{i}')
+            continue
+        if 'data' not in spec:
+            raise ToolError(f'{label}: an array needs data (its initial contents)')
+        code, count = array_code(spec['data'], ctype, f'h{i}', f'{label}: data')
+        setup.append('    ' + code)
+        setup.append(f'    {ctype} *d{i} = nullptr;\n'
+                     f'    cudaMalloc(&d{i}, {count} * sizeof({ctype}));\n'
+                     f'    cudaMemcpy(d{i}, h{i}.data(), {count} * sizeof({ctype}), cudaMemcpyHostToDevice);\n'
+                     f'    std::vector<{ctype}> e{i} = h{i};')
+        call.append(f'd{i}')
+        reference_call.append(f'e{i}.data()')
+        if 'expected' in spec or spec.get('output'):
+            outputs.append(label)
+            compare_code.append(f'    std::vector<{ctype}> g{i}({count});\n'
+                                f'    cudaMemcpy(g{i}.data(), d{i}, {count} * sizeof({ctype}), cudaMemcpyDeviceToHost);')
+            if 'expected' in spec:
+                code, expected_count = array_code(spec['expected'], ctype, f'x{i}', f'{label}: expected')
+                if expected_count != count:
+                    raise ToolError(f'{label}: expected has {expected_count} elements, data {count}')
+                compare_code.append('    ' + code)
+                compare_code.append(f'    differ += compare("{label}", g{i}, x{i}, {absolute!r}, {relative!r});')
+            elif reference is None:
+                raise ToolError(f'{label}: an output needs expected values, or a reference function')
+            else:
+                compare_code.append(f'    differ += compare("{label}", g{i}, e{i}, {absolute!r}, {relative!r});')
+    if not outputs:
+        raise ToolError('no output to compare: mark arrays with output or expected')
+    source = (HARNESS.replace('__CUDA4CPU_DIRECTORY__', directory).replace('__CUDA4CPU_KERNEL__', kernel)
+              .replace('__CUDA4CPU_REFERENCE__', reference or '')
+              .replace('__CUDA4CPU_SETUP__', '\n'.join(setup)).replace('__CUDA4CPU_NAME__', name)
+              .replace('__CUDA4CPU_GRID__', ', '.join(map(str, grid))).replace('__CUDA4CPU_BLOCK__', ', '.join(map(str, block)))
+              .replace('__CUDA4CPU_SHARED__', str(shared)).replace('__CUDA4CPU_ARGS__', ', '.join(call))
+              .replace('__CUDA4CPU_REFERENCE_CALL__', f'    reference({", ".join(reference_call)});' if reference else '')
+              .replace('__CUDA4CPU_COMPARE__', '\n'.join(compare_code)))
+    return source, outputs
+
+
+def test_results(stdout):
+    """The CUDA4CPU_TEST lines a test program printed"""
+    results, launch_error, done = [], None, False
+    for line in stdout.splitlines():
+        if line.startswith('CUDA4CPU_TEST '):
+            try:
+                value = json.loads(line[len('CUDA4CPU_TEST '):])
+            except json.JSONDecodeError:
+                continue
+            if 'launch_error' in value:
+                launch_error = value['launch_error']
+            elif value.get('done'):
+                done = True
+            else:
+                results.append(value)
+    return results, launch_error, done
+
+
+def tool_test_kernel(arguments):
+    extension = '.hip' if arguments.get('language') == 'hip' else '.cu'
     with tempfile.TemporaryDirectory(prefix='cuda4cpu-mcp-') as work:
-        program = Program(arguments, work)
-        binary = os.path.join(work, 'program')
-        succeeded, output = program.build(binary, [] if program.options else ['-O2', '-g'])
-        result = compile_result(program, succeeded, output)
-        if not succeeded:
-            result['verdict'] = 'does not compile'
+        source, outputs = harness_of(arguments, os.path.join(work, 'src'))
+        program = Program({'files': {'test_kernel' + extension: source}, 'language': arguments.get('language'),
+                           'options': arguments.get('options')}, work)
+        if arguments.get('check', True):
+            result = check_program(program, arguments)
+            stdout = result.get('forward', {}).get('stdout', '')
+        else:
+            binary = os.path.join(work, 'program')
+            succeeded, output = program.build(binary, [] if program.options else ['-O2', '-g'])
+            result = compile_result(program, succeeded, output)
+            if succeeded:
+                run = execute(binary, program, arguments, {})
+                result.update(run_result(run, findings_of(run, program)))
+                stdout = run['stdout']
+        if not result.get('compiled'):
+            result['passed'] = False
             return result
-
-        checks = {'CUDA4CPU_DIVERGENT_BARRIERS': 'warn', 'CUDA4CPU_MEMCPY_DIRECTION': 'warn'}
-        runs, findings = [], []
-
-        def record(name, run, note):
-            found = findings_of(run, program)
-            runs.append({'order': name, 'description': note, 'exit_code': run['exit_code'], 'signal': run['signal'],
-                         'timed_out': run['timed_out'], 'seconds': run['seconds']})
-            for f in found:
-                f['run'] = name
-                if not any(f['kind'] == g['kind'] and f['message'] == g['message'] for g in findings):
-                    findings.append(f)
-            return found
-
-        def finish(verdict=None, note=None):
-            result['runs'] = runs
-            result['findings'] = findings
-            if note:
-                result['note'] = note
-            result['verdict'] = verdict or ('problems found' if findings else 'no problems found')
-            if not findings:
-                result['caveat'] = ('no problem showed up in these orders and checks; that does not prove the '
-                                    'program free of races, and timing on the CPU says nothing about a GPU')
-            return result
-
-        # First with the sanitizers: memory errors make every other result
-        # unreliable, and a program that corrupts its heap may hang
-        if arguments.get('sanitizers', True):
-            sanitized = os.path.join(work, 'program-sanitized')
-            built, output = program.build(sanitized, SANITIZER_OPTIONS)
-            if built:
-                run = execute(sanitized, program, arguments,
-                              dict(checks, CUDA4CPU_SCHEDULE='forward', **SANITIZER_ENVIRONMENT))
-                found = record('sanitizers', run, 'the default order, built with AddressSanitizer and UBSan')
-                if any(f['kind'].startswith(('AddressSanitizer', 'LeakSanitizer')) or
-                       f['kind'] in ('undefined behavior', 'crash', 'timeout') for f in found):
-                    result['sanitizers'] = run_result(run, [])
-                    return finish(note='the build with AddressSanitizer and UBSan found errors, so the other '
-                                       'orders were not run: their results would not be reliable. Fix these '
-                                       'and check again.')
-            else:
-                result['sanitizer_build'] = {'compiled': False, 'compiler_output': clip(output)}
-
-        environment = dict(checks, CUDA4CPU_SCHEDULE='forward')
-        base = execute(binary, program, arguments, environment)
-        record('forward', base, 'the default order: each block\'s threads in index order')
-        result['forward'] = run_result(base, [])
-        if base['timed_out'] or base['signal']:
-            return finish(note='the program does not finish in the default order, so the other orders were '
-                               'not run')
-        if base['exit_code'] != 0:
-            findings.append({'kind': 'fails in the default order', 'run': 'forward',
-                             'message': f'exits with code {base["exit_code"]} in the default order: a failure it '
-                                        'detected itself, or an error (see its output); orders that fail the same '
-                                        'way are not reported'})
-        again = execute(binary, program, arguments, environment)
-        deterministic = comparable(base, patterns) == comparable(again, patterns)
-        result['deterministic_output'] = deterministic
-
-        orders = [('reverse', 'reverse'), ('warp_reverse', 'warp_reverse')]
-        for seed in seeds:
-            orders += [(f'random:{seed}', 'random'), (f'warp_random:{seed}', 'warp_random')]
-        changed = []                        # (order, family, run) of the orders that change the result
-        for order, family in orders:
-            run = execute(binary, program, arguments, dict(checks, CUDA4CPU_SCHEDULE=order))
-            record(order, run, ORDER_NOTES[family])
-            same = (comparable(run, patterns) == comparable(base, patterns) if deterministic else
-                    (run['exit_code'], run['signal']) == (base['exit_code'], base['signal']))
-            if not same:
-                changed.append((order, family, run))
-        if changed:
-            order, family, run = changed[0]
-            if (run['exit_code'], run['signal']) != (base['exit_code'], base['signal']):
-                how = (f'running {ORDER_NOTES[family]} ({order}) ends with '
-                       f'{"exit code " + str(run["exit_code"]) if run["signal"] is None else run["signal"]}'
-                       f'{" (timed out)" if run["timed_out"] else ""} instead of exit code {base["exit_code"]}')
-            else:
-                how = f'running {ORDER_NOTES[family]} ({order}) changes the output'
-            finding = {'kind': 'depends on the thread order',
-                       'message': f'{how}; {len(changed)} of {len(orders)} other orders change the result',
-                       'orders': [o for o, _, _ in changed],
-                       'meaning': 'a thread reads data that another thread of its block writes without a '
-                                  '__syncthreads() between them (or, within a warp, a __syncwarp()), or threads '
-                                  'race on the same data. On a GPU, such code works or fails depending on '
-                                  'timing.'}
-            if deterministic:
-                difference = first_difference(comparable(base, patterns)[2], comparable(run, patterns)[2])
-                if difference:
-                    finding['first_difference'] = difference
-            findings.append(finding)
-        note = None
-        if not deterministic:
-            note = ('the output differs between two runs in the default order (timings, addresses, unordered '
-                    'output), so the orders were compared by exit code only; give ignore_patterns for the lines '
-                    'that vary to compare the rest')
-        return finish(note=note)
+        results, launch_error, done = test_results(stdout)
+        result['outputs'] = results
+        if launch_error:
+            result['launch_error'] = launch_error
+        # The outputs match in the default order, and check found nothing
+        result['passed'] = done and not launch_error and all(r['mismatches'] == 0 for r in results)
+        # The harness's own output is in outputs; keep the kernel's printf output
+        for key in ('forward', 'stdout'):
+            part = result.get(key)
+            if isinstance(part, dict):
+                part['stdout'] = '\n'.join(l for l in part['stdout'].splitlines() if not l.startswith('CUDA4CPU_TEST '))
+        if isinstance(result.get('stdout'), str):
+            result['stdout'] = '\n'.join(l for l in result['stdout'].splitlines() if not l.startswith('CUDA4CPU_TEST '))
+        if 'findings' in result:
+            # A wrong result in the default order is reported in outputs
+            result['findings'] = [f for f in result['findings'] if f['kind'] != 'fails in the default order']
+            result['passed'] = result['passed'] and not result['findings']
+            result['verdict'] = 'no problems found' if result['passed'] else 'problems found'
+        return result
 
 
 def tool_capabilities(arguments):
@@ -613,7 +967,8 @@ def tool_capabilities(arguments):
     return {'text': '\n\n'.join(text)}
 
 
-HANDLERS = {'compile': tool_compile, 'run': tool_run, 'check': tool_check, 'capabilities': tool_capabilities}
+HANDLERS = {'compile': tool_compile, 'run': tool_run, 'check': tool_check, 'test_kernel': tool_test_kernel,
+            'capabilities': tool_capabilities}
 
 
 def summary(name, result):
@@ -630,6 +985,20 @@ def summary(name, result):
             if d['severity'] == 'error':
                 where = f'{d["file"]}:{d["line"]}: ' if d['file'] else ''
                 lines.append(f'  {where}{d["message"]}')
+    elif name == 'test_kernel':
+        lines.append('passed' if result['passed'] else 'failed')
+        if result.get('launch_error'):
+            lines.append(f'  launch failed: {result["launch_error"]}')
+        for output in result.get('outputs', []):
+            lines.append(f'  {output["output"]}: {output["mismatches"]} of {output["elements"]} elements differ' +
+                         (f' (largest error {output["max_abs_error"]:g})' if output['max_abs_error'] else ''))
+            for m in output['first_mismatches'][:5]:
+                lines.append(f'    [{m["index"]}] {m["got"]}, expected {m["expected"]}')
+        for f in result.get('findings', []):
+            where = ', '.join(f'{l["file"]}:{l["line"]}' for l in f.get('locations', []) if l.get('file'))
+            lines.append(f'  [{f["kind"]}] {f["message"]}' + (f' at {where}' if where else ''))
+        if result.get('note'):
+            lines.append(f'  note: {result["note"]}')
     elif name == 'check':
         lines.append(result['verdict'])
         for f in result['findings']:

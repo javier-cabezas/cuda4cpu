@@ -107,12 +107,16 @@ line ([examples/bugs/out_of_bounds.cu](examples/bugs/out_of_bounds.cu)):
 ```console
 $ cuda4cpu-c++ -g -fsanitize=address out_of_bounds.cu -o out_of_bounds
 $ ./out_of_bounds
-==757042==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x6f1b51be2700 ...
-READ of size 4 at 0x6f1b51be2700 thread T2
-    #0 0x5ccad4ed4ab5 in scale(float*, int) .../out_of_bounds.cu:27
+==8457==ERROR: AddressSanitizer: use-after-poison on address 0x7c81561e2630 ...
+READ of size 4 at 0x7c81561e2630 thread T4
+    #0 0x65457dfe1ad5 in scale(float*, int) .../out_of_bounds.cu:27
     ...
-0x6f1b51be2700 is located 0 bytes after 4608-byte region [0x6f1b51be1500,0x6f1b51be2700)
+0x7c81561e2630 is located 4400 bytes inside of 4608-byte region [0x7c81561e1500,0x7c81561e2700)
 ```
+
+The array has 1100 floats, 4400 bytes: cuda4cpu rounds allocations up to
+256 bytes and poisons the rest, so the first element past the end is
+reported, as `use-after-poison`.
 
 **Divergent barriers.** CUDA requires every thread of a block to reach the
 same `__syncthreads()`, and cuda4cpu reports blocks whose threads don't:

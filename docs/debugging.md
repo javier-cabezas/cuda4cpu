@@ -102,7 +102,11 @@ always reject a kind they don't accept, as CUDA does.
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
 fiber stacks, so out-of-bounds accesses in kernels are reported with the
 kernel's source line. That covers local arrays and memory from `cudaMalloc`.
-The library doesn't need to be rebuilt. By default, AddressSanitizer aborts on
+cuda4cpu rounds allocations up to 256 bytes and poisons the rest, so an
+access just past the end of one is reported as `use-after-poison` (`is
+located N bytes inside of` the rounded region, with N the size asked for or
+more), and one past the rounding as `heap-buffer-overflow`. The library
+doesn't need to be rebuilt. By default, AddressSanitizer aborts on
 allocations too large to satisfy. Set `ASAN_OPTIONS=allocator_may_return_null=1`
 to make `cudaMalloc` return `cudaErrorMemoryAllocation` instead.
 
@@ -121,10 +125,11 @@ MCP client, for example Claude Code:
 claude mcp add cuda4cpu -- /usr/local/bin/cuda4cpu-mcp     # or build/<preset>/tools/cuda4cpu-mcp
 ```
 
-Each tool takes the sources inline (`files`, contents by file name) or by
-path (`paths`), nvcc's or hipcc's `options`, and for runs the `args`,
-`stdin`, `environment`, `working_directory` and `timeout_seconds` (60 by
-default) of the program. Results are JSON, with a short summary first.
+`compile`, `run` and `check` take the sources inline (`files`, contents by
+file name) or by path (`paths`), nvcc's or hipcc's `options`, and for runs
+the `args`, `stdin`, `environment`, `working_directory` and
+`timeout_seconds` (60 by default) of the program. Results are JSON, with a
+short summary first.
 
 - **`compile`** builds the sources with `cuda4cpu-nvcc`, or `cuda4cpu-hipcc`
   for HIP (by default when a source is a `.hip` file). It returns the
@@ -136,7 +141,8 @@ default) of the program. Results are JSON, with a short summary first.
 - **`check`** looks for bugs, and returns a verdict and findings:
   1. A build with AddressSanitizer and UBSan, run in the default order:
      out-of-bounds and use-after-free accesses and undefined behavior, at the
-     kernel's line. If it finds any, the other orders aren't run: memory
+     kernel's line. An access just past the end of an allocation, in the
+     padding cuda4cpu poisons, is an `allocation-overflow`. If it finds any, the other orders aren't run: memory
      errors make their results unreliable, and a program that corrupts its
      heap may hang.
   2. The default order, twice: an exit code other than 0 is a finding, and
@@ -153,6 +159,20 @@ default) of the program. Results are JSON, with a short summary first.
   the wrong direction (in warn mode, so that the program's behavior doesn't
   change), and a time-out stops the check. A clean check means that nothing
   showed up in those orders and checks, not that the program has no race.
+- **`test_kernel`** tests one kernel without a program. It takes the
+  kernel's source and `name` (a template with its arguments works too), the
+  `grid`, `block` and `shared_bytes`, and the kernel's `arguments` in order:
+  a scalar is `{"type": "float", "value": 2.5}`, an array a pointer type with
+  its `data`, given (`[1, 2, 3]`) or generated (`{"fill": 0, "count": n}`,
+  `{"range": [start, step], "count": n}`, `{"random": [min, max], "count":
+  n, "seed": s}`). An output array has `expected` values, or `"output":
+  true` and a C++ `reference` function with the kernel's parameters, which
+  gets host copies of the inputs and writes the expected outputs. Integers
+  must match exactly, floating point within a `tolerance` (1e-5 absolute
+  plus 1e-5 relative by default). The result lists each output's
+  mismatches by index, with the values it got and expected, and with
+  `check` (the default) the findings of the checks above: it passes only if
+  every output matches and they find nothing.
 - **`capabilities`** returns what cuda4cpu implements and doesn't (this
   documentation's `features.md` and `limitations.md`, installed with it).
 

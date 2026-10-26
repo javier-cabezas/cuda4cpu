@@ -190,7 +190,7 @@ jobs:
           "$driver" -g -fsanitize=address out_of_bounds.cu -o "$RUNNER_TEMP/out_of_bounds"
           if "$RUNNER_TEMP/out_of_bounds" 2> "$RUNNER_TEMP/asan.log"; then exit 1; fi
           cat "$RUNNER_TEMP/asan.log"
-          grep -q "heap-buffer-overflow" "$RUNNER_TEMP/asan.log"
+          grep -q "use-after-poison" "$RUNNER_TEMP/asan.log"
           grep -q "in scale(float\*, int) .*out_of_bounds.cu:27" "$RUNNER_TEMP/asan.log"
 
       - name: Save the compiler cache
