@@ -10,7 +10,8 @@
   page below it, so an overflow crashes with `SIGSEGV` instead of corrupting
   memory. Kernels with deep recursion or large local arrays can request more
   with `cudaDeviceSetLimit(cudaLimitStackSize, bytes)` before launching.
-  Smaller requests are rounded up to 64 KiB.
+  Smaller requests are rounded up to 64 KiB. With AddressSanitizer, whose
+  red zones make frames larger, the default and the minimum are 256 KiB.
 - **No ThreadSanitizer yet.** It reports false races between kernels and
   host code, because OpenMP synchronizes its threads in ways it can't see.
   AddressSanitizer, UBSan and Valgrind work (see [Debugging](debugging.md)).

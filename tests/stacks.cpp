@@ -60,15 +60,23 @@ __global__ void overflow(unsigned *out, unsigned depth)
     out[threadIdx.x] = recurse(depth);
 }
 
-static unsigned errors = 0;
+// The largest kernel parameter CUDA allows is 32764 bytes, like
+// cuda-samples' LargeKernelParameter
+struct large_param
+{
+    int values[8000];
+};
 
-#if defined(__SANITIZE_ADDRESS__)
-static constexpr bool address_sanitizer = true;
-#elif defined(__has_feature)
-static constexpr bool address_sanitizer = __has_feature(address_sanitizer);
-#else
-static constexpr bool address_sanitizer = false;
-#endif
+// Takes the parameter by value across a barrier
+__global__ void sum_large_param(const large_param p, int *out)
+{
+    int sum = 0;
+    for (int i = threadIdx.x; i < 8000; i += blockDim.x) sum += p.values[i];
+    __syncthreads();
+    out[blockIdx.x * blockDim.x + threadIdx.x] = sum;
+}
+
+static unsigned errors = 0;
 
 template <size_t Bytes>
 static void run_big_frame(const char *name)
@@ -79,6 +87,25 @@ static void run_big_frame(const char *name)
     for (int ok : out) {
         if (!ok) {
             std::cout << name << ": stack contents were corrupted\n";
+            ++errors;
+            return;
+        }
+    }
+}
+
+static void run_large_param()
+{
+    const unsigned blocks = 4, threads = 64;
+    large_param p;
+    for (int i = 0; i < 8000; ++i) p.values[i] = i;
+    std::vector<int> out(blocks * threads, -1);
+    launch(sum_large_param, blocks, threads).call(p, out.data());
+    for (unsigned t = 0; t < blocks * threads; ++t) {
+        int expected = 0;
+        for (unsigned i = t % threads; i < 8000; i += threads) expected += int(i);
+        if (out[t] != expected) {
+            std::cout << "a 32 KB parameter by value: thread " << t << " summed " << out[t] << ", expected "
+                      << expected << "\n";
             ++errors;
             return;
         }
@@ -109,7 +136,7 @@ int main()
     waitpid(pid, &status, 0);
     // AddressSanitizer catches the overflow itself, reports it and exits
     bool detected = WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
-    if (address_sanitizer)
+    if (detail::address_sanitizer)
         detected = detected || (WIFEXITED(status) && WEXITSTATUS(status) != 0);
     if (!detected) {
         std::cout << "stack overflow did not raise SIGSEGV (status " << status << ")\n";
@@ -118,6 +145,7 @@ int main()
 
     expect_limit(detail::min_stack_size);
     run_big_frame<48 * 1024>("48 KiB frames with the default stack size");
+    run_large_param();
 
     // Requests below the minimum are rounded up
     cudaDeviceSetLimit(cudaLimitStackSize, 1024);

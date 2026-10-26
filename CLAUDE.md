@@ -299,8 +299,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     and rounds of barriers with shuffles and early returns in blocks of 1 to
     1024 threads
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
-  - `stacks`: deep stacks, `cudaLimitStackSize`, and the guard page (forks a
-    child that must die with `SIGSEGV`)
+  - `stacks`: deep stacks, `cudaLimitStackSize`, the guard page (forks a
+    child that must die with `SIGSEGV`), and a 32 KB parameter by value,
+    which overflowed 64 KB stacks under AddressSanitizer (they are 256 KB
+    with it, `detail::address_sanitizer`)
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
