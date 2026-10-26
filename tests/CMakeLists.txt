@@ -223,6 +223,23 @@ add_test(NAME driver_nvcc
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
 set_tests_properties(driver_nvcc_options driver_nvcc PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}")
 
+# Projects written for CMake's CUDA and HIP languages, configured with the
+# toolkit's toolchain file
+foreach(language IN ITEMS cuda hip)
+    set(programs host|single)
+    if(language STREQUAL "hip")
+        set(programs vector)
+    endif()
+    add_test(NAME cmake_language_${language}
+             COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/cmake-language/${language}
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cmake_language_${language}
+                     -DTOOLCHAIN=${PROJECT_BINARY_DIR}/toolkit/cuda4cpu.cmake "-DGENERATOR=${CMAKE_GENERATOR}"
+                     -DPROGRAMS=${programs}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake-language/cmake_language_test.cmake)
+endforeach()
+set_tests_properties(cmake_language_cuda cmake_language_hip PROPERTIES
+                     ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}" TIMEOUT 600)
+
 # cuda4cpu-hipcc compiles a .cpp file as HIP, and drops options for AMD GPUs;
 # cuda4cpu-c++ does with -x hip
 add_test(NAME driver_hipcc

@@ -167,9 +167,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (each nvcc option's names, spelled with one dash or two, with `=value` or
   the next argument), and handles nvcc's own steps (`--version`, `-v`,
   `--dryrun`, `-dlink`, `-lib`, `-cuda`). It defines `__NVCC__` and
-  `__CUDACC_VER_*__` (12.0.140, as `CUDART_VERSION`). The nvcc and hip
-  drivers raise an older `-std` to C++23 (`raise_standard`): cuda4cpu's
-  headers don't compile with less.
+  `__CUDACC_VER_*__` (12.0.140, as `CUDART_VERSION`). Every driver raises
+  an older `-std` to C++23 (`raise_standard`): cuda4cpu's headers don't
+  compile with less. CMake identifies `cuda4cpu-nvcc` as NVIDIA's nvcc from
+  `--version`, from `-v`'s `#$ NAME=value` lines (`nvcc_environment`: the
+  toolkit's root, include and library directories, and an `-arch
+  compute_52` for the default architecture) and from the link command `-v`
+  shows, which must contain `LIBRARIES`' `"-L..."` and whose first word CMake
+  links CUDA programs with: nvcc mode links through `cuda4cpu-c++`
+  (`HOST_DRIVER`), with the toolkit's `-lcudart_static`. A driver creates
+  its work directory only when it rewrites a source, or that link would
+  delete the sources nvcc mode rewrote. `--options-file` reads CMake's
+  response files.
   Both handle `.hip` files and `-x cu`/`-x hip`. The rewritten sources go in
   `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
   after the compile: their paths reach the command line and the
@@ -187,7 +196,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `include` to the headers, and `lib64` has `libcudart.so`,
   `libcudart_static.a` and `libcuda.so` as linker scripts
   (`INPUT(-lcuda4cpu <OpenMP>)`, so they resolve through `-L` wherever it's
-  installed), next to links to libcuda4cpu and its soname.
+  installed), next to links to libcuda4cpu and its soname, and an empty
+  `libcudadevrt.a`. `nvvm/libdevice` is empty: CMake checks it exists.
+  `bin/cuda4cpu-c++` and `cuda4cpu.cmake` (from
+  `cmake/cuda4cpu-toolchain.cmake`) are a toolchain file for projects with
+  `LANGUAGES CUDA` or `HIP`: nvcc for CUDA and HIP (`CMAKE_HIP_PLATFORM`
+  nvidia, with the toolkit as `CMAKE_HIP_COMPILER_ROCM_ROOT`), and
+  `cuda4cpu-c++` for C++, so that host `.cpp` files that include CUDA's
+  headers get C++23 and OpenMP, and programs an rpath.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -318,6 +334,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     nvcc's options (with `--dryrun`), its steps (`-dc`, `-dlink`, `-lib`) in
     a build that runs, and the toolkit: its `bin/nvcc`, and a program that
     the host compiler links with `-lcudart`.
+  - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
+    CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
+    with separable compilation, a C++17 `.cpp` file that includes
+    `cuda_runtime.h`) and HIP language, configured with the toolkit's
+    toolchain file, built and run.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):
     `hip_runtime` (errors and their names, device queries and attributes,
     host memory, driver-API copies and memsets, symbols, `hipStreamDefault`
