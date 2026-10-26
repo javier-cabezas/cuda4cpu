@@ -291,21 +291,10 @@ enum cudaDeviceAttr {
 
 namespace detail {
 
-//! Whether this file is compiled with AddressSanitizer
-#if defined(__SANITIZE_ADDRESS__)
-inline constexpr bool address_sanitizer = true;
-#elif defined(__has_feature)
-inline constexpr bool address_sanitizer = __has_feature(address_sanitizer);
-#else
-inline constexpr bool address_sanitizer = false;
-#endif
-
 //! Smallest stack given to each CUDA thread. CPU code (libc calls, the
 //! launcher) needs much more stack than GPU code, so smaller requests are
-//! rounded up to this size. AddressSanitizer puts red zones around locals,
-//! and cuda-samples' LargeKernelParameter, whose kernel takes 32 KB by
-//! value, overflowed 64 KB with it.
-inline constexpr size_t min_stack_size = (address_sanitizer ? 256 : 64) * 1024;
+//! rounded up to this size.
+inline constexpr size_t min_stack_size = 64 * 1024;
 
 //! Stack size of each CUDA thread for subsequent launches
 inline std::atomic<size_t> stack_size{min_stack_size};

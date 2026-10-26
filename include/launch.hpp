@@ -88,6 +88,9 @@ struct kernel_closure {
     //! of several blocks (0 before the first): it sizes the chunks of blocks
     //! of the next launch
     std::atomic<uint64_t> *block_time = nullptr;
+    //! Bytes of the kernel's arguments, which each CUDA thread's stack holds
+    //! copies of
+    size_t argument_bytes = 0;
 };
 
 }
@@ -453,7 +456,7 @@ template <typename F, typename... Stored>
 struct kernel_call : kernel_closure {
     template <typename... Args>
     kernel_call(F f, Args &&...a) :
-        kernel_closure{&run_direct_impl, &run_one_impl, nullptr, &tuner, &block_time},
+        kernel_closure{&run_direct_impl, &run_one_impl, nullptr, &tuner, &block_time, sizeof(std::tuple<Stored...>)},
         func(std::move(f)),
         args(std::forward<Args>(a)...)
     {
@@ -566,12 +569,27 @@ inline size_t chunk_size(size_t nblocks, size_t threads, uint64_t block_time)
     return std::min(coarse, std::max(fine, shortest));
 }
 
+//! Stack size of each CUDA thread of a launch: the limit, and room for the
+//! kernel's arguments when they are large. A GPU reads them from constant
+//! memory, but a CPU function takes them on its stack, and an unoptimized
+//! build copies them again on the way: a kernel that takes 32 KB by value
+//! (CUDA allows up to 32764 bytes) overflowed 64 KB in Clang's Debug build.
+//! Smaller arguments add nothing, so that kernels keep sharing fibers.
+inline size_t thread_stack_size(const kernel_closure &kernel)
+{
+    const size_t limit = stack_size.load(std::memory_order_relaxed);
+    if (kernel.argument_bytes < 4096)
+        return limit;
+    const size_t room = 4 * kernel.argument_bytes;
+    return limit + (room + min_stack_size - 1) / min_stack_size * min_stack_size;
+}
+
 //! Runs every block of a launch whose configuration is valid. Only the OS
 //! threads that get blocks acquire (and, the first time, create) fibers.
 inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
 {
     const size_t nblocks = conf.nblocks();
-    const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
+    const size_t stack_size = thread_stack_size(kernel);
 
     // A single block runs on the calling OS thread: waking the other OpenMP
     // threads would cost several times more than an empty block. Grids with
@@ -613,7 +631,7 @@ inline size_t max_cooperative_blocks()
 inline void run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel)
 {
     const size_t nblocks = conf.nblocks();
-    const size_t stack_size = detail::stack_size.load(std::memory_order_relaxed);
+    const size_t stack_size = thread_stack_size(kernel);
     std::barrier<> grid{std::ptrdiff_t(nblocks)};
     kernel.grid = &grid;
 

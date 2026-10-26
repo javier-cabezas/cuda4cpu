@@ -301,8 +301,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `launch`: thread and block numbering, and fiber cache reuse and eviction
   - `stacks`: deep stacks, `cudaLimitStackSize`, the guard page (forks a
     child that must die with `SIGSEGV`), and a 32 KB parameter by value,
-    which overflowed 64 KB stacks under AddressSanitizer (they are 256 KB
-    with it, `detail::address_sanitizer`)
+    which overflowed 64 KB stacks in Clang's Debug build and under
+    AddressSanitizer (`detail::thread_stack_size` adds room for large
+    arguments)
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks

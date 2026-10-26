@@ -67,7 +67,8 @@ struct large_param
     int values[8000];
 };
 
-// Takes the parameter by value across a barrier
+// Takes the parameter by value across a barrier: each CUDA thread's stack
+// holds copies of it (detail::thread_stack_size)
 __global__ void sum_large_param(const large_param p, int *out)
 {
     int sum = 0;
@@ -77,6 +78,14 @@ __global__ void sum_large_param(const large_param p, int *out)
 }
 
 static unsigned errors = 0;
+
+#if defined(__SANITIZE_ADDRESS__)
+static constexpr bool address_sanitizer = true;
+#elif defined(__has_feature)
+static constexpr bool address_sanitizer = __has_feature(address_sanitizer);
+#else
+static constexpr bool address_sanitizer = false;
+#endif
 
 template <size_t Bytes>
 static void run_big_frame(const char *name)
@@ -136,7 +145,7 @@ int main()
     waitpid(pid, &status, 0);
     // AddressSanitizer catches the overflow itself, reports it and exits
     bool detected = WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
-    if (detail::address_sanitizer)
+    if (address_sanitizer)
         detected = detected || (WIFEXITED(status) && WEXITSTATUS(status) != 0);
     if (!detected) {
         std::cout << "stack overflow did not raise SIGSEGV (status " << status << ")\n";
