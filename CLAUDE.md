@@ -256,6 +256,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (with `--filter`, the other programs keep their status).
   Run it locally with
   `compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --filter 'rodinia/*'`.
+  `compat/upstream-bugs/` holds fixes, not reported upstream, for bugs that
+  cuda4cpu-mcp's `check` found in the suite's programs, against the pinned
+  revisions. The suite runs the programs unpatched.
 - `docs/`: the user documentation that the README links to: `usage.md`
   (building, using it in a project, what the rewriter does), `features.md`,
   `hip.md`, `compatibility.md`, `how-it-works.md`, `debugging.md` and
