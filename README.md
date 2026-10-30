@@ -26,8 +26,9 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
   thread, and AddressSanitizer, UBSan and Valgrind point at the kernel's
   source line. A kernel that crashes is reported with its CUDA thread and
   block.
-- **Catch the bugs a GPU hides:** missing `__syncthreads()`, and threads of a
-  block that reach different barriers.
+- **Catch the bugs a GPU hides:** missing `__syncthreads()`, threads of a
+  block that reach different barriers, reads of memory never written, and
+  allocations never freed.
 - **Real code works:** 130 of 154 programs from NVIDIA's cuda-samples,
   Rodinia and AMD's rocm-examples build unmodified and pass, and CI checks
   that they keep passing.

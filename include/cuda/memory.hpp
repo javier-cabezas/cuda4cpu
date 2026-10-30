@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <source_location>
 #include <type_traits>
 
 #include "error.hpp"
@@ -225,10 +226,11 @@ enum class memory_kind : unsigned char {
 };
 
 //! Allocates size bytes aligned to allocation_alignment, and records the
-//! allocation with its kind and flags. Defined in the library, where the
+//! allocation with its kind, flags and the program's call that made it
+//! (site), for CUDA4CPU_LEAK_CHECK. Defined in the library, where the
 //! compiler can't elide the allocation: it may assume that an inline
 //! allocation whose result is never dereferenced succeeds.
-void *allocate_aligned(size_t size, memory_kind kind, unsigned flags);
+void *allocate_aligned(size_t size, memory_kind kind, unsigned flags, std::source_location site);
 
 //! Records a __device__ or __constant__ symbol in the allocation registry
 void register_symbol(const void *ptr, size_t size);
@@ -282,7 +284,7 @@ void copy_rows(char *dst, size_t dst_pitch, size_t dst_slice, const char *src, s
 //! with the low bytes of value, each row pitch bytes after the previous one
 void fill_rows(void *dst, size_t pitch, unsigned value, size_t element_size, size_t width, size_t height);
 
-inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind = memory_kind::device, unsigned flags = 0)
+inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind, unsigned flags, std::source_location site)
 {
     if (ptr == nullptr)
         return record_error(cudaErrorInvalidValue);
@@ -291,7 +293,7 @@ inline cudaError_t allocate(void **ptr, size_t size, memory_kind kind = memory_k
         return cudaSuccess;
     }
 
-    void *p = allocate_aligned(size, kind, flags);
+    void *p = allocate_aligned(size, kind, flags, site);
     if (p == nullptr)
         return record_error(cudaErrorMemoryAllocation);
 
@@ -404,79 +406,81 @@ inline cudaMemcpy3DParms pitched_copy(void *dst, size_t dpitch, const void *src,
 inline namespace cuda_api {
 
 static inline
-cudaError_t cudaMalloc(void **devPtr, size_t size)
+cudaError_t cudaMalloc(void **devPtr, size_t size, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(devPtr, size);
+    return detail::allocate(devPtr, size, detail::memory_kind::device, 0, site);
 }
 
 static inline
-cudaError_t cudaMallocHost(void **ptr, size_t size)
+cudaError_t cudaMallocHost(void **ptr, size_t size, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(ptr, size, detail::memory_kind::host);
+    return detail::allocate(ptr, size, detail::memory_kind::host, 0, site);
 }
 
 static inline
-cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int flags)
+cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int flags, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(pHost, size, detail::memory_kind::host, flags);
+    return detail::allocate(pHost, size, detail::memory_kind::host, flags, site);
 }
 
 static inline
-cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal)
+cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal,
+                              std::source_location site = std::source_location::current())
 {
-    return detail::allocate(devPtr, size, detail::memory_kind::managed, flags);
+    return detail::allocate(devPtr, size, detail::memory_kind::managed, flags, site);
 }
 
 // Typed overloads, so that cudaMalloc(&ptr, size) works without a cast, as in CUDA
 
 template <typename T>
 static inline
-cudaError_t cudaMalloc(T **devPtr, size_t size)
+cudaError_t cudaMalloc(T **devPtr, size_t size, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(reinterpret_cast<void **>(devPtr), size);
+    return detail::allocate(reinterpret_cast<void **>(devPtr), size, detail::memory_kind::device, 0, site);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaMallocHost(T **ptr, size_t size, unsigned int flags = 0)
+cudaError_t cudaMallocHost(T **ptr, size_t size, unsigned int flags = 0, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(reinterpret_cast<void **>(ptr), size, detail::memory_kind::host, flags);
+    return detail::allocate(reinterpret_cast<void **>(ptr), size, detail::memory_kind::host, flags, site);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaHostAlloc(T **pHost, size_t size, unsigned int flags)
+cudaError_t cudaHostAlloc(T **pHost, size_t size, unsigned int flags, std::source_location site = std::source_location::current())
 {
-    return detail::allocate(reinterpret_cast<void **>(pHost), size, detail::memory_kind::host, flags);
+    return detail::allocate(reinterpret_cast<void **>(pHost), size, detail::memory_kind::host, flags, site);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal)
+cudaError_t cudaMallocManaged(T **devPtr, size_t size, unsigned int flags = cudaMemAttachGlobal,
+                              std::source_location site = std::source_location::current())
 {
-    return detail::allocate(reinterpret_cast<void **>(devPtr), size, detail::memory_kind::managed, flags);
+    return detail::allocate(reinterpret_cast<void **>(devPtr), size, detail::memory_kind::managed, flags, site);
 }
 
 static inline
-cudaError_t cudaMallocAsync(void **devPtr, size_t size, cudaStream_t stream)
+cudaError_t cudaMallocAsync(void **devPtr, size_t size, cudaStream_t stream, std::source_location site = std::source_location::current())
 {
     if (detail::capturing(stream))
         return detail::capture_alloc(stream, devPtr, size);
-    return detail::allocate(devPtr, size);
+    return detail::allocate(devPtr, size, detail::memory_kind::device, 0, site);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaMallocAsync(T **devPtr, size_t size, cudaStream_t stream)
+cudaError_t cudaMallocAsync(T **devPtr, size_t size, cudaStream_t stream, std::source_location site = std::source_location::current())
 {
-    return cudaMallocAsync(reinterpret_cast<void **>(devPtr), size, stream);
+    return cudaMallocAsync(reinterpret_cast<void **>(devPtr), size, stream, site);
 }
 
 static inline
 cudaError_t cudaMallocFromPoolAsync(void **devPtr, size_t size, cudaMemPool_t /* pool */,
-                                    cudaStream_t stream)
+                                    cudaStream_t stream, std::source_location site = std::source_location::current())
 {
-    return cudaMallocAsync(devPtr, size, stream);
+    return cudaMallocAsync(devPtr, size, stream, site);
 }
 
 static inline
@@ -751,30 +755,32 @@ cudaError_t cudaMemcpy3DAsync(const cudaMemcpy3DParms *p, cudaStream_t stream = 
 
 //! Rows of width bytes, pitch bytes apart
 static inline
-cudaError_t cudaMallocPitch(void **devPtr, size_t *pitch, size_t width, size_t height)
+cudaError_t cudaMallocPitch(void **devPtr, size_t *pitch, size_t width, size_t height,
+                            std::source_location site = std::source_location::current())
 {
     if (pitch == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
     *pitch = (width + detail::allocation_alignment - 1) / detail::allocation_alignment *
              detail::allocation_alignment;
-    return detail::allocate(devPtr, *pitch * height);
+    return detail::allocate(devPtr, *pitch * height, detail::memory_kind::device, 0, site);
 }
 
 template <typename T>
 static inline
-cudaError_t cudaMallocPitch(T **devPtr, size_t *pitch, size_t width, size_t height)
+cudaError_t cudaMallocPitch(T **devPtr, size_t *pitch, size_t width, size_t height,
+                            std::source_location site = std::source_location::current())
 {
-    return cudaMallocPitch(reinterpret_cast<void **>(devPtr), pitch, width, height);
+    return cudaMallocPitch(reinterpret_cast<void **>(devPtr), pitch, width, height, site);
 }
 
 static inline
-cudaError_t cudaMalloc3D(cudaPitchedPtr *pitchedDevPtr, cudaExtent extent)
+cudaError_t cudaMalloc3D(cudaPitchedPtr *pitchedDevPtr, cudaExtent extent, std::source_location site = std::source_location::current())
 {
     if (pitchedDevPtr == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
     size_t pitch = 0;
     void *ptr = nullptr;
-    if (cudaError_t err = cudaMallocPitch(&ptr, &pitch, extent.width, extent.height * extent.depth))
+    if (cudaError_t err = cudaMallocPitch(&ptr, &pitch, extent.width, extent.height * extent.depth, site))
         return err;
     *pitchedDevPtr = make_cudaPitchedPtr(ptr, pitch, extent.width, extent.height);
     return cudaSuccess;

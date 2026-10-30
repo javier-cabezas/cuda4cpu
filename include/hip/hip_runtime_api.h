@@ -494,38 +494,40 @@ enum : unsigned int {
     hipDeviceScheduleMask = 0x7
 };
 
-inline cudaError_t hipHostMalloc(void **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
+inline cudaError_t hipHostMalloc(void **ptr, size_t size, unsigned int flags = hipHostMallocDefault,
+                                 std::source_location site = std::source_location::current())
 {
-    return cudaHostAlloc(ptr, size, flags);
+    return cudaHostAlloc(ptr, size, flags, site);
 }
 
 template <typename T>
-inline cudaError_t hipHostMalloc(T **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
+inline cudaError_t hipHostMalloc(T **ptr, size_t size, unsigned int flags = hipHostMallocDefault,
+                                 std::source_location site = std::source_location::current())
 {
-    return hipHostMalloc(reinterpret_cast<void **>(ptr), size, flags);
+    return hipHostMalloc(reinterpret_cast<void **>(ptr), size, flags, site);
 }
 
 //! The deprecated names of hipHostMalloc and hipHostFree
-inline cudaError_t hipMallocHost(void **ptr, size_t size)
+inline cudaError_t hipMallocHost(void **ptr, size_t size, std::source_location site = std::source_location::current())
 {
-    return hipHostMalloc(ptr, size);
+    return hipHostMalloc(ptr, size, hipHostMallocDefault, site);
 }
 
 template <typename T>
-inline cudaError_t hipMallocHost(T **ptr, size_t size)
+inline cudaError_t hipMallocHost(T **ptr, size_t size, std::source_location site = std::source_location::current())
 {
-    return hipHostMalloc(ptr, size);
+    return hipHostMalloc(ptr, size, hipHostMallocDefault, site);
 }
 
-inline cudaError_t hipHostAlloc(void **ptr, size_t size, unsigned int flags)
+inline cudaError_t hipHostAlloc(void **ptr, size_t size, unsigned int flags, std::source_location site = std::source_location::current())
 {
-    return hipHostMalloc(ptr, size, flags);
+    return hipHostMalloc(ptr, size, flags, site);
 }
 
 template <typename T>
-inline cudaError_t hipHostAlloc(T **ptr, size_t size, unsigned int flags)
+inline cudaError_t hipHostAlloc(T **ptr, size_t size, unsigned int flags, std::source_location site = std::source_location::current())
 {
-    return hipHostMalloc(ptr, size, flags);
+    return hipHostMalloc(ptr, size, flags, site);
 }
 
 inline cudaError_t hipHostFree(void *ptr)
@@ -540,9 +542,10 @@ inline cudaError_t hipFreeHost(void *ptr)
 
 //! AMD's allocation with flags: the flags choose the kind of GPU memory,
 //! and all memory is host memory
-inline cudaError_t hipExtMallocWithFlags(void **ptr, size_t size, unsigned int /* flags */)
+inline cudaError_t hipExtMallocWithFlags(void **ptr, size_t size, unsigned int /* flags */,
+                                         std::source_location site = std::source_location::current())
 {
-    return cudaMalloc(ptr, size);
+    return cudaMalloc(ptr, size, site);
 }
 
 //

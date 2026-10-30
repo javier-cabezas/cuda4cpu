@@ -55,6 +55,10 @@
 
 namespace cuda4cpu::detail {
 
+//! Fills new memory as CUDA4CPU_INIT_MEMORY says (defined with the registry
+//! of allocations)
+void initialize_allocation(void *ptr, size_t size);
+
 //! The memory of a graph allocation node, as in CUDA: an address range
 //! reserved when the node is added, so that the address is fixed, and
 //! allocated (committed) from when the node runs to when a free node, cudaFree
@@ -174,6 +178,7 @@ void commit(graph_allocation &a)
     if (a.live)
         return;
     mprotect(a.ptr, a.mapped, PROT_READ | PROT_WRITE);
+    initialize_allocation(a.ptr, a.size);
     a.live = true;
     raise_high(used_high, used_current.fetch_add(a.size, std::memory_order_relaxed) + a.size);
     raise_high(reserved_high, reserved_current.fetch_add(a.size, std::memory_order_relaxed) + a.size);

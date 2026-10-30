@@ -47,6 +47,7 @@
 #include <set>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -85,6 +86,7 @@ struct allocation {
     unsigned flags;
     vmm_allocation *physical = nullptr;   //!< Of a mapped range
     cudaMemAccessFlags access = cudaMemAccessFlagsProtNone;
+    std::source_location site{};          //!< The program's call that allocated it, if known
 };
 
 //! The unified memory hints of a page
@@ -309,11 +311,40 @@ void unmap(memory_state &s, std::map<uintptr_t, allocation>::iterator it)
 
 }
 
+namespace {
+
+//! CUDA4CPU_INIT_MEMORY: the byte that new allocations are filled with, or -1
+//! to leave them as the allocator returns them
+int init_memory_setting()
+{
+    static const int setting = [] {
+        const char *v = std::getenv("CUDA4CPU_INIT_MEMORY");
+        if (v == nullptr || *v == '\0')
+            return -1;
+        char *end = nullptr;
+        const unsigned long value = std::strtoul(v, &end, 0);
+        if (*end != '\0' || value > 0xff) {
+            std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_INIT_MEMORY=%s: expected a byte, such as 0xff\n", v);
+            return -1;
+        }
+        return int(value);
+    }();
+    return setting;
+}
+
+}
+
+void initialize_allocation(void *ptr, size_t size)
+{
+    if (const int byte = init_memory_setting(); byte >= 0)
+        fill_rows(ptr, size, unsigned(byte), 1, size, 1);
+}
+
 //
 // The registry of allocations
 //
 
-void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
+void *allocate_aligned(size_t size, memory_kind kind, unsigned flags, std::source_location site)
 {
     // Rounding up to the alignment must not wrap around to a small size
     if (size > SIZE_MAX - allocation_alignment)
@@ -325,6 +356,7 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
         return nullptr;
     if (__asan_poison_memory_region != nullptr && rounded > size)
         __asan_poison_memory_region(static_cast<char *>(ptr) + size, rounded - size);
+    initialize_allocation(ptr, size);
 
     // Memory that a program registered and then freed without unregistering
     // may come back: those registrations are stale, as are hints on it
@@ -338,7 +370,7 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
         s.allocations.erase(it);
     }
     erase_hints(s, p, p + size);
-    s.allocations.emplace(p, allocation{size, kind, flags});
+    s.allocations.emplace(p, allocation{size, kind, flags, nullptr, cudaMemAccessFlagsProtNone, site});
     return ptr;
 }
 
@@ -477,6 +509,88 @@ bool find_allocation(const void *ptr, allocation_info &info)
         }
     }
     return find_graph_allocation(ptr, info);
+}
+
+namespace {
+
+//! CUDA4CPU_LEAK_CHECK: whether the allocations left at exit are reported
+bool leak_check_setting()
+{
+    const char *v = std::getenv("CUDA4CPU_LEAK_CHECK");
+    if (v == nullptr || *v == '\0' || std::string_view(v) == "ignore")
+        return false;
+    if (std::string_view(v) == "warn")
+        return true;
+    std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_LEAK_CHECK=%s: expected warn or ignore\n", v);
+    return false;
+}
+
+const char *memory_name(memory_kind kind)
+{
+    switch (kind) {
+    case memory_kind::host:    return "pinned host memory";
+    case memory_kind::managed: return "managed memory";
+    default:                   return "device memory";
+    }
+}
+
+//! Reports the allocations that the program never freed, by the call that
+//! made them, largest first. A destructor of the library runs after the
+//! program's static objects are destroyed, which may free memory.
+[[gnu::destructor]] void report_leaks()
+{
+    if (!leak_check_setting())
+        return;
+    struct site_leaks {
+        std::string_view file;
+        unsigned line;
+        memory_kind kind;
+        size_t count = 0, bytes = 0;
+    };
+    std::vector<site_leaks> leaks;
+    {
+        std::map<std::tuple<std::string_view, unsigned, memory_kind>, size_t> index;
+        auto &s = state();
+        std::lock_guard lock(s.mutex);
+        for (const auto &[p, a] : s.allocations) {
+            if (a.kind != memory_kind::device && a.kind != memory_kind::host && a.kind != memory_kind::managed)
+                continue;
+            auto [it, added] = index.try_emplace({a.site.file_name(), a.site.line(), a.kind}, leaks.size());
+            if (added)
+                leaks.push_back({a.site.file_name(), a.site.line(), a.kind});
+            ++leaks[it->second].count;
+            leaks[it->second].bytes += a.size;
+        }
+    }
+    std::ranges::stable_sort(leaks, std::greater{}, &site_leaks::bytes);
+
+    constexpr size_t shown = 20;
+    for (size_t i = 0; i < std::min(leaks.size(), shown); ++i) {
+        const site_leaks &l = leaks[i];
+        char where[512];
+        if (l.file.empty())
+            std::snprintf(where, sizeof where, "at an unknown place");
+        else
+            std::snprintf(where, sizeof where, "at %.*s:%u", int(l.file.size()), l.file.data(), l.line);
+        if (l.count == 1)
+            std::fprintf(stderr, "cuda4cpu: warning: an allocation of %s (%zu bytes), made %s, was never freed.\n",
+                         memory_name(l.kind), l.bytes, where);
+        else
+            std::fprintf(stderr,
+                         "cuda4cpu: warning: %zu allocations of %s (%zu bytes in all), made %s, were never freed.\n",
+                         l.count, memory_name(l.kind), l.bytes, where);
+    }
+    if (leaks.size() > shown) {
+        size_t count = 0, bytes = 0;
+        for (size_t i = shown; i < leaks.size(); ++i) {
+            count += leaks[i].count;
+            bytes += leaks[i].bytes;
+        }
+        std::fprintf(stderr, "cuda4cpu: warning: %zu more allocations (%zu bytes in all), made at %zu other places, "
+                             "were never freed.\n", count, bytes, leaks.size() - shown);
+    }
+}
+
 }
 
 cudaError_t register_host(void *ptr, size_t size, unsigned flags)
