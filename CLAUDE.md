@@ -122,7 +122,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
-  fiber cache) and `system` (topology via OpenMP plus optional libnuma).
+  fiber cache), the crash reports (`detail::crash_report`, see Gotchas) and
+  `system` (topology via OpenMP plus optional libnuma).
 - `lib/memory.cpp`: the registry of allocations (for pointer attributes,
   `cudaFree`, and `cudaMemcpyKind` direction checks), the unified memory hints
   that `cudaMemRangeGetAttribute` returns, and HIP's virtual memory management
@@ -311,6 +312,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     which overflowed 64 KB stacks in Clang's Debug build and under
     AddressSanitizer (`detail::thread_stack_size` adds room for large
     arguments)
+  - `crash` (`crash.cu`, `crash_test.cmake`): kernels that crash (invalid
+    accesses in direct and fiber mode, a stack overflow, a division by
+    zero, a failed `assert` launched with `cudaLaunchKernel`, a program
+    with its own `SIGSEGV` handler), each reported once with its CUDA
+    thread, block and launch line, and a crash in host code, not reported.
+    It passes under AddressSanitizer and UBSan too.
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
@@ -747,6 +754,32 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the stack of `order_[0]` (`direct_stack`), never stack 0, because a thread
   that hasn't started yet must not start on the stack the promoted thread is
   still using.
+- Crash reports (`detail::crash_report`): the first `thread_block::acquire`
+  of a process installs handlers for `SIGSEGV`, `SIGBUS`, `SIGFPE`,
+  `SIGILL` and `SIGABRT` (`SA_ONSTACK`, chaining to the handlers before
+  them, AddressSanitizer's included), and the first of each OS thread an
+  alternate signal stack, unless the thread has one. The report is written
+  without allocating, once per process (`crash_reported`, which cuda4cpu's
+  own aborts set first). `kernel_closure::site` is the launch's
+  `std::source_location`, a defaulted argument of `launch()`,
+  `cudaLaunchKernel` and `cudaLaunchCooperativeKernel`. In direct mode,
+  `threadIdx` can't be trusted: GCC and Clang keep it in a register and
+  sink its stores out of the loop when nothing in the kernel can read it
+  (a volatile store made a CUDA thread that checks bounds 45% slower with
+  Clang). The stores are volatile only with AddressSanitizer
+  (`CUDA4CPU_ADDRESS_SANITIZER`, in `set_index`): Clang adds its checks
+  after moving the stores, and its reports named the wrong thread. So a fault in direct mode switches from the handler to
+  `fibers::caller`, with the signal unblocked, and `execute()` runs the
+  block again (`crash_report::rerun`) with every thread as a fiber
+  (`fiber_main` promotes at once), where the library sets `threadIdx`
+  before each switch. The repeated fault is reported with its thread; a
+  block that doesn't crash again is reported without one. An abort is a
+  call, before which `threadIdx` is stored, so it isn't run again, and
+  neither are the sanitizers' errors, which `__sanitizer_set_death_callback`
+  reports (GCC's UBSan runtime has its own copy of it, which cuda4cpu
+  doesn't reach). `tools/cuda4cpu-mcp.in` reads the reports (`KERNEL_CRASH`)
+  as `crash in a kernel` findings, or as the thread of a sanitizer's
+  finding: keep its pattern in sync with the wording.
 - `__syncthreads()` is a function-like macro passing `__FILE__` and `__LINE__`.
   The divergent barrier check compares them, not return addresses: the
   compiler inlines a lambda-launched kernel into both `run_direct` and

@@ -47,10 +47,12 @@ inline namespace hip_api {
 
 inline cudaError_t hipExtLaunchKernel(const void *function_address, dim3 numBlocks, dim3 dimBlocks, void **args,
                                       size_t sharedMemBytes, cudaStream_t stream, cudaEvent_t startEvent,
-                                      cudaEvent_t stopEvent, int /* flags */)
+                                      cudaEvent_t stopEvent, int /* flags */,
+                                      std::source_location site = std::source_location::current())
 {
     detail::record_launch_event(startEvent, stream);
-    const cudaError_t err = cudaLaunchKernel(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+    const cudaError_t err = cudaLaunchKernel(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream,
+                                             site);
     detail::record_launch_event(stopEvent, stream);
     return err;
 }

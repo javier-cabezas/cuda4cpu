@@ -7,8 +7,8 @@
   variables you can take the address of. Reading their fields and copying
   them work as in CUDA.
 - **Fixed-size stacks.** Each CUDA thread gets a 64 KiB stack with a guard
-  page below it, so an overflow crashes with `SIGSEGV` instead of corrupting
-  memory. Kernels with deep recursion or large local arrays can request more
+  page below it, so an overflow is reported and crashes with `SIGSEGV`
+  instead of corrupting memory. Kernels with deep recursion or large local arrays can request more
   with `cudaDeviceSetLimit(cudaLimitStackSize, bytes)` before launching.
   Smaller requests are rounded up to 64 KiB. Launches whose arguments take
   4 KiB or more get room for copies of them on top.
@@ -35,8 +35,10 @@
   failed allocations, and launches outside CUDA's limits (more than 1024
   threads per block, zero sizes, grids too large) return or record the CUDA
   error code, and rejected launches don't run. There are no
-  device-side errors: an out-of-bounds access in a kernel is an ordinary
-  segmentation fault.
+  device-side errors: an invalid access or a failed `assert()` in a kernel
+  ends the program, with a report of the CUDA thread, its block and the
+  kernel's launch, instead of making later calls return `cudaErrorAssert`
+  or `cudaErrorIllegalAddress`.
 - **Warp functions approximate convergence.** cuda4cpu can't see which lanes
   are in the same branch. A warp function waits for every lane in its mask
   that hasn't returned and isn't waiting at `__syncthreads()`. Lanes in

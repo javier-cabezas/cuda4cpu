@@ -240,7 +240,9 @@ template <typename... Args, typename F = void (*)(Args...)>
 inline void hipLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &dimBlocks, uint32_t sharedMemBytes,
                                cudaStream_t stream, Args... args)
 {
-    launch(*kernel, numBlocks, dimBlocks, sharedMemBytes, stream).call(args...);
+    // The arguments' pack comes last, so the launch's site can't be a
+    // default argument, and this function's would only mislead
+    launch(*kernel, numBlocks, dimBlocks, sharedMemBytes, stream, std::source_location{}).call(args...);
 }
 
 }

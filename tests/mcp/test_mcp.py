@@ -252,8 +252,32 @@ class Check(unittest.TestCase):
         self.assertTrue(location['file'].endswith('out_of_bounds.cu'))
         self.assertEqual(location['line'], 27)
         self.assertIn('scale', location['function'])
+        # x[1100], the first float past the end, in block 4 of 256 threads
+        self.assertIn('by CUDA thread (76, 0, 0) of block (4, 0, 0)', finding['message'])
         # The other orders aren't run after memory errors
         self.assertEqual([r['order'] for r in content['runs']], ['sanitizers'])
+
+    def test_crash_in_a_kernel(self):
+        kernel = '''
+__global__ void kernel(int *d)
+{
+    if (blockIdx.x == 1 && threadIdx.x == 37)
+        d[1 << 30] = 1;
+}
+'''
+        files = {'wild.cu': kernel_program('', kernel)}
+        # The sanitizer's report has the line, and cuda4cpu's the thread
+        finding = self.check(files=files)['findings'][0]
+        self.assertEqual(finding['kind'], 'AddressSanitizer: SEGV')
+        self.assertEqual(finding['locations'][0]['line'], 7)
+        self.assertIn('by CUDA thread (37, 0, 0) of block (1, 0, 0)', finding['message'])
+        # Without it, the launch's
+        content = self.check(files=files, sanitizers=False)
+        self.assertEqual(self.kinds(content), ['crash in a kernel'])
+        finding = content['findings'][0]
+        self.assertTrue(finding['message'].startswith('CUDA thread (37, 0, 0) of block (1, 0, 0) made an invalid '
+                                                      'memory access'), finding['message'])
+        self.assertEqual(finding['locations'], [{'file': 'wild.cu', 'line': 19}])
 
     def test_divergent_barrier(self):
         kernel = '''
