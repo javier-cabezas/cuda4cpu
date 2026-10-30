@@ -246,14 +246,16 @@ if(CMAKE_VERSION VERSION_LESS 4.1)
 else()
 foreach(language IN ITEMS cuda hip)
     set(programs host|single)
+    set(touch -DTOUCH=saxpy.cuh -DREBUILDS=kernels.cu.o)
     if(language STREQUAL "hip")
         set(programs vector)
+        set(touch)
     endif()
     add_test(NAME cmake_language_${language}
              COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/cmake-language/${language}
                      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cmake_language_${language}
                      -DTOOLCHAIN=${PROJECT_BINARY_DIR}/toolkit/cuda4cpu.cmake "-DGENERATOR=${CMAKE_GENERATOR}"
-                     -DPROGRAMS=${programs}
+                     -DPROGRAMS=${programs} ${touch}
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake-language/cmake_language_test.cmake)
 endforeach()
 set_tests_properties(cmake_language_cuda cmake_language_hip PROPERTIES
