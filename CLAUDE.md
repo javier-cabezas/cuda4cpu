@@ -662,8 +662,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `fesetround` also sets the x87 control word and cost over 100 ns per
   call, 95% of `interval`'s run time. The fma variants still use
   `fesetround` unless `__FMA__` is defined, because glibc's software fma
-  reads the x87 mode. `tests/runtime` checks every variant against
-  `fesetround` on random operands.
+  reads the x87 mode. The operands and the result go through an empty
+  `asm volatile` (`detail::opaque`) between the changes of mode: the
+  compiler doesn't know the mode is an input, and GCC, ignoring volatile
+  casts, reused `__int2float_rd(16777217)`'s conversion for `_ru`.
+  `tests/runtime` checks every variant against `fesetround` on random
+  operands.
 - `gridDim` and `blockDim` are object-like macros, so any struct field with
   those names breaks. CUDA's `cudaKernelNodeParams` has them: ours are named
   `cuda4cpu_gridDim`/`cuda4cpu_blockDim`, and the rewriter renames member
