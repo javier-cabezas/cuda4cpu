@@ -142,16 +142,28 @@ inline unsigned int __umul24(unsigned int x, unsigned int y)
 
 namespace detail {
 
+//! Makes the compiler forget value at this point. An empty volatile asm stays
+//! between the changes of rounding mode, so the operands are read after the
+//! first and the result is written before the second: the compiler doesn't
+//! know that the mode is an input of the operation. Volatile casts of the
+//! operands weren't enough: GCC folded __int2float_rd(16777217) to the
+//! result of __int2float_ru.
+template <typename V>
+[[gnu::always_inline]] inline void opaque(V &value)
+{
+    asm volatile("" : "+m"(value));
+}
+
 //! Evaluates op(args...) with the floating-point rounding mode set to Mode,
-//! through fesetround. The operands and the result go through volatile
-//! variables, so that the compiler doesn't move the operation outside the
-//! change of mode.
+//! through fesetround
 template <int Mode, typename T, typename Op, typename... Args>
 inline T rounded_fenv(Op op, Args... args)
 {
     const int previous = std::fegetround();
     std::fesetround(Mode);
-    volatile T result = op(static_cast<const volatile Args &>(args)...);
+    (opaque(args), ...);
+    T result = op(args...);
+    opaque(result);
     std::fesetround(previous);
     return result;
 }
@@ -176,7 +188,9 @@ inline T rounded(Op op, Args... args)
 #if defined(__x86_64__)
     const unsigned previous = _mm_getcsr();
     _mm_setcsr((previous & ~0x6000u) | mxcsr_rounding(Mode));
-    volatile T result = op(static_cast<const volatile Args &>(args)...);
+    (opaque(args), ...);
+    T result = op(args...);
+    opaque(result);
     _mm_setcsr(previous);
     return result;
 #else

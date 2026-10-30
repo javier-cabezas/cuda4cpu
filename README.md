@@ -24,7 +24,8 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
   errors at their source lines.
 - **Debug kernels with the tools you already use:** gdb stops in a single CUDA
   thread, and AddressSanitizer, UBSan and Valgrind point at the kernel's
-  source line.
+  source line. A kernel that crashes is reported with its CUDA thread and
+  block.
 - **Catch the bugs a GPU hides:** missing `__syncthreads()`, and threads of a
   block that reach different barriers.
 - **Real code works:** 130 of 154 programs from NVIDIA's cuda-samples,
@@ -129,11 +130,15 @@ READ of size 4 at 0x7c81561e2630 thread T4
     #0 0x65457dfe1ad5 in scale(float*, int) .../out_of_bounds.cu:27
     ...
 0x7c81561e2630 is located 4400 bytes inside of 4608-byte region [0x7c81561e1500,0x7c81561e2700)
+    ...
+cuda4cpu: error: CUDA thread (76, 0, 0) of block (4, 0, 0) made the error that the sanitizer
+reports above, in the kernel launched at out_of_bounds.cu:37.
 ```
 
 The array has 1100 floats, 4400 bytes: cuda4cpu rounds allocations up to
 256 bytes and poisons the rest, so the first element past the end is
-reported, as `use-after-poison`.
+reported, as `use-after-poison`. Without the sanitizer, the crash is
+reported with its CUDA thread and block too.
 
 **Divergent barriers.** CUDA requires every thread of a block to reach the
 same `__syncthreads()`, and cuda4cpu reports blocks whose threads don't:

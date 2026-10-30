@@ -68,6 +68,14 @@ add_test(NAME divergent_barrier_error
          COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:divergent_barrier>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/divergent_barrier_error.cmake)
 
+# Crashes in kernels: invalid accesses, a stack overflow, a division by zero
+# and a failed assert, each reported with its CUDA thread, block and launch
+add_executable(crash)
+set_target_properties(crash PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(crash crash.cu)
+add_test(NAME crash
+         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:crash> -P ${CMAKE_CURRENT_SOURCE_DIR}/crash_test.cmake)
+
 # The gdb script: a breakpoint conditioned on the CUDA thread, the built-in
 # variables, and a backtrace that ends at the fiber trampoline
 find_program(GDB gdb)

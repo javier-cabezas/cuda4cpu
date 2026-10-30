@@ -38,6 +38,25 @@ the OS thread stopped in, which `bt` hides (frame numbers start at 1), so
 continuing from an IDE is safe too. Set
 `OMP_NUM_THREADS=1` to run all the blocks on one OS thread, one after another.
 
+**Crashes in kernels.** A kernel that crashes is reported with the CUDA
+thread and block it crashed in, and the line of its launch:
+
+```
+cuda4cpu: error: CUDA thread (17, 0, 0) of block (3, 0, 0) made an invalid memory access at
+address 0x7f3a5c1e0100, in the kernel launched at main.cu:42. Build with -g -fsanitize=address
+to find the access.
+```
+
+Invalid memory accesses, stack overflows (with the stack's size and how to
+raise it), integer divisions by zero, illegal instructions and aborts, such
+as a failed `assert()`, are reported. The program then dies of the signal as
+it would without cuda4cpu (a core dump, or the program's own handler), and a
+debugger stops at the fault before the report. In optimized code, a CUDA
+thread's index may still be in a register when it crashes before a barrier,
+so cuda4cpu runs its block once more, each thread on its own, to find the
+thread. Under AddressSanitizer, the report of an error the sanitizer finds
+follows the sanitizer's, which has the line.
+
 **Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the
 threads of a block run one after another, in index order by default. A missing
 barrier goes unnoticed when the thread that reads shared memory happens to run
@@ -148,8 +167,9 @@ short summary first.
 - **`check`** looks for bugs, and returns a verdict and findings:
   1. A build with AddressSanitizer and UBSan, run in the default order:
      out-of-bounds and use-after-free accesses and undefined behavior, at the
-     kernel's line. An access just past the end of an allocation, in the
-     padding cuda4cpu poisons, is an `allocation-overflow`. If it finds any, the other orders aren't run: memory
+     kernel's line, and the CUDA thread and block that made them. An access
+     just past the end of an allocation, in the padding cuda4cpu poisons, is
+     an `allocation-overflow`. If it finds any, the other orders aren't run: memory
      errors make their results unreliable, and a program that corrupts its
      heap may hang.
   2. The default order, twice: an exit code other than 0 is a finding, and

@@ -30,6 +30,7 @@
 #include <map>
 #include <thread>
 #include <memory>
+#include <source_location>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -47,6 +48,7 @@ struct grid_launcher;
 namespace detail {
 
 struct fiber_access;
+struct crash_report;
 
 template <typename F, typename... Stored>
 struct kernel_call;
@@ -91,6 +93,9 @@ struct kernel_closure {
     //! Bytes of the kernel's arguments, which each CUDA thread's stack holds
     //! copies of
     size_t argument_bytes = 0;
+    //! Where the kernel was launched, for crash reports (an empty file name
+    //! when unknown)
+    std::source_location site{};
 };
 
 }
@@ -309,6 +314,7 @@ public:
 private:
     struct fibers;
     friend struct detail::fiber_access;
+    friend struct detail::crash_report;
     template <typename F, typename... Stored>
     friend struct detail::kernel_call;
 
@@ -392,6 +398,17 @@ private:
     [[gnu::tls_model("initial-exec")]] static __thread thread_block *Current_;
     [[gnu::tls_model("initial-exec")]] static __thread builtin_vars Vars_;
 };
+
+#if defined(__SANITIZE_ADDRESS__)
+#define CUDA4CPU_ADDRESS_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CUDA4CPU_ADDRESS_SANITIZER 1
+#endif
+#endif
+#ifndef CUDA4CPU_ADDRESS_SANITIZER
+#define CUDA4CPU_ADDRESS_SANITIZER 0
+#endif
 
 namespace detail {
 
@@ -509,22 +526,36 @@ struct kernel_call : kernel_closure {
     {
         const dim3 b = block.conf_.block;
         for (unsigned z = 0; z < b.z; ++z) {
-            thread_block::Vars_.thread_idx.z = z;
+            set_index(thread_block::Vars_.thread_idx.z, z);
             for (unsigned y = 0; y < b.y; ++y) {
-                thread_block::Vars_.thread_idx.y = y;
+                set_index(thread_block::Vars_.thread_idx.y, y);
 #if defined(__clang__) && !defined(CUDA4CPU_VECTORIZE_THREADS)
                 _Pragma("clang loop vectorize(disable)")
 #endif
                 for (unsigned x = 0; x < b.x; ++x) {
                     if (!block.direct_) [[unlikely]]
                         block.finish_current();
-                    thread_block::Vars_.thread_idx.x = x;
+                    set_index(thread_block::Vars_.thread_idx.x, x);
                     std::apply(func, args);
                 }
                 if (!block.direct_) [[unlikely]]
                     block.finish_current();
             }
         }
+    }
+
+    //! The compilers keep threadIdx in a register when nothing in the kernel
+    //! can read it, and store it after the loop: a crash report then can't
+    //! tell the CUDA thread (the library runs the block again to find it).
+    //! Clang adds AddressSanitizer's checks after that, so its reports came
+    //! with the wrong thread: with AddressSanitizer, the stores are volatile.
+    [[gnu::always_inline]] static void set_index(unsigned &index, unsigned value)
+    {
+#if CUDA4CPU_ADDRESS_SANITIZER
+        *static_cast<volatile unsigned *>(&index) = value;
+#else
+        index = value;
+#endif
     }
 
     static void run_one_impl(const kernel_closure &closure)
@@ -666,6 +697,8 @@ struct bound_kernel {
     virtual void run(const launch_conf &conf, bool cooperative) = 0;
     //! Pointers to the copies of the arguments, as cudaKernelNodeParams::kernelParams
     virtual void **params() = 0;
+    //! The launch it runs
+    virtual kernel_closure &closure() = 0;
 
     const void *function = nullptr;   //!< The kernel's address, or nullptr for a callable
 };
@@ -692,6 +725,11 @@ struct bound_kernel_impl final : bound_kernel {
     void **params() override
     {
         return pointers.data();
+    }
+
+    kernel_closure &closure() override
+    {
+        return call;
     }
 
     kernel_call<F, Stored...> call;
@@ -737,12 +775,13 @@ inline cudaError_t launch_bound(std::unique_ptr<bound_kernel> kernel, const laun
 template <typename... Args>
 struct grid_launcher {
     grid_launcher(void (&func)(Args...), dim3 conf_grid, dim3 conf_block, size_t shared_mem,
-                  cudaStream_t stream = nullptr) :
+                  cudaStream_t stream = nullptr, std::source_location site = {}) :
                   func_{func},
                   conf_{conf_grid,
                         conf_block,
                         shared_mem},
-                  stream_{stream}
+                  stream_{stream},
+                  site_{site}
     {
     }
 
@@ -754,14 +793,14 @@ struct grid_launcher {
             return;
         }
         if (detail::capturing(stream_)) [[unlikely]] {
-            detail::capture_kernel(stream_, conf_,
-                                   std::make_unique<detail::bound_kernel_impl<void (*)(Args...), std::decay_t<Args>...>>(
-                                       reinterpret_cast<const void *>(&func_), &func_, std::forward<Args2>(args)...),
-                                   false);
+            auto bound = std::make_unique<detail::bound_kernel_impl<void (*)(Args...), std::decay_t<Args>...>>(
+                reinterpret_cast<const void *>(&func_), &func_, std::forward<Args2>(args)...);
+            bound->call.site = site_;
+            detail::capture_kernel(stream_, conf_, std::move(bound), false);
             return;
         }
-        const detail::kernel_call<void (*)(Args...), std::decay_t<Args>...>
-            kernel(&func_, std::forward<Args2>(args)...);
+        detail::kernel_call<void (*)(Args...), std::decay_t<Args>...> kernel(&func_, std::forward<Args2>(args)...);
+        kernel.site = site_;
         detail::run_grid(conf_, kernel);
     }
 
@@ -769,6 +808,7 @@ private:
     void (&func_)(Args...);
     launch_conf conf_;
     cudaStream_t stream_;
+    std::source_location site_;
 };
 
 //! Launch of a kernel given as a callable, such as the lambda that
@@ -776,12 +816,14 @@ private:
 //! copies the arguments and calls the callable with them in every CUDA thread
 template <typename F>
 struct callable_launcher {
-    callable_launcher(F func, dim3 conf_grid, dim3 conf_block, size_t shared_mem, cudaStream_t stream = nullptr) :
+    callable_launcher(F func, dim3 conf_grid, dim3 conf_block, size_t shared_mem, cudaStream_t stream = nullptr,
+                      std::source_location site = {}) :
                       func_{std::move(func)},
                       conf_{conf_grid,
                             conf_block,
                             shared_mem},
-                      stream_{stream}
+                      stream_{stream},
+                      site_{site}
     {
     }
 
@@ -793,13 +835,14 @@ struct callable_launcher {
             return;
         }
         if (detail::capturing(stream_)) [[unlikely]] {
-            detail::capture_kernel(stream_, conf_,
-                                   std::make_unique<detail::bound_kernel_impl<F, std::decay_t<Args>...>>(
-                                       nullptr, func_, std::forward<Args>(args)...),
-                                   false);
+            auto bound = std::make_unique<detail::bound_kernel_impl<F, std::decay_t<Args>...>>(
+                nullptr, func_, std::forward<Args>(args)...);
+            bound->call.site = site_;
+            detail::capture_kernel(stream_, conf_, std::move(bound), false);
             return;
         }
-        const detail::kernel_call<F, std::decay_t<Args>...> kernel(func_, std::forward<Args>(args)...);
+        detail::kernel_call<F, std::decay_t<Args>...> kernel(func_, std::forward<Args>(args)...);
+        kernel.site = site_;
         detail::run_grid(conf_, kernel);
     }
 
@@ -807,16 +850,19 @@ private:
     F func_;
     launch_conf conf_;
     cudaStream_t stream_;
+    std::source_location site_;
 };
 
 //! Equivalent to func<<<grid, block, shared_mem, stream>>>. Kernels run
-//! synchronously, unless stream is being captured into a graph.
+//! synchronously, unless stream is being captured into a graph. site is
+//! where the launch is, which a crash report names.
 template <typename... Args>
 grid_launcher<Args...>
 launch(void (&func)(Args...), dim3 grid, dim3 block,
-       size_t shared_mem = 0, cudaStream_t stream = nullptr)
+       size_t shared_mem = 0, cudaStream_t stream = nullptr,
+       std::source_location site = std::source_location::current())
 {
-    return grid_launcher<Args...>(func, grid, block, shared_mem, stream);
+    return grid_launcher<Args...>(func, grid, block, shared_mem, stream, site);
 }
 
 //! Launches a callable as a kernel: every CUDA thread calls it with the
@@ -827,9 +873,10 @@ template <typename F>
     requires std::is_class_v<std::remove_cvref_t<F>>
 callable_launcher<std::remove_cvref_t<F>>
 launch(F &&func, dim3 grid, dim3 block,
-       size_t shared_mem = 0, cudaStream_t stream = nullptr)
+       size_t shared_mem = 0, cudaStream_t stream = nullptr,
+       std::source_location site = std::source_location::current())
 {
-    return callable_launcher<std::remove_cvref_t<F>>(std::forward<F>(func), grid, block, shared_mem, stream);
+    return callable_launcher<std::remove_cvref_t<F>>(std::forward<F>(func), grid, block, shared_mem, stream, site);
 }
 
 //! The address of a kernel as a void *, as CUDA code writes (void *)kernel.
@@ -848,18 +895,20 @@ namespace detail {
 
 template <typename... Args, size_t... I>
 cudaError_t launch_with_argument_array(void (*func)(Args...), dim3 grid, dim3 block, void **args,
-                                       size_t shared_mem, cudaStream_t stream, std::index_sequence<I...>)
+                                       size_t shared_mem, cudaStream_t stream, std::source_location site,
+                                       std::index_sequence<I...>)
 {
     if (!valid_launch(launch_conf{grid, block, shared_mem}))
         return record_error(cudaErrorInvalidConfiguration);
 
-    launch(*func, grid, block, shared_mem, stream).call(*static_cast<std::remove_reference_t<Args> *>(args[I])...);
+    launch(*func, grid, block, shared_mem, stream, site)
+        .call(*static_cast<std::remove_reference_t<Args> *>(args[I])...);
     return cudaSuccess;
 }
 
 //! Launches a kernel known only by its address, which kernel_address() registered
 inline cudaError_t launch_registered(const void *func, dim3 grid, dim3 block, void **args, size_t shared_mem,
-                                     cudaStream_t stream, bool cooperative)
+                                     cudaStream_t stream, bool cooperative, std::source_location site)
 {
     const launch_conf conf{grid, block, shared_mem};
     if (!valid_launch(conf))
@@ -872,6 +921,7 @@ inline cudaError_t launch_registered(const void *func, dim3 grid, dim3 block, vo
     std::unique_ptr<bound_kernel> kernel = bind(func, args);
     if (kernel == nullptr)
         return record_error(cudaErrorInvalidValue);
+    kernel->closure().site = site;
     return launch_bound(std::move(kernel), conf, stream, cooperative);
 }
 
@@ -883,9 +933,10 @@ inline namespace cuda_api {
 //! parameter, as in CUDA
 template <typename... Args>
 cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
-                             size_t sharedMem = 0, cudaStream_t stream = nullptr)
+                             size_t sharedMem = 0, cudaStream_t stream = nullptr,
+                             std::source_location site = std::source_location::current())
 {
-    return detail::launch_with_argument_array(func, gridDim, blockDim, args, sharedMem, stream,
+    return detail::launch_with_argument_array(func, gridDim, blockDim, args, sharedMem, stream, site,
                                               std::index_sequence_for<Args...>{});
 }
 
@@ -895,9 +946,9 @@ cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim,
 template <typename T>
     requires std::is_void_v<T>
 cudaError_t cudaLaunchKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem = 0,
-                             cudaStream_t stream = nullptr)
+                             cudaStream_t stream = nullptr, std::source_location site = std::source_location::current())
 {
-    return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, false);
+    return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, false, site);
 }
 
 //! Launches func so that all its blocks run at the same time, which
@@ -905,7 +956,8 @@ cudaError_t cudaLaunchKernel(const T *func, dim3 gridDim, dim3 blockDim, void **
 //! multiProcessorCount blocks (one per OS thread).
 template <typename... Args>
 cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
-                                        size_t sharedMem = 0, cudaStream_t stream = nullptr)
+                                        size_t sharedMem = 0, cudaStream_t stream = nullptr,
+                                        std::source_location site = std::source_location::current())
 {
     return [&]<size_t... I>(std::index_sequence<I...>) {
         const launch_conf conf{gridDim, blockDim, sharedMem};
@@ -913,12 +965,16 @@ cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim
             return detail::record_error(cudaErrorInvalidConfiguration);
         if (conf.nblocks() > detail::max_cooperative_blocks())
             return detail::record_error(cudaErrorCooperativeLaunchTooLarge);
-        if (detail::capturing(stream))
-            return detail::capture_kernel(stream, conf, detail::bind_arguments<Args...>(
-                                              reinterpret_cast<const void *>(func), args), true);
+        if (detail::capturing(stream)) {
+            auto bound = detail::bind_arguments<Args...>(reinterpret_cast<const void *>(func), args);
+            if (bound != nullptr)
+                bound->closure().site = site;
+            return detail::capture_kernel(stream, conf, std::move(bound), true);
+        }
 
         detail::kernel_call<void (*)(Args...), std::decay_t<Args>...>
             kernel(func, *static_cast<std::remove_reference_t<Args> *>(args[I])...);
+        kernel.site = site;
         detail::run_grid_cooperative(conf, kernel);
         return cudaSuccess;
     }(std::index_sequence_for<Args...>{});
@@ -927,9 +983,10 @@ cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim
 template <typename T>
     requires std::is_void_v<T>
 cudaError_t cudaLaunchCooperativeKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args,
-                                        size_t sharedMem = 0, cudaStream_t stream = nullptr)
+                                        size_t sharedMem = 0, cudaStream_t stream = nullptr,
+                                        std::source_location site = std::source_location::current())
 {
-    return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, true);
+    return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, true, site);
 }
 
 //

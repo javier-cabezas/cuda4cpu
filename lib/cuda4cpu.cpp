@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <new>
 #include <numeric>
@@ -40,6 +41,7 @@
 #include <utility>
 
 #include <setjmp.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -125,6 +127,7 @@ cuda4cpu_fiber_trampoline:
 // runtime, so the same build of the library works with and without one.
 extern "C" {
 [[gnu::weak]] void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
+[[gnu::weak]] void __sanitizer_set_death_callback(void (*callback)());
 [[gnu::weak]] void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old,
                                                    size_t *size_old);
 }
@@ -149,6 +152,21 @@ constexpr size_t warp_size = 32;
 
 //! Alignment of the dynamic shared memory of a block
 constexpr size_t shared_alignment = 64;
+
+//! Set once a crash in a kernel is reported, so that the crash handler
+//! doesn't report again an abort after one of cuda4cpu's own errors
+std::atomic<bool> crash_reported{false};
+
+//! A block of this OS thread that crashed in direct mode, run once more to
+//! find the CUDA thread (see detail::crash_report)
+struct crash_rerun_state {
+    bool requested;     //!< execute() runs the block again
+    bool running;       //!< The block runs again, every CUDA thread as a fiber
+    int sig;
+    int code;
+    void *address;
+};
+[[gnu::tls_model("initial-exec")]] __thread crash_rerun_state crash_rerun;
 
 constexpr uint32_t lane_bit(size_t tid)
 {
@@ -321,8 +339,10 @@ private:
                  "cuda4cpu: %s: threads of block (%u, %u, %u) reached different __syncthreads() calls, "
                  "at %s and %s. CUDA requires every thread of a block to reach the same one.\n",
                  error ? "error" : "warning", block.x, block.y, block.z, first.c_str(), other.c_str());
-    if (error)
+    if (error) {
+        crash_reported = true;
         std::abort();
+    }
 }
 
 //! Reports a thread that called a warp-synchronous operation with a mask that
@@ -342,8 +362,10 @@ private:
                  "which does not include its own lane. CUDA requires every calling thread's "
                  "lane bit to be set in mask.\n",
                  error ? "error" : "warning", lane, warp, block.x, block.y, block.z, op, mask);
-    if (error)
+    if (error) {
+        crash_reported = true;
         std::abort();
+    }
 }
 
 //! Reports two lanes of a warp whose warp-synchronous operations have
@@ -368,8 +390,10 @@ private:
                  "participating lanes to execute the same operation with the same mask.\n",
                  error ? "error" : "warning", lane1, lane2, warp, block.x, block.y, block.z,
                  op1, mask1, op2, mask2);
-    if (error)
+    if (error) {
+        crash_reported = true;
         std::abort();
+    }
 }
 
 }
@@ -844,11 +868,254 @@ thread_block::thread_block(dim3 block, size_t stack_size) :
 
 thread_block::~thread_block() = default;
 
+namespace detail {
+
+//! Reports a crash in a kernel (an invalid memory access, a stack overflow,
+//! a division by zero, an abort such as a failed assert) with the CUDA
+//! thread and block it happened in and where the kernel was launched, then
+//! hands the signal to the handler installed before (AddressSanitizer's, for
+//! instance), or to the default action: the program still dies of it.
+//! Handlers run on an alternate stack, since a fiber's stack may be the one
+//! that overflowed.
+struct crash_report {
+    static constexpr int signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT};
+    static inline struct sigaction previous[std::size(signals)];
+
+    //! Installs the handlers once per process, and an alternate stack for the
+    //! calling OS thread unless it has one (AddressSanitizer gives its own)
+    static void prepare_thread()
+    {
+        static const bool installed = [] {
+            struct sigaction action {};
+            action.sa_sigaction = handler;
+            action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+            sigemptyset(&action.sa_mask);
+            for (size_t i = 0; i < std::size(signals); ++i)
+                sigaction(signals[i], &action, &previous[i]);
+            if (__sanitizer_set_death_callback != nullptr)
+                __sanitizer_set_death_callback(sanitizer_died);
+            return true;
+        }();
+        (void)installed;
+
+        struct alternate_stack {
+            void *memory = nullptr;
+            size_t size = 0;
+
+            alternate_stack()
+            {
+                stack_t current{};
+                if (sigaltstack(nullptr, &current) != 0 || !(current.ss_flags & SS_DISABLE))
+                    return;
+                size = std::max<size_t>(64 << 10, size_t(SIGSTKSZ));
+                memory = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+                if (memory == MAP_FAILED) {
+                    memory = nullptr;
+                    return;
+                }
+                const stack_t stack{memory, 0, size};
+                if (sigaltstack(&stack, nullptr) != 0) {
+                    munmap(memory, size);
+                    memory = nullptr;
+                }
+            }
+
+            ~alternate_stack()
+            {
+                if (memory == nullptr)
+                    return;
+                stack_t disable{};
+                disable.ss_flags = SS_DISABLE;
+                sigaltstack(&disable, nullptr);
+                munmap(memory, size);
+            }
+        };
+        static thread_local alternate_stack stack;
+    }
+
+    //! A report built without allocating, since the heap may be what broke
+    struct message {
+        char text[512];
+        size_t size = 0;
+
+        message &operator<<(const char *s)
+        {
+            while (*s != '\0' && size < sizeof(text) - 1)
+                text[size++] = *s++;
+            return *this;
+        }
+
+        message &operator<<(unsigned long long n)
+        {
+            char digits[24];
+            size_t count = 0;
+            do {
+                digits[count++] = char('0' + n % 10);
+                n /= 10;
+            } while (n != 0);
+            while (count > 0 && size < sizeof(text) - 1)
+                text[size++] = digits[--count];
+            return *this;
+        }
+
+        message &hex(uintptr_t n)
+        {
+            *this << "0x";
+            char digits[16];
+            size_t count = 0;
+            do {
+                digits[count++] = "0123456789abcdef"[n % 16];
+                n /= 16;
+            } while (n != 0);
+            while (count > 0 && size < sizeof(text) - 1)
+                text[size++] = digits[--count];
+            return *this;
+        }
+
+        message &operator<<(const thread_block::raw_dim3 &d)
+        {
+            return *this << "(" << d.x << ", " << d.y << ", " << d.z << ")";
+        }
+    };
+
+    //! Reports a crash. thread_known is false when the block ran in direct
+    //! mode, where the compiler may not have stored threadIdx yet: the
+    //! loop over the CUDA threads keeps it in a register when nothing in
+    //! the kernel can read it.
+    static void report(int sig, int code, void *fault_address, bool thread_known, const char *note = nullptr)
+    {
+        const thread_block *block = thread_block::Current_;
+        if (block == nullptr || crash_reported.exchange(true))
+            return;
+        const auto &f = *block->fibers_;
+        const auto address = reinterpret_cast<uintptr_t>(fault_address);
+        const auto base = reinterpret_cast<uintptr_t>(f.base);
+        // A fault in the guard page below a stack
+        const bool overflow = (sig == SIGSEGV || sig == SIGBUS) && address >= base &&
+                              address < base + f.map_size && (address - base) % f.stride < f.page;
+
+        message m;
+        m << "cuda4cpu: error: ";
+        if (thread_known)
+            m << "CUDA thread " << thread_block::Vars_.thread_idx << " of block ";
+        else
+            m << "a CUDA thread of block ";
+        m << thread_block::Vars_.block_idx;
+        if (sig == 0) {
+            m << " made the error that the sanitizer reports above";
+        } else if (overflow) {
+            m << " overflowed its stack of " << (unsigned long long)block->stack_size_ << " bytes";
+        } else if (sig == SIGSEGV || sig == SIGBUS) {
+            m << " made an invalid memory access at address ";
+            m.hex(address);
+        } else if (sig == SIGFPE) {
+            m << (code == FPE_INTDIV ? " divided an integer by zero" : " raised an arithmetic exception");
+        } else if (sig == SIGILL) {
+            m << " executed an illegal instruction";
+        } else {
+            m << " aborted (a failed assert(), or a call to abort())";
+        }
+        const std::source_location &site = block->kernel_->site;
+        if (site.file_name()[0] != '\0')
+            m << ", in the kernel launched at " << site.file_name() << ":" << (unsigned long long)site.line();
+        if (note != nullptr)
+            m << " (" << note << ")";
+        if (overflow)
+            m << ". Give CUDA threads larger stacks with cudaDeviceSetLimit(cudaLimitStackSize, bytes)";
+        else if ((sig == SIGSEGV || sig == SIGBUS) && __sanitizer_start_switch_fiber == nullptr)
+            m << ". Build with -g -fsanitize=address to find the access";
+        m << ".\n";
+        ssize_t written = write(STDERR_FILENO, m.text, m.size);
+        (void)written;
+    }
+
+    //! The sanitizers' reports of a kernel's errors come from calls in the
+    //! kernel's code, before which the compiler stores threadIdx
+    static void sanitizer_died()
+    {
+        report(0, 0, nullptr, true);
+    }
+
+    //! The block of a fault in direct mode runs again, from execute(), with
+    //! every CUDA thread as a fiber, which the library starts with threadIdx
+    //! set: its handler resumes execute() instead of returning. Not after
+    //! an abort, which is a call.
+    static bool rerun_block(int sig, const siginfo_t *info)
+    {
+        thread_block *block = thread_block::Current_;
+        if (block == nullptr || !block->direct_ || sig == SIGABRT || crash_rerun.running ||
+            crash_reported.load())
+            return false;
+        crash_rerun = {true, false, sig, info->si_code, info->si_addr};
+        // The signal stays blocked otherwise, and its next fault would end
+        // the program at once
+        sigset_t unblock;
+        sigemptyset(&unblock);
+        sigaddset(&unblock, sig);
+        sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+        auto &f = *block->fibers_;
+        f.switch_to(f.discarded, f.caller);
+        __builtin_unreachable();
+    }
+
+    //! Runs a block that crashed in direct mode once more (from execute())
+    static void rerun(thread_block &block, size_t first)
+    {
+        auto &f = *block.fibers_;
+        crash_rerun.requested = false;
+        crash_rerun.running = true;
+        block.pos_ = 0;
+        thread_block::Vars_.tick = block.slice_;
+        block.set_current_thread(first);
+        f.start_fiber(f.caller, first);
+        // It finished: report the first fault without the thread, and die of it
+        const crash_rerun_state crash = crash_rerun;
+        crash_rerun.running = false;
+        report(crash.sig, crash.code, crash.address, false, "it didn't crash when its block ran again");
+        struct sigaction action {};
+        action.sa_handler = SIG_DFL;
+        sigemptyset(&action.sa_mask);
+        sigaction(crash.sig, &action, nullptr);
+        raise(crash.sig);
+    }
+
+    static void handler(int sig, siginfo_t *info, void *context)
+    {
+        const int saved_errno = errno;
+        rerun_block(sig, info);
+        const thread_block *block = thread_block::Current_;
+        report(sig, info->si_code, info->si_addr,
+               block != nullptr && (!block->direct_ || sig == SIGABRT || crash_rerun.running));
+        const size_t i = size_t(std::find(std::begin(signals), std::end(signals), sig) - std::begin(signals));
+        const struct sigaction &old = previous[i];
+        if (old.sa_flags & SA_SIGINFO) {
+            old.sa_sigaction(sig, info, context);
+        } else if (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN) {
+            old.sa_handler(sig);
+        } else {
+            // The default action, once this handler returns: a fault happens
+            // again, and a signal that was sent (abort raises one) is blocked
+            // until then
+            struct sigaction action {};
+            action.sa_handler = SIG_DFL;
+            sigemptyset(&action.sa_mask);
+            sigaction(sig, &action, nullptr);
+            if (info->si_code <= 0)
+                raise(sig);
+        }
+        errno = saved_errno;
+    }
+};
+
+}
+
 thread_block &
 thread_block::acquire(const launch_conf &conf, size_t stack_size)
 {
     // Most recently used last
     static thread_local std::vector<std::unique_ptr<thread_block>> cache;
+    if (cache.empty())
+        detail::crash_report::prepare_thread();
 
     auto it = std::find_if(cache.begin(), cache.end(), [&](const auto &block) {
         const dim3 &b = block->conf_.block;
@@ -1083,6 +1350,8 @@ void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
     Vars_.tick = slice_;
     set_current_thread(first);
     f.start_fiber(f.caller, first);
+    if (crash_rerun.requested) [[unlikely]]
+        detail::crash_report::rerun(*this, first);
     Current_ = prev;
     Vars_    = prev_vars;
 
@@ -1153,6 +1422,13 @@ void thread_block::fiber_main()
 {
     fibers_->sanitizer_started(direct_);
     if (direct_) {
+        if (crash_rerun.running) [[unlikely]] {
+            // A block that crashed in direct mode, run again: every CUDA
+            // thread as a fiber, which starts with threadIdx set
+            promote();
+            kernel_->run_one(*kernel_);
+            finish_current();
+        }
         // Fiber 0 at the start of a block. Returns when every CUDA thread has
         // returned without reaching a barrier.
         kernel_->run_direct(*kernel_);

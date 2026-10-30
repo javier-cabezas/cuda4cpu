@@ -305,6 +305,9 @@ UBSAN = re.compile(r'^(?P<file>[^:\n]+):(?P<line>\d+):(?P<column>\d+): runtime e
 FRAME = re.compile(r'^\s*#\d+ 0x[0-9a-f]+ in (?P<function>.+?) (?P<file>/[^\s:]+):(?P<line>\d+)(?::(?P<column>\d+))?',
                    re.MULTILINE)
 LOCATION = re.compile(r'(?P<file>[^\s,]+):(?P<line>\d+)')
+# cuda4cpu's report of a crash in a kernel, or of the CUDA thread that made
+# the error a sanitizer reports
+KERNEL_CRASH = re.compile(r'^(?P<thread>(?:a )?CUDA thread (?:\(\d+, \d+, \d+\) )?of block \(\d+, \d+, \d+\))')
 
 
 INCLUDE_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_INCLUDE_DIR@'))
@@ -332,9 +335,15 @@ def findings_of(run, program):
     UBSan, and how the run ended"""
     findings = []
     stderr = run['stderr']
+    crash_thread = None                 # the CUDA thread of a crash, for a sanitizer's report of it
     for m in CUDA4CPU_REPORT.finditer(stderr):
         message = m['message']
-        if 'different __syncthreads()' in message:
+        crash = KERNEL_CRASH.match(message)
+        if crash:
+            # Its location is the kernel's launch
+            crash_thread = crash['thread']
+            kind = 'crash in a kernel'
+        elif 'different __syncthreads()' in message:
             kind = 'divergent barrier'
         elif 'warp operations' in message or 'does not include its own lane' in message:
             kind = 'divergent warp operation'
@@ -359,14 +368,20 @@ def findings_of(run, program):
         if frame:
             finding['locations'] = [frame]
             finding['message'] += f' in {frame["function"]}'
+        if crash_thread:
+            finding['message'] += f', by {crash_thread}'
         findings.append(finding)
+    if any(f['kind'].startswith('AddressSanitizer') for f in findings):
+        # The sanitizer's report has the line, and its finding the thread
+        findings = [f for f in findings if f['kind'] != 'crash in a kernel']
     for m in UBSAN.finditer(stderr):
         findings.append({'kind': 'undefined behavior', 'message': m['message'],
                          'locations': [{'file': program.display(os.path.realpath(m['file'])), 'line': int(m['line'])}]})
     if run['timed_out']:
         findings.append({'kind': 'timeout', 'message': f'still running after {run["seconds"]} s: a deadlock, '
                          'a thread that spins on another one, or too much work for the CPU'})
-    elif run['signal'] and not any(f['kind'].startswith('AddressSanitizer') for f in findings):
+    elif run['signal'] and not any(f['kind'].startswith('AddressSanitizer') or f['kind'] == 'crash in a kernel'
+                                   for f in findings):
         findings.append({'kind': 'crash', 'message': f'killed by {run["signal"]}'})
     return findings
 
@@ -593,7 +608,7 @@ def check_program(program, arguments):
                           dict(checks, CUDA4CPU_SCHEDULE='forward', **SANITIZER_ENVIRONMENT))
             found = record('sanitizers', run, 'the default order, built with AddressSanitizer and UBSan')
             if any(f['kind'].startswith(('AddressSanitizer', 'LeakSanitizer')) or
-                   f['kind'] in ('undefined behavior', 'crash', 'timeout') for f in found):
+                   f['kind'] in ('undefined behavior', 'crash', 'crash in a kernel', 'timeout') for f in found):
                 result['sanitizers'] = run_result(run, [])
                 return finish(note='the build with AddressSanitizer and UBSan found errors, so the other '
                                    'orders were not run: their results would not be reliable. Fix these '
