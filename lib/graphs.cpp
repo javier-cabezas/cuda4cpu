@@ -71,6 +71,7 @@ struct graph_allocation {
     size_t mapped;           //!< size rounded up to pages
     bool live = false;       //!< Allocated
     bool orphaned = false;   //!< No graph has the node any more
+    std::source_location site{};   //!< The program's call that added the node
 };
 
 struct capture_session {
@@ -110,10 +111,12 @@ struct allocation_registry {
     std::atomic<size_t> count{0};   //!< Lets cudaFree skip the lookup when there are none
 };
 
+//! Never destroyed: the leak report reads it after static objects are
+//! destroyed, and they may free memory
 allocation_registry &allocations()
 {
-    static allocation_registry registry;
-    return registry;
+    static allocation_registry *registry = new allocation_registry;
+    return *registry;
 }
 
 //! Releases the address range of an allocation (with the registry locked)
@@ -136,7 +139,7 @@ void decommit(allocation_registry &r, graph_allocation *a)
         unmap(r, a);
 }
 
-std::shared_ptr<graph_allocation> new_allocation(size_t size)
+std::shared_ptr<graph_allocation> new_allocation(size_t size, std::source_location site)
 {
     const size_t page = size_t(sysconf(_SC_PAGESIZE));
     const size_t mapped = (size + page - 1) / page * page;
@@ -146,7 +149,7 @@ std::shared_ptr<graph_allocation> new_allocation(size_t size)
 
     auto &r = allocations();
     std::lock_guard lock(r.mutex);
-    auto owned = std::make_unique<graph_allocation>(graph_allocation{ptr, size, mapped});
+    auto owned = std::make_unique<graph_allocation>(graph_allocation{ptr, size, mapped, false, false, site});
     graph_allocation *a = owned.get();
     r.by_address.emplace(ptr, std::move(owned));
     r.count.fetch_add(1, std::memory_order_relaxed);
@@ -214,6 +217,18 @@ cudaError_t free_memory(void *ptr)
     if (ptr != nullptr && !release_allocation(ptr))
         return record_error(cudaErrorInvalidValue);
     return cudaSuccess;
+}
+
+std::vector<std::pair<size_t, std::source_location>> live_graph_allocations()
+{
+    std::vector<std::pair<size_t, std::source_location>> live;
+    auto &r = allocations();
+    std::lock_guard lock(r.mutex);
+    for (const auto &[base, a] : r.by_address) {
+        if (a->live)
+            live.emplace_back(a->size, a->site);
+    }
+    return live;
 }
 
 bool find_graph_allocation(const void *ptr, allocation_info &info)
@@ -715,7 +730,7 @@ cudaError_t capture_host(cudaStream_t stream, cudaHostFn_t fn, void *userData)
     return capture(stream, std::move(node));
 }
 
-cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size)
+cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size, std::source_location site)
 {
     if (ptr == nullptr || size == 0)
         return record_error(cudaErrorInvalidValue);
@@ -723,7 +738,8 @@ cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size)
     params.bytesize = size;
     cudaGraphNode_t node = nullptr;
     detail::stream_capture &c = *stream->capture;
-    if (cudaError_t err = cudaGraphAddMemAllocNode(&node, c.session->graph, c.deps.data(), c.deps.size(), &params))
+    if (cudaError_t err =
+            cudaGraphAddMemAllocNode(&node, c.session->graph, c.deps.data(), c.deps.size(), &params, site))
         return err;
     c.deps.assign(1, node);
     *ptr = params.dptr;
@@ -1028,14 +1044,14 @@ cudaError_t cudaGraphEventWaitNodeGetEvent(cudaGraphNode_t node, cudaEvent_t *ev
 
 cudaError_t cudaGraphAddMemAllocNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph,
                                      const cudaGraphNode_t *pDependencies, size_t numDependencies,
-                                     cudaMemAllocNodeParams *nodeParams)
+                                     cudaMemAllocNodeParams *nodeParams, std::source_location site)
 {
     if (cudaError_t err = check_add(pGraphNode, graph, pDependencies, numDependencies))
         return err;
     if (nodeParams == nullptr || nodeParams->bytesize == 0)
         return detail::record_error(cudaErrorInvalidValue);
     auto node        = new_node(cudaGraphNodeTypeMemAlloc);
-    node->allocation = detail::new_allocation(nodeParams->bytesize);
+    node->allocation = detail::new_allocation(nodeParams->bytesize, site);
     if (node->allocation == nullptr)
         return detail::record_error(cudaErrorMemoryAllocation);
     graph->allocations.push_back(node->allocation);
@@ -1088,7 +1104,7 @@ cudaError_t cudaGraphConditionalHandleCreate(cudaGraphConditionalHandle *pHandle
 }
 
 cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, const cudaGraphNode_t *pDependencies,
-                             size_t numDependencies, cudaGraphNodeParams *nodeParams)
+                             size_t numDependencies, cudaGraphNodeParams *nodeParams, std::source_location site)
 {
     if (nodeParams == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
@@ -1112,7 +1128,7 @@ cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, con
         return cudaGraphAddEventRecordNode(pGraphNode, graph, pDependencies, numDependencies,
                                            p.eventRecord.event);
     case cudaGraphNodeTypeMemAlloc:
-        return cudaGraphAddMemAllocNode(pGraphNode, graph, pDependencies, numDependencies, &p.alloc);
+        return cudaGraphAddMemAllocNode(pGraphNode, graph, pDependencies, numDependencies, &p.alloc, site);
     case cudaGraphNodeTypeMemFree:
         return cudaGraphAddMemFreeNode(pGraphNode, graph, pDependencies, numDependencies, p.free.dptr);
     case cudaGraphNodeTypeConditional: {
@@ -1146,9 +1162,9 @@ cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, con
 
 cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, const cudaGraphNode_t *pDependencies,
                              const cudaGraphEdgeData * /* dependencyData */, size_t numDependencies,
-                             cudaGraphNodeParams *nodeParams)
+                             cudaGraphNodeParams *nodeParams, std::source_location site)
 {
-    return cudaGraphAddNode(pGraphNode, graph, pDependencies, numDependencies, nodeParams);
+    return cudaGraphAddNode(pGraphNode, graph, pDependencies, numDependencies, nodeParams, site);
 }
 
 cudaError_t cudaGraphAddDependencies(cudaGraph_t graph, const cudaGraphNode_t *from, const cudaGraphNode_t *to,

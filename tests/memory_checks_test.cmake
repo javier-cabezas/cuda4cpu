@@ -19,8 +19,9 @@
 
 # CUDA4CPU_INIT_MEMORY fills every kind of new allocation with its byte, and
 # CUDA4CPU_LEAK_CHECK=warn reports, at exit, the allocations never freed, by
-# the line that made them. Memory that a static object's destructor frees
-# after main returns isn't reported.
+# the line that made them, graph allocations included. Memory that a static
+# object's destructor or a destructor function frees after main returns isn't
+# reported.
 # Usage: cmake -DPROGRAM=... -P memory_checks_test.cmake
 
 function(run expected_status)
@@ -40,26 +41,29 @@ foreach(byte 0xa5 0 255)
     endif()
 endforeach()
 
-run(1 CUDA4CPU_INIT_MEMORY=0x100 "${PROGRAM}" fill)
-if(NOT errors MATCHES "cuda4cpu: ignoring CUDA4CPU_INIT_MEMORY=0x100: expected a byte")
-    message(FATAL_ERROR "an invalid CUDA4CPU_INIT_MEMORY was not rejected:\n${errors}")
-endif()
+foreach(invalid 0x100 -1 invalid)
+    run(1 CUDA4CPU_INIT_MEMORY=${invalid} "${PROGRAM}" fill)
+    if(NOT errors MATCHES "cuda4cpu: ignoring CUDA4CPU_INIT_MEMORY=${invalid}: expected a byte")
+        message(FATAL_ERROR "CUDA4CPU_INIT_MEMORY=${invalid} was not rejected:\n${errors}")
+    endif()
+endforeach()
 
 run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
-if(NOT output MATCHES "device leaked at line ([0-9]+)")
-    message(FATAL_ERROR "no device leak:\n${output}")
-endif()
-set(device_line ${CMAKE_MATCH_1})
-if(NOT output MATCHES "managed leaked at line ([0-9]+)")
-    message(FATAL_ERROR "no managed leak:\n${output}")
-endif()
-set(managed_line ${CMAKE_MATCH_1})
+foreach(leak device managed pinned graph)
+    if(NOT output MATCHES "${leak} leaked at line ([0-9]+)")
+        message(FATAL_ERROR "no ${leak} leak:\n${output}")
+    endif()
+    set(${leak}_line ${CMAKE_MATCH_1})
+endforeach()
+set(at "made at [^\n]*memory_checks\\.cu")
 set(expected
-    "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), made at [^\n]*memory_checks\\.cu:${device_line}, were never freed\\.\n"
-    "cuda4cpu: warning: an allocation of managed memory \\(4 bytes\\), made at [^\n]*memory_checks\\.cu:${managed_line}, was never freed\\.\n")
+    "cuda4cpu: warning: an allocation of graph memory \\(1000 bytes\\), ${at}:${graph_line}, was never freed\\.\n"
+    "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), ${at}:${device_line}, were never freed\\.\n"
+    "cuda4cpu: warning: an allocation of pinned host memory \\(50 bytes\\), ${at}:${pinned_line}, was never freed\\.\n"
+    "cuda4cpu: warning: an allocation of managed memory \\(4 bytes\\), ${at}:${managed_line}, was never freed\\.\n")
 string(JOIN "" expected ${expected})
 if(NOT errors MATCHES "^${expected}$")
-    message(FATAL_ERROR "expected exactly the two leaks, largest first, got:\n${errors}")
+    message(FATAL_ERROR "expected exactly the four leaks, largest first, got:\n${errors}")
 endif()
 
 foreach(setting "" CUDA4CPU_LEAK_CHECK=ignore)

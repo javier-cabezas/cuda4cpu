@@ -323,7 +323,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `memory_checks` (`memory_checks.cu`, `memory_checks_test.cmake`):
     `CUDA4CPU_INIT_MEMORY` fills every kind of allocation (graph allocations
     on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
-    leaks, by line, largest first, and not memory a static destructor frees
+    leaks (device, managed, pinned and graph memory), by line, largest
+    first, and not memory that a static destructor or a destructor function
+    frees
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
@@ -750,10 +752,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   against the registry of allocations, and so are `CUDA4CPU_INIT_MEMORY` (a
   byte that `initialize_allocation` fills new allocations with, graph
   allocations each time they're committed) and `CUDA4CPU_LEAK_CHECK` (warn,
-  ignore). The allocation functions take a defaulted `std::source_location`,
-  which the registry keeps, and `report_leaks` is a `[[gnu::destructor]]`
-  of the library: it runs after the program's static destructors, which may
-  free memory.
+  ignore). The allocation functions (and `cudaGraphAddMemAllocNode`,
+  `cudaGraphAddNode`) take a defaulted `std::source_location`, which the
+  registries keep, and `report_leaks` is a `[[gnu::destructor(101)]]` of
+  the library: it runs after the program's static destructors, which may
+  free memory, and with a priority, after its destructor functions when
+  linked statically. So the registry of graph allocations is never
+  destroyed, like the allocations'.
 - Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
   to a permutation (`fibers::order`, inverse in `position`), which
   `fill_order` builds. `reverse` and `warp_reverse` fill it once per

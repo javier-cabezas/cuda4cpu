@@ -78,6 +78,9 @@ struct vmm_allocation {
 
 bool find_graph_allocation(const void *ptr, allocation_info &info);
 
+//! The size and site of each graph allocation that is allocated now
+std::vector<std::pair<size_t, std::source_location>> live_graph_allocations();
+
 namespace {
 
 struct allocation {
@@ -536,32 +539,39 @@ const char *memory_name(memory_kind kind)
 
 //! Reports the allocations that the program never freed, by the call that
 //! made them, largest first. A destructor of the library runs after the
-//! program's static objects are destroyed, which may free memory.
-[[gnu::destructor]] void report_leaks()
+//! program's static objects are destroyed, which may free memory, and its
+//! priority puts it after the program's own destructor functions when the
+//! library is linked statically: .fini_array runs them in reverse, those
+//! with a priority after those without.
+[[gnu::destructor(101)]] void report_leaks()
 {
     if (!leak_check_setting())
         return;
     struct site_leaks {
         std::string_view file;
         unsigned line;
-        memory_kind kind;
+        const char *what;
         size_t count = 0, bytes = 0;
     };
     std::vector<site_leaks> leaks;
+    std::map<std::tuple<std::string_view, unsigned, const char *>, size_t> index;
+    auto add = [&](size_t size, std::source_location site, const char *what) {
+        auto [it, added] = index.try_emplace({site.file_name(), site.line(), what}, leaks.size());
+        if (added)
+            leaks.push_back({site.file_name(), site.line(), what});
+        ++leaks[it->second].count;
+        leaks[it->second].bytes += size;
+    };
     {
-        std::map<std::tuple<std::string_view, unsigned, memory_kind>, size_t> index;
         auto &s = state();
         std::lock_guard lock(s.mutex);
         for (const auto &[p, a] : s.allocations) {
-            if (a.kind != memory_kind::device && a.kind != memory_kind::host && a.kind != memory_kind::managed)
-                continue;
-            auto [it, added] = index.try_emplace({a.site.file_name(), a.site.line(), a.kind}, leaks.size());
-            if (added)
-                leaks.push_back({a.site.file_name(), a.site.line(), a.kind});
-            ++leaks[it->second].count;
-            leaks[it->second].bytes += a.size;
+            if (a.kind == memory_kind::device || a.kind == memory_kind::host || a.kind == memory_kind::managed)
+                add(a.size, a.site, memory_name(a.kind));
         }
     }
+    for (const auto &[size, site] : live_graph_allocations())
+        add(size, site, "graph memory");
     std::ranges::stable_sort(leaks, std::greater{}, &site_leaks::bytes);
 
     constexpr size_t shown = 20;
@@ -574,11 +584,11 @@ const char *memory_name(memory_kind kind)
             std::snprintf(where, sizeof where, "at %.*s:%u", int(l.file.size()), l.file.data(), l.line);
         if (l.count == 1)
             std::fprintf(stderr, "cuda4cpu: warning: an allocation of %s (%zu bytes), made %s, was never freed.\n",
-                         memory_name(l.kind), l.bytes, where);
+                         l.what, l.bytes, where);
         else
             std::fprintf(stderr,
                          "cuda4cpu: warning: %zu allocations of %s (%zu bytes in all), made %s, were never freed.\n",
-                         l.count, memory_name(l.kind), l.bytes, where);
+                         l.count, l.what, l.bytes, where);
     }
     if (leaks.size() > shown) {
         size_t count = 0, bytes = 0;

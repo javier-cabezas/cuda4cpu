@@ -367,7 +367,7 @@ inline cudaError_t fill(const cudaMemsetParams &p)
 // of running. Defined in the library, with the graphs.
 cudaError_t capture_copy(cudaStream_t stream, const cudaMemcpy3DParms &params);
 cudaError_t capture_fill(cudaStream_t stream, const cudaMemsetParams &params);
-cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size);
+cudaError_t capture_alloc(cudaStream_t stream, void **ptr, size_t size, std::source_location site);
 cudaError_t capture_free(cudaStream_t stream, void *ptr);
 
 //! Frees memory from cudaMalloc and the like, or from a graph allocation node.
@@ -465,7 +465,7 @@ static inline
 cudaError_t cudaMallocAsync(void **devPtr, size_t size, cudaStream_t stream, std::source_location site = std::source_location::current())
 {
     if (detail::capturing(stream))
-        return detail::capture_alloc(stream, devPtr, size);
+        return detail::capture_alloc(stream, devPtr, size, site);
     return detail::allocate(devPtr, size, detail::memory_kind::device, 0, site);
 }
 

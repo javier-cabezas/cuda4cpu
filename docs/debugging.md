@@ -129,15 +129,18 @@ finds such reads too, at the line that makes them (see below).
 
 **Allocations never freed: `CUDA4CPU_LEAK_CHECK`.** With
 `CUDA4CPU_LEAK_CHECK=warn`, the allocations still there when the program
-exits are reported, by the line that made them, largest first:
+exits are reported, by the line that made them, largest first. That
+includes graph allocations that a graph allocated and nothing freed:
 
 ```
 cuda4cpu: warning: 2 allocations of device memory (8192 bytes in all), made at saxpy.cu:41, were never freed.
 ```
 
-The report comes after static objects are destroyed, so memory their
-destructors free isn't reported. A program that ends in `_exit`, or by a
-signal, reports nothing. `ignore`, the default, turns it off.
+The report comes after static objects are destroyed and destructor
+functions have run, so memory they free isn't reported. A program that ends
+in `_exit`, or by a signal, reports nothing. `ignore`, the default, turns it
+off. Neither setting covers HIP's virtual memory management (`hipMemCreate`
+and `hipMemMap`).
 
 **AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between

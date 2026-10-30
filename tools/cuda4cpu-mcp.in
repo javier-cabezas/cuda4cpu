@@ -306,6 +306,8 @@ UBSAN = re.compile(r'^(?P<file>[^:\n]+):(?P<line>\d+):(?P<column>\d+): runtime e
 FRAME = re.compile(r'^\s*#\d+ 0x[0-9a-f]+ in (?P<function>.+?) (?P<file>/[^\s:]+):(?P<line>\d+)(?::(?P<column>\d+))?',
                    re.MULTILINE)
 LOCATION = re.compile(r'(?P<file>[^\s,]+):(?P<line>\d+)')
+# The site of a leak, whose path may have spaces
+LEAK_SITE = re.compile(r'made at (?P<file>.+):(?P<line>\d+), (?:was|were) never freed')
 # cuda4cpu's report of a crash in a kernel, or of the CUDA thread that made
 # the error a sanitizer reports
 KERNEL_CRASH = re.compile(r'^(?P<thread>(?:a )?CUDA thread (?:\(\d+, \d+, \d+\) )?of block \(\d+, \d+, \d+\))')
@@ -354,8 +356,9 @@ def findings_of(run, program):
             kind = 'memory leak'
         else:
             kind = 'cuda4cpu report'
+        sites = LEAK_SITE.finditer(message) if kind == 'memory leak' else LOCATION.finditer(message)
         locations = [{'file': program.display(os.path.realpath(l['file'])) if os.path.isabs(l['file']) else l['file'],
-                      'line': int(l['line'])} for l in LOCATION.finditer(message) if not l['file'].startswith('0x')]
+                      'line': int(l['line'])} for l in sites if not l['file'].startswith('0x')]
         findings.append({'kind': kind, 'message': message, 'locations': locations})
     for m in SANITIZER_ERROR.finditer(stderr):
         frame = user_frame(stderr[m.end():], program)
@@ -850,6 +853,7 @@ __CUDA4CPU_SETUP__
         status = cudaDeviceSynchronize();
     if (status != cudaSuccess) {
         std::printf("CUDA4CPU_TEST {\"launch_error\": \"%s\"}\n", cudaGetErrorString(status));
+__CUDA4CPU_FREE__
         return 2;
     }
 __CUDA4CPU_REFERENCE_CALL__

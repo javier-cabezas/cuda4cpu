@@ -21,8 +21,9 @@
 // CUDA4CPU_INIT_MEMORY and CUDA4CPU_LEAK_CHECK, run by
 // memory_checks_test.cmake. "fill" checks that every kind of allocation
 // starts filled with the byte that CUDA4CPU_INIT_MEMORY gives. "leaks" leaks
-// allocations at known lines, which it prints, and frees the others, one of
-// them from a static object's destructor, after main returns.
+// allocations at known lines, which it prints, and frees the others, two of
+// them after main returns: from a static object's destructor, and from a
+// destructor function.
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,14 +37,21 @@ struct holder {
     ~holder() { cudaFree(p); }
 } held;
 
+static void *freed_last = nullptr;
+
+[[gnu::destructor]] static void free_last()
+{
+    cudaFree(freed_last);
+}
+
 static int failures = 0;
 
-static void expect_filled(const char *what, const void *p, size_t size, int byte)
+static void expect_filled(const char *what, const void *p, size_t size, unsigned long byte)
 {
     const auto *bytes = static_cast<const unsigned char *>(p);
     for (size_t i = 0; i < size; ++i) {
         if (bytes[i] != byte) {
-            std::printf("%s: byte %zu is 0x%02x, expected 0x%02x\n", what, i, bytes[i], byte);
+            std::printf("%s: byte %zu is 0x%02x, expected 0x%02lx\n", what, i, bytes[i], byte);
             ++failures;
             return;
         }
@@ -58,9 +66,14 @@ __global__ void copy(unsigned char *dst, const unsigned char *src)
 static int fill()
 {
     const char *setting = std::getenv("CUDA4CPU_INIT_MEMORY");
-    const int byte = setting != nullptr ? int(std::strtoul(setting, nullptr, 0)) : -1;
-    if (byte < 0) {
-        std::printf("set CUDA4CPU_INIT_MEMORY\n");
+    char *end = nullptr;
+    const unsigned long byte = setting != nullptr ? std::strtoul(setting, &end, 0) : 256;
+    if (setting == nullptr || *end != '\0' || byte > 0xff) {
+        // The library rejects it when the first allocation reads it
+        void *p;
+        cudaMalloc(&p, 1);
+        cudaFree(p);
+        std::printf("set CUDA4CPU_INIT_MEMORY to a byte\n");
         return 1;
     }
 
@@ -75,6 +88,11 @@ static int fill()
     cudaMallocAsync(&async, n, nullptr);
     cudaPitchedPtr volume;
     cudaMalloc3D(&volume, make_cudaExtent(50, 4, 3));
+    // The typed overloads
+    int *typed_device, *typed_managed, *typed_host;
+    cudaMalloc(&typed_device, n);
+    cudaMallocManaged(&typed_managed, n);
+    cudaMallocHost(&typed_host, n);
     // Large enough to be filled by several OS threads
     const size_t large = 64 << 20;
     void *big;
@@ -87,6 +105,9 @@ static int fill()
     expect_filled("cudaMallocAsync", async, n, byte);
     expect_filled("cudaMalloc3D", volume.ptr, volume.pitch * 4 * 3, byte);
     expect_filled("a large cudaMalloc", big, large, byte);
+    expect_filled("cudaMalloc(int **)", typed_device, n, byte);
+    expect_filled("cudaMallocManaged(int **)", typed_managed, n, byte);
+    expect_filled("cudaMallocHost(int **)", typed_host, n, byte);
 
     // A kernel sees the fill too
     unsigned char *copied;
@@ -118,10 +139,13 @@ static int fill()
     cudaGraphDestroy(graph);
     cudaStreamDestroy(stream);
 
-    for (void *p : {device, pitched, async, volume.ptr, big, static_cast<void *>(copied)})
+    for (void *p : {device, pitched, async, volume.ptr, big, static_cast<void *>(copied),
+                    static_cast<void *>(typed_device)})
         cudaFree(p);
     cudaFree(managed);
+    cudaFree(typed_managed);
     cudaFreeHost(host);
+    cudaFreeHost(typed_host);
     cudaFreeHost(alloc);
     if (failures == 0)
         std::printf("filled\n");
@@ -136,6 +160,24 @@ static int leaks()
     }
     float *managed;
     cudaMallocManaged(&managed, 4); LEAK_LINE("managed");
+    char *pinned;
+    cudaMallocHost(&pinned, 50); LEAK_LINE("pinned");
+
+    // A graph allocation that the graph doesn't free
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+    void *in_graph;
+    cudaMallocAsync(&in_graph, 1000, stream); LEAK_LINE("graph");
+    cudaGraph_t graph;
+    cudaStreamEndCapture(stream, &graph);
+    cudaGraphExec_t exec;
+    cudaGraphInstantiate(&exec, graph, 0);
+    cudaGraphLaunch(exec, stream);
+    cudaStreamSynchronize(stream);
+    cudaGraphExecDestroy(exec);
+    cudaGraphDestroy(graph);
+    cudaStreamDestroy(stream);
 
     // Freed: not leaks
     void *device, *host;
@@ -144,6 +186,7 @@ static int leaks()
     cudaFree(device);
     cudaFreeHost(host);
     cudaMalloc(&held.p, 1000);
+    cudaMalloc(&freed_last, 1000);
     return 0;
 }
 
