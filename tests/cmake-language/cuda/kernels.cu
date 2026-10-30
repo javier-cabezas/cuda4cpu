@@ -23,12 +23,7 @@
 
 #include <cuda_runtime.h>
 
-__global__ void saxpy(float a, const float *x, float *y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
-        y[i] = a * x[i] + y[i];
-}
+#include "saxpy.cuh"
 
 //! y = a * x + y on the device, for host vectors of n elements
 cudaError_t device_saxpy(float a, const float *x, float *y, int n)

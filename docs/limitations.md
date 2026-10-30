@@ -26,9 +26,6 @@
   to a pointer and supports subscripts, but not `reinterpret_cast` or
   `sizeof`. Inside functions it is a plain pointer. Alignment specifiers are
   dropped: dynamic shared memory is always 64-byte aligned.
-- **`cuda4cpu-c++` with `-MD`** writes dependencies on the rewritten copies,
-  which are temporary. Use `cuda4cpu_add_cuda_sources` for builds that need
-  dependency tracking.
 - **One device: the CPU.** `cudaGetDeviceProperties` reports the CPU's name,
   memory, L2 cache and clock, one multiprocessor per OS thread, CUDA's limits
   for blocks and grids, and compute capability 6.0. That's the newest whose

@@ -186,10 +186,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
   after the compile: their paths reach the command line and the
   preprocessed output, so they must be the same on every build for ccache to
-  hit. Without `$CUDA4CPU_CXX` or `$CXX`, the driver runs the compiler that
-  built the library (`CUDA4CPU_DRIVER_CXX`): it used to run `c++`, and a
-  Clang-built library then had GCC's libgomp in the same process as its
-  libomp. A `$CXX` that is a cuda4cpu driver is skipped, or the driver would
+  hit. So the dependencies the compiler writes (`-MD`, `-MF`, `-M`, ...)
+  name deleted files, and Ninja and Make rebuilt every object every time:
+  `compile_sources` restores the original paths in them
+  (`restore_dependencies`, a shadow header's being its path under the
+  shadow directory). Without `$CUDA4CPU_CXX` or `$CXX`, the driver runs the
+  compiler that built the library (`CUDA4CPU_DRIVER_CXX`): it used to run
+  `c++`, and a Clang-built library then had GCC's libgomp in the same
+  process as its libomp. A `$CXX` that is a cuda4cpu driver is skipped, or the driver would
   run itself, and any other such loop stops at once: the driver sets
   `CUDA4CPU_DRIVER_RUNNING` for the compiler, and fails if it starts with it.
   (A driver running itself until the timeout used up the machine's memory.)
@@ -388,7 +392,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     with `cuda4cpu-nvcc` and nvcc's options for the GPU, and
     `driver_nvcc_options` (`driver/test_nvcc.py`) checks the translation of
     nvcc's options (with `--dryrun`), its steps (`-dc`, `-dlink`, `-lib`) in
-    a build that runs, and the toolkit: its `bin/nvcc`, and a program that
+    a build that runs, dependency files in each form naming the original
+    files, and the toolkit: its `bin/nvcc`, and a program that
     the host compiler links with `-lcudart`.
   - `mcp_server` (`mcp/test_mcp.py`): cuda4cpu-mcp driven over stdio:
     the protocol (initialize, version negotiation, errors), each tool, and
@@ -405,7 +410,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
     `cuda_runtime.h`) and HIP language, configured with the toolkit's
-    toolchain file, built and run.
+    toolchain file, built and run. A second build must do nothing, and
+    touching a local header (`saxpy.cuh`) must recompile its source.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):
     `hip_runtime` (errors and their names, device queries and attributes,
     host memory, driver-API copies and memsets, symbols, `hipStreamDefault`

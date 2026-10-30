@@ -184,7 +184,10 @@ the same kind of compiler as the library: GCC and Clang have their own
 OpenMP runtimes, and a program with both has two pools of threads. It takes
 the compiler's options; `cuda4cpu-nvcc` (below) takes nvcc's. `.hip` files
 are HIP sources, and `-x cu` or `-x hip` set the language of the files after
-them, as with clang.
+them, as with clang. The dependencies that `-MD`, `-MMD`, `-M` and `-MM`
+write name the original `.cu` file and its local headers, not the rewritten
+copies the driver compiles, so Make and Ninja rebuild an object only when
+one of them changes.
 
 `cuda4cpu-hipcc` is the same driver for HIP projects. Like hipcc, it compiles
 every C++ source file (`.cpp`, `.cc`, `.cu`, `.hip`, ...) as HIP. It drops

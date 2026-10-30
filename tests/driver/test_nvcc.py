@@ -227,6 +227,44 @@ class Build(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertTrue(os.path.isfile(os.path.join(TOOLKIT, 'include', 'cuda_runtime.h')))
 
+    def test_dependencies(self):
+        """Every way of asking for dependencies names the original source and
+        its local header, not the rewritten copies, which are deleted"""
+        def dependencies(text):
+            text = text.replace('\\\n', ' ')
+            words = re.findall(r'(?:\\[ #]|\$\$|[^\s\\])+', text)
+            return [re.sub(r'\\([ #])|\$(\$)', lambda m: m.group(1) or m.group(2), w) for w in words]
+
+        with tempfile.TemporaryDirectory() as top:
+            work = os.path.join(top, 'with space')
+            os.mkdir(work)
+            source, header = os.path.join(work, 'program.cu'), os.path.join(work, 'kernel.cuh')
+            with open(header, 'w') as f:
+                f.write('__global__ void kernel(int *x) { x[threadIdx.x] = 1; }\n')
+            with open(source, 'w') as f:
+                f.write('#include "kernel.cuh"\nint main() { int *x; cudaMalloc(&x, 4); kernel<<<1, 1>>>(x); }\n')
+            cases = [(['-MD', '-MF', 'deps.d', '-c', '-o', 'program.o'], 'deps.d'),
+                     (['-MD', '-c', '-o', 'program.o'], 'program.d'),
+                     (['-MMD', '-MP', '-c'], 'program.d'),
+                     (['-M', '-o', 'deps.txt'], 'deps.txt'),
+                     (['-M'], None)]
+            for options, depfile in cases:
+                with self.subTest(options=options):
+                    result = nvcc(*options, source, cwd=work)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if depfile is None:
+                        text = result.stdout
+                    else:
+                        with open(os.path.join(work, depfile)) as f:
+                            text = f.read()
+                    words = dependencies(text)
+                    self.assertIn(source, words)
+                    self.assertIn(header + (':' if '-MP' in options else ''), words)
+                    for word in words:
+                        self.assertNotIn('cuda4cpu-', word)
+                        if not word.endswith(':'):
+                            self.assertTrue(os.path.exists(word), word)
+
     def test_verbose_shows_commands(self):
         with tempfile.TemporaryDirectory() as work:
             result = nvcc('-v', '-c', PROGRAM, '-o', 'program.o', cwd=work)
