@@ -56,7 +56,9 @@ foreach(leak device managed pinned hip_pinned graph)
     endif()
     set(${leak}_line ${CMAKE_MATCH_1})
 endforeach()
-set(at "made at [^\n]*memory_checks\\.cu")
+# addr2line from binutils 2.42 names the rewritten copy (.cu.cpp) in
+# Clang's DWARF 5, with the original's lines
+set(at "made at [^\n]*memory_checks\\.cu(\\.cpp)?")
 set(expected
     "cuda4cpu: warning: an allocation of graph memory \\(1000 bytes\\), ${at}:${graph_line}, was never freed\\.\n"
     "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), ${at}:${device_line}, were never freed\\.\n"

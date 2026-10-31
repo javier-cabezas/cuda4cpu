@@ -138,7 +138,10 @@ cuda4cpu: warning: 2 allocations of device memory (8192 bytes in all), made at s
 
 Each allocation records its call stack (a few microseconds), and the report
 finds the program's line in its debug information with `addr2line`, from
-binutils: build with `-g` for lines, or the report names the function. An
+binutils: build with `-g` for lines, or the report names the function.
+(binutils 2.42, Ubuntu 24.04's, misreads Clang's DWARF 5 in unoptimized
+builds: the line is right, but the file is the copy that the rewriter
+compiled, `saxpy.cu.cpp` or a path in a temporary directory.) An
 allocation made through the program's own wrapper of `cudaMalloc` is
 reported at the wrapper's line. The report comes after static objects are
 destroyed and destructor functions have run, so memory they free isn't
