@@ -29,6 +29,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <hip/hip_runtime_api.h>
+
 #define LEAK_LINE(what) std::printf("%s leaked at line %d\n", what, __LINE__)
 
 //! Frees its allocation after main returns: not a leak
@@ -162,6 +164,8 @@ static int leaks()
     cudaMallocManaged(&managed, 4); LEAK_LINE("managed");
     char *pinned;
     cudaMallocHost(&pinned, 50); LEAK_LINE("pinned");
+    double *hip_pinned;
+    hipHostMalloc(&hip_pinned, 30); LEAK_LINE("hip_pinned");
 
     // A graph allocation that the graph doesn't free
     cudaStream_t stream;

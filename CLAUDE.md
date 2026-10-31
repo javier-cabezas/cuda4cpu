@@ -323,8 +323,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `memory_checks` (`memory_checks.cu`, `memory_checks_test.cmake`):
     `CUDA4CPU_INIT_MEMORY` fills every kind of allocation (graph allocations
     on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
-    leaks (device, managed, pinned and graph memory), by line, largest
-    first, and not memory that a static destructor or a destructor function
+    leaks (device, managed, pinned, HIP's pinned and graph memory), by line
+    (it's built with `-g`), largest first, by function in a copy built
+    without `-g`, and by offset without `addr2line`, and not memory that a static destructor or a destructor function
     frees
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
@@ -752,9 +753,19 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   against the registry of allocations, and so are `CUDA4CPU_INIT_MEMORY` (a
   byte that `initialize_allocation` fills new allocations with, graph
   allocations each time they're committed) and `CUDA4CPU_LEAK_CHECK` (warn,
-  ignore). The allocation functions (and `cudaGraphAddMemAllocNode`,
-  `cudaGraphAddNode`) take a defaulted `std::source_location`, which the
-  registries keep, and `report_leaks` is a `[[gnu::destructor(101)]]` of
+  ignore). With leak checks on, `allocate_aligned` and graph allocations
+  keep the `backtrace()` of the call (`record_call_stack`), and the report
+  runs `addr2line` on the program's frames, in batches: the first that
+  isn't cuda4cpu's, by its function's namespace or its file, whose path
+  ends in `cuda/memory.hpp` or `hip/hip_runtime_api.h` (inlined and
+  static functions have no namespace in the debug information; the path,
+  not the disk, because headers move and `-ffile-prefix-map` changes the
+  start). Without lines, the report names the function, or the object and
+  offset. The public signatures stay CUDA's: no `std::source_location`
+  parameters on the allocation functions. They are `[[gnu::noinline]]`, so
+  that the program's call has its own line: Clang at `-O1` and above loses
+  where an inlined call was when it unrolls or merges it, and the report
+  then names only the function. `report_leaks` is a `[[gnu::destructor(101)]]` of
   the library: it runs after the program's static destructors, which may
   free memory, and with a priority, after its destructor functions when
   linked statically. So the registry of graph allocations is never

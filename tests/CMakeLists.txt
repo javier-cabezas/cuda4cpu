@@ -79,8 +79,15 @@ add_test(NAME crash
 add_executable(memory_checks)
 set_target_properties(memory_checks PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(memory_checks memory_checks.cu)
+# The leak report finds the lines in the debug information
+target_compile_options(memory_checks PRIVATE -g)
+add_executable(memory_checks_without_debug_info)
+set_target_properties(memory_checks_without_debug_info PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(memory_checks_without_debug_info memory_checks.cu)
+target_compile_options(memory_checks_without_debug_info PRIVATE -g0)
 add_test(NAME memory_checks
          COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:memory_checks>
+                 -DPROGRAM_WITHOUT_DEBUG_INFO=$<TARGET_FILE:memory_checks_without_debug_info>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/memory_checks_test.cmake)
 
 # The gdb script: a breakpoint conditioned on the CUDA thread, the built-in

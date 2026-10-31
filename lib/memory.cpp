@@ -45,13 +45,20 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <vector>
 
+#include <cxxabi.h>
+#include <dlfcn.h>
+#include <execinfo.h>
 #include <fcntl.h>
+#include <link.h>
+#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "cuda4cpu.hpp"
@@ -78,8 +85,18 @@ struct vmm_allocation {
 
 bool find_graph_allocation(const void *ptr, allocation_info &info);
 
-//! The size and site of each graph allocation that is allocated now
-std::vector<std::pair<size_t, std::source_location>> live_graph_allocations();
+//! The return addresses of the calls that led to an allocation, innermost
+//! first. Each stack is recorded once, however many allocations it made.
+struct call_stack {
+    std::vector<const void *> frames;
+    auto operator<=>(const call_stack &) const = default;
+};
+
+//! With CUDA4CPU_LEAK_CHECK, the calls that led to this one; nullptr without
+const call_stack *record_call_stack();
+
+//! The size and call stack of each graph allocation that is allocated now
+std::vector<std::pair<size_t, const call_stack *>> live_graph_allocations();
 
 namespace {
 
@@ -89,7 +106,7 @@ struct allocation {
     unsigned flags;
     vmm_allocation *physical = nullptr;   //!< Of a mapped range
     cudaMemAccessFlags access = cudaMemAccessFlagsProtNone;
-    std::source_location site{};          //!< The program's call that allocated it, if known
+    const call_stack *stack = nullptr;    //!< The calls that allocated it, with CUDA4CPU_LEAK_CHECK
 };
 
 //! The unified memory hints of a page
@@ -335,6 +352,21 @@ int init_memory_setting()
     return setting;
 }
 
+//! CUDA4CPU_LEAK_CHECK: whether the allocations left at exit are reported
+bool leak_check_setting()
+{
+    static const bool setting = [] {
+        const char *v = std::getenv("CUDA4CPU_LEAK_CHECK");
+        if (v == nullptr || *v == '\0' || std::string_view(v) == "ignore")
+            return false;
+        if (std::string_view(v) == "warn")
+            return true;
+        std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_LEAK_CHECK=%s: expected warn or ignore\n", v);
+        return false;
+    }();
+    return setting;
+}
+
 }
 
 void initialize_allocation(void *ptr, size_t size)
@@ -343,11 +375,29 @@ void initialize_allocation(void *ptr, size_t size)
         fill_rows(ptr, size, unsigned(byte), 1, size, 1);
 }
 
+const call_stack *record_call_stack()
+{
+    if (!leak_check_setting())
+        return nullptr;
+    void *frames[32];
+    const int depth = backtrace(frames, int(std::size(frames)));
+    // Never destroyed, like the allocations that point to them
+    struct recorded_stacks {
+        std::mutex mutex;
+        std::set<call_stack> stacks;
+    };
+    static recorded_stacks &recorded = *new recorded_stacks;
+    std::lock_guard lock(recorded.mutex);
+    // Without this function's own frame
+    return &*recorded.stacks.insert(call_stack{std::vector<const void *>(frames + std::min(depth, 1), frames + depth)})
+                 .first;
+}
+
 //
 // The registry of allocations
 //
 
-void *allocate_aligned(size_t size, memory_kind kind, unsigned flags, std::source_location site)
+void *allocate_aligned(size_t size, memory_kind kind, unsigned flags)
 {
     // Rounding up to the alignment must not wrap around to a small size
     if (size > SIZE_MAX - allocation_alignment)
@@ -360,6 +410,7 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags, std::sourc
     if (__asan_poison_memory_region != nullptr && rounded > size)
         __asan_poison_memory_region(static_cast<char *>(ptr) + size, rounded - size);
     initialize_allocation(ptr, size);
+    const call_stack *stack = record_call_stack();
 
     // Memory that a program registered and then freed without unregistering
     // may come back: those registrations are stale, as are hints on it
@@ -373,7 +424,7 @@ void *allocate_aligned(size_t size, memory_kind kind, unsigned flags, std::sourc
         s.allocations.erase(it);
     }
     erase_hints(s, p, p + size);
-    s.allocations.emplace(p, allocation{size, kind, flags, nullptr, cudaMemAccessFlagsProtNone, site});
+    s.allocations.emplace(p, allocation{size, kind, flags, nullptr, cudaMemAccessFlagsProtNone, stack});
     return ptr;
 }
 
@@ -516,18 +567,6 @@ bool find_allocation(const void *ptr, allocation_info &info)
 
 namespace {
 
-//! CUDA4CPU_LEAK_CHECK: whether the allocations left at exit are reported
-bool leak_check_setting()
-{
-    const char *v = std::getenv("CUDA4CPU_LEAK_CHECK");
-    if (v == nullptr || *v == '\0' || std::string_view(v) == "ignore")
-        return false;
-    if (std::string_view(v) == "warn")
-        return true;
-    std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_LEAK_CHECK=%s: expected warn or ignore\n", v);
-    return false;
-}
-
 const char *memory_name(memory_kind kind)
 {
     switch (kind) {
@@ -535,6 +574,213 @@ const char *memory_name(memory_kind kind)
     case memory_kind::managed: return "managed memory";
     default:                   return "device memory";
     }
+}
+
+//! A call, as the debug information or the symbol tables name it
+struct source_frame {
+    std::string function;   //!< Empty if unknown
+    std::string file;       //!< Empty if unknown
+    unsigned line = 0;
+};
+
+//! The object file (the program or a shared library) that an address is in,
+//! and the address in that file
+struct object_address {
+    std::string object;   //!< Empty if no object has the address
+    uintptr_t offset = 0;
+    bool program = false;   //!< The object is the program, not a shared library
+};
+
+object_address object_of(const void *address)
+{
+    struct search {
+        uintptr_t address;
+        object_address found;
+    } s{reinterpret_cast<uintptr_t>(address), {}};
+    dl_iterate_phdr([](dl_phdr_info *info, size_t, void *data) {
+        auto &s = *static_cast<search *>(data);
+        for (int i = 0; i < info->dlpi_phnum; ++i) {
+            const ElfW(Phdr) &h = info->dlpi_phdr[i];
+            if (h.p_type == PT_LOAD && s.address - (info->dlpi_addr + h.p_vaddr) < h.p_memsz) {
+                // The program is the only object without a name
+                s.found = {info->dlpi_name, s.address - info->dlpi_addr, *info->dlpi_name == '\0'};
+                return 1;
+            }
+        }
+        return 0;
+    }, &s);
+    if (s.found.program) {
+        char path[4096];
+        const ssize_t n = readlink("/proc/self/exe", path, sizeof path);
+        if (n > 0 && size_t(n) < sizeof path)
+            s.found.object.assign(path, size_t(n));
+    }
+    return s.found;
+}
+
+//! What addr2line prints for offsets into an object file: each offset, then
+//! the function and file:line of the call there, followed by those of the
+//! calls it was inlined into. Empty if addr2line can't run.
+std::string run_addr2line(const std::string &object, const std::vector<uintptr_t> &offsets)
+{
+    std::vector<std::string> args{"addr2line", "-a", "-f", "-C", "-i", "-e", object};
+    for (uintptr_t offset : offsets) {
+        char hex[32];
+        std::snprintf(hex, sizeof hex, "%#zx", size_t(offset));
+        args.emplace_back(hex);
+    }
+    std::vector<char *> argv;
+    for (std::string &a : args)
+        argv.push_back(a.data());
+    argv.push_back(nullptr);
+
+    int out[2];
+    if (pipe2(out, O_CLOEXEC) != 0)
+        return {};
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    pid_t pid;
+    const int failed = posix_spawnp(&pid, "addr2line", &actions, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(out[1]);
+    std::string output;
+    if (failed == 0) {
+        char buffer[4096];
+        for (;;) {
+            const ssize_t n = read(out[0], buffer, sizeof buffer);
+            if (n > 0)
+                output.append(buffer, size_t(n));
+            else if (n == 0 || errno != EINTR)
+                break;
+        }
+        while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+        }
+    }
+    close(out[0]);
+    return output;
+}
+
+//! The calls at each return address, innermost (inlined) first: from the
+//! debug information through addr2line, or from the dynamic symbols
+std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const void *> &addresses)
+{
+    std::map<const void *, std::vector<source_frame>> frames;
+    std::map<std::string, std::vector<std::pair<const void *, uintptr_t>>> by_object;
+    for (const void *address : addresses) {
+        // The call is just before the address it returns to
+        const object_address at = object_of(static_cast<const char *>(address) - 1);
+        if (!at.object.empty())
+            by_object[at.object].emplace_back(address, at.offset);
+    }
+    // In batches, so that the command line stays well below its limit
+    constexpr size_t batch = 1024;
+    for (const auto &[object, located] : by_object) {
+        for (size_t first = 0; first < located.size(); first += batch) {
+            const size_t last = std::min(first + batch, located.size());
+            std::vector<uintptr_t> offsets;
+            for (size_t i = first; i < last; ++i)
+                offsets.push_back(located[i].second);
+            const std::string output = run_addr2line(object, offsets);
+            std::vector<source_frame> *current = nullptr;
+            size_t next = first;
+            bool function_next = true;
+            for (size_t begin = 0, end; begin < output.size(); begin = end + 1) {
+                end = std::min(output.find('\n', begin), output.size());
+                std::string_view line(output.data() + begin, end - begin);
+                if (line.starts_with("0x")) {
+                    current = next < last ? &frames[located[next++].first] : nullptr;
+                    function_next = true;
+                } else if (current != nullptr && function_next) {
+                    current->push_back({line == "??" ? std::string() : std::string(line)});
+                    function_next = false;
+                } else if (current != nullptr) {
+                    // file:line, maybe followed by " (discriminator N)"
+                    line = line.substr(0, line.find(" ("));
+                    const size_t colon = line.rfind(':');
+                    if (colon != std::string_view::npos && line.substr(0, colon) != "??") {
+                        current->back().file = line.substr(0, colon);
+                        current->back().line = unsigned(std::strtoul(std::string(line.substr(colon + 1)).c_str(),
+                                                                     nullptr, 10));
+                    }
+                    function_next = true;
+                }
+            }
+        }
+    }
+    for (const void *address : addresses) {
+        // addr2line's "??" for both: nothing is known
+        std::vector<source_frame> &calls = frames[address];
+        std::erase_if(calls, [](const source_frame &call) { return call.function.empty() && call.file.empty(); });
+        if (!calls.empty())
+            continue;
+        Dl_info info;
+        if (dladdr(static_cast<const char *>(address) - 1, &info) == 0 || info.dli_sname == nullptr)
+            continue;
+        int status = 0;
+        char *demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+        calls.assign(1, {demangled != nullptr ? demangled : info.dli_sname});
+        std::free(demangled);
+    }
+    return frames;
+}
+
+//! Whether a file is one of cuda4cpu's headers that define allocation
+//! functions. The debug information names inlined and static functions
+//! without their namespace, so the file tells them apart. By the path's
+//! end: the headers may have moved since, and -ffile-prefix-map changes
+//! the start.
+bool cuda4cpu_header(std::string_view file)
+{
+    for (std::string_view header : {"cuda/memory.hpp", "hip/hip_runtime_api.h"}) {
+        if (file.ends_with(header) &&
+            (file.size() == header.size() || file[file.size() - header.size() - 1] == '/'))
+            return true;
+    }
+    return false;
+}
+
+//! Where the program made an allocation, for the report: "at file:line",
+//! "in function" or "at object+offset", and whether it has the line
+struct allocation_site {
+    std::string where;
+    bool line = false;
+};
+
+//! The innermost call that isn't cuda4cpu's own
+allocation_site site_of(const call_stack *stack, const std::map<const void *, std::vector<source_frame>> &frames)
+{
+    if (stack == nullptr)
+        return {"at an unknown place"};
+    const object_address library = object_of(reinterpret_cast<const void *>(&record_call_stack));
+    for (const void *address : stack->frames) {
+        const std::vector<source_frame> &calls = frames.at(address);
+        // In a function of the library, and in what it inlined
+        if (!calls.empty() && calls.back().function.starts_with("cuda4cpu::"))
+            continue;
+        for (const source_frame &call : calls) {
+            if (call.function.starts_with("cuda4cpu::") || cuda4cpu_header(call.file))
+                continue;
+            if (!call.file.empty() && call.line != 0)
+                return {"at " + call.file + ":" + std::to_string(call.line), true};
+            if (!call.function.empty())
+                return {"in " + call.function};
+        }
+        if (calls.empty()) {
+            // Nothing is known about it: skip cuda4cpu's shared library.
+            // Linked into the program, the library's frames can't be told
+            // apart from the program's.
+            const object_address at = object_of(static_cast<const char *>(address) - 1);
+            if (!library.program && at.object != library.object) {
+                char offset[32];
+                std::snprintf(offset, sizeof offset, "+%#zx", size_t(at.offset));
+                return {"at " + at.object + offset};
+            }
+        }
+    }
+    return {"at an unknown place"};
 }
 
 //! Reports the allocations that the program never freed, by the call that
@@ -547,48 +793,65 @@ const char *memory_name(memory_kind kind)
 {
     if (!leak_check_setting())
         return;
-    struct site_leaks {
-        std::string_view file;
-        unsigned line;
+    struct leak {
+        size_t size;
+        const call_stack *stack;
         const char *what;
-        size_t count = 0, bytes = 0;
     };
-    std::vector<site_leaks> leaks;
-    std::map<std::tuple<std::string_view, unsigned, const char *>, size_t> index;
-    auto add = [&](size_t size, std::source_location site, const char *what) {
-        auto [it, added] = index.try_emplace({site.file_name(), site.line(), what}, leaks.size());
-        if (added)
-            leaks.push_back({site.file_name(), site.line(), what});
-        ++leaks[it->second].count;
-        leaks[it->second].bytes += size;
-    };
+    std::vector<leak> left;
     {
         auto &s = state();
         std::lock_guard lock(s.mutex);
         for (const auto &[p, a] : s.allocations) {
             if (a.kind == memory_kind::device || a.kind == memory_kind::host || a.kind == memory_kind::managed)
-                add(a.size, a.site, memory_name(a.kind));
+                left.push_back({a.size, a.stack, memory_name(a.kind)});
         }
     }
-    for (const auto &[size, site] : live_graph_allocations())
-        add(size, site, "graph memory");
+    for (const auto &[size, stack] : live_graph_allocations())
+        left.push_back({size, stack, "graph memory"});
+    if (left.empty())
+        return;
+
+    std::set<const void *> addresses;
+    for (const leak &l : left) {
+        if (l.stack != nullptr)
+            addresses.insert(l.stack->frames.begin(), l.stack->frames.end());
+    }
+    const auto frames = symbolize(addresses);
+
+    struct site_leaks {
+        std::string where;
+        bool line;
+        const char *what;
+        size_t count = 0, bytes = 0;
+    };
+    std::vector<site_leaks> leaks;
+    std::map<const call_stack *, allocation_site> sites;
+    std::map<std::pair<std::string, const char *>, size_t> index;
+    for (const leak &l : left) {
+        auto site = sites.find(l.stack);
+        if (site == sites.end())
+            site = sites.emplace(l.stack, site_of(l.stack, frames)).first;
+        auto [it, added] = index.try_emplace({site->second.where, l.what}, leaks.size());
+        if (added)
+            leaks.push_back({site->second.where, site->second.line, l.what});
+        ++leaks[it->second].count;
+        leaks[it->second].bytes += l.size;
+    }
     std::ranges::stable_sort(leaks, std::greater{}, &site_leaks::bytes);
 
     constexpr size_t shown = 20;
+    bool without_lines = false;
     for (size_t i = 0; i < std::min(leaks.size(), shown); ++i) {
         const site_leaks &l = leaks[i];
-        char where[512];
-        if (l.file.empty())
-            std::snprintf(where, sizeof where, "at an unknown place");
-        else
-            std::snprintf(where, sizeof where, "at %.*s:%u", int(l.file.size()), l.file.data(), l.line);
+        without_lines |= !l.line;
         if (l.count == 1)
             std::fprintf(stderr, "cuda4cpu: warning: an allocation of %s (%zu bytes), made %s, was never freed.\n",
-                         l.what, l.bytes, where);
+                         l.what, l.bytes, l.where.c_str());
         else
             std::fprintf(stderr,
                          "cuda4cpu: warning: %zu allocations of %s (%zu bytes in all), made %s, were never freed.\n",
-                         l.count, l.what, l.bytes, where);
+                         l.count, l.what, l.bytes, l.where.c_str());
     }
     if (leaks.size() > shown) {
         size_t count = 0, bytes = 0;
@@ -599,6 +862,9 @@ const char *memory_name(memory_kind kind)
         std::fprintf(stderr, "cuda4cpu: warning: %zu more allocations (%zu bytes in all), made at %zu other places, "
                              "were never freed.\n", count, bytes, leaks.size() - shown);
     }
+    if (without_lines)
+        std::fprintf(stderr, "cuda4cpu: note: build the program with -g, and install addr2line (binutils), "
+                             "to see the lines that made the allocations.\n");
 }
 
 }

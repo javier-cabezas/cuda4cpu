@@ -136,8 +136,13 @@ includes graph allocations that a graph allocated and nothing freed:
 cuda4cpu: warning: 2 allocations of device memory (8192 bytes in all), made at saxpy.cu:41, were never freed.
 ```
 
-The report comes after static objects are destroyed and destructor
-functions have run, so memory they free isn't reported. A program that ends
+Each allocation records its call stack (a few microseconds), and the report
+finds the program's line in its debug information with `addr2line`, from
+binutils: build with `-g` for lines, or the report names the function. An
+allocation made through the program's own wrapper of `cudaMalloc` is
+reported at the wrapper's line. The report comes after static objects are
+destroyed and destructor functions have run, so memory they free isn't
+reported. A program that ends
 in `_exit`, or by a signal, reports nothing. `ignore`, the default, turns it
 off. Neither setting covers HIP's virtual memory management (`hipMemCreate`
 and `hipMemMap`).

@@ -21,8 +21,9 @@
 # CUDA4CPU_LEAK_CHECK=warn reports, at exit, the allocations never freed, by
 # the line that made them, graph allocations included. Memory that a static
 # object's destructor or a destructor function frees after main returns isn't
-# reported.
-# Usage: cmake -DPROGRAM=... -P memory_checks_test.cmake
+# reported. Without debug information or addr2line, the report names the
+# function or the program's offset instead of the line.
+# Usage: cmake -DPROGRAM=... -DPROGRAM_WITHOUT_DEBUG_INFO=... -P memory_checks_test.cmake
 
 function(run expected_status)
     execute_process(COMMAND ${CMAKE_COMMAND} -E env ${ARGN} OUTPUT_VARIABLE output ERROR_VARIABLE errors
@@ -49,7 +50,7 @@ foreach(invalid 0x100 -1 invalid)
 endforeach()
 
 run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
-foreach(leak device managed pinned graph)
+foreach(leak device managed pinned hip_pinned graph)
     if(NOT output MATCHES "${leak} leaked at line ([0-9]+)")
         message(FATAL_ERROR "no ${leak} leak:\n${output}")
     endif()
@@ -60,11 +61,31 @@ set(expected
     "cuda4cpu: warning: an allocation of graph memory \\(1000 bytes\\), ${at}:${graph_line}, was never freed\\.\n"
     "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), ${at}:${device_line}, were never freed\\.\n"
     "cuda4cpu: warning: an allocation of pinned host memory \\(50 bytes\\), ${at}:${pinned_line}, was never freed\\.\n"
+    "cuda4cpu: warning: an allocation of pinned host memory \\(30 bytes\\), ${at}:${hip_pinned_line}, was never freed\\.\n"
     "cuda4cpu: warning: an allocation of managed memory \\(4 bytes\\), ${at}:${managed_line}, was never freed\\.\n")
 string(JOIN "" expected ${expected})
 if(NOT errors MATCHES "^${expected}$")
-    message(FATAL_ERROR "expected exactly the four leaks, largest first, got:\n${errors}")
+    message(FATAL_ERROR "expected exactly the five leaks, largest first, got:\n${errors}")
 endif()
+
+# Without addr2line, the report gives the program and an offset, and without
+# debug information, the function. Leaks from the same function (or offset)
+# are then one line.
+function(check_sites description site)
+    string(REGEX MATCHALL "cuda4cpu: warning: [^\n]*" warnings "${errors}")
+    string(REGEX MATCHALL "made ${site}, (was|were) never freed" sites "${errors}")
+    list(LENGTH warnings warning_count)
+    list(LENGTH sites site_count)
+    if(warning_count EQUAL 0 OR NOT site_count EQUAL warning_count OR
+       NOT errors MATCHES "cuda4cpu: note: build the program with -g")
+        message(FATAL_ERROR "expected the leaks ${description}:\n${errors}")
+    endif()
+endfunction()
+
+run(0 PATH=${CMAKE_CURRENT_BINARY_DIR}/no-such-directory CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
+check_sites("at offsets in the program, without addr2line" "at [^\n]*memory_checks\\+0x[0-9a-f]+")
+run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM_WITHOUT_DEBUG_INFO}" leaks)
+check_sites("in their function, without -g" "in (main|leaks\\(\\))")
 
 foreach(setting "" CUDA4CPU_LEAK_CHECK=ignore)
     run(0 ${setting} "${PROGRAM}" leaks)

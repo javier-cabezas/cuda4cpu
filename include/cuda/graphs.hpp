@@ -341,12 +341,10 @@ cudaError_t cudaGraphEventWaitNodeGetEvent(cudaGraphNode_t node, cudaEvent_t *ev
 
 //! The memory is allocated when the node is added, and nodeParams->dptr is
 //! set; the graph's footprint counts it while it is allocated, from when the
-//! node runs to when a free node or cudaFree frees it. The site is the
-//! program's call, for CUDA4CPU_LEAK_CHECK.
+//! node runs to when a free node or cudaFree frees it
 cudaError_t cudaGraphAddMemAllocNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph,
                                      const cudaGraphNode_t *pDependencies, size_t numDependencies,
-                                     cudaMemAllocNodeParams *nodeParams,
-                                     std::source_location site = std::source_location::current());
+                                     cudaMemAllocNodeParams *nodeParams);
 cudaError_t cudaGraphMemAllocNodeGetParams(cudaGraphNode_t node, cudaMemAllocNodeParams *params_out);
 cudaError_t cudaGraphAddMemFreeNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph,
                                     const cudaGraphNode_t *pDependencies, size_t numDependencies, void *dptr);
@@ -357,12 +355,10 @@ cudaError_t cudaGraphConditionalHandleCreate(cudaGraphConditionalHandle *pHandle
 
 //! Any node type, from a cudaGraphNodeParams
 cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, const cudaGraphNode_t *pDependencies,
-                             size_t numDependencies, cudaGraphNodeParams *nodeParams,
-                             std::source_location site = std::source_location::current());
+                             size_t numDependencies, cudaGraphNodeParams *nodeParams);
 cudaError_t cudaGraphAddNode(cudaGraphNode_t *pGraphNode, cudaGraph_t graph, const cudaGraphNode_t *pDependencies,
                              const cudaGraphEdgeData *dependencyData, size_t numDependencies,
-                             cudaGraphNodeParams *nodeParams,
-                             std::source_location site = std::source_location::current());
+                             cudaGraphNodeParams *nodeParams);
 
 cudaError_t cudaGraphAddDependencies(cudaGraph_t graph, const cudaGraphNode_t *from, const cudaGraphNode_t *to,
                                      size_t numDependencies);
