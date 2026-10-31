@@ -494,36 +494,37 @@ enum : unsigned int {
     hipDeviceScheduleMask = 0x7
 };
 
-inline cudaError_t hipHostMalloc(void **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
+// Not inlined, like CUDA's allocation functions: see cuda/memory.hpp
+[[gnu::noinline]] inline cudaError_t hipHostMalloc(void **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
 {
     return cudaHostAlloc(ptr, size, flags);
 }
 
 template <typename T>
-inline cudaError_t hipHostMalloc(T **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
+[[gnu::noinline]] inline cudaError_t hipHostMalloc(T **ptr, size_t size, unsigned int flags = hipHostMallocDefault)
 {
     return hipHostMalloc(reinterpret_cast<void **>(ptr), size, flags);
 }
 
 //! The deprecated names of hipHostMalloc and hipHostFree
-inline cudaError_t hipMallocHost(void **ptr, size_t size)
+[[gnu::noinline]] inline cudaError_t hipMallocHost(void **ptr, size_t size)
 {
     return hipHostMalloc(ptr, size);
 }
 
 template <typename T>
-inline cudaError_t hipMallocHost(T **ptr, size_t size)
+[[gnu::noinline]] inline cudaError_t hipMallocHost(T **ptr, size_t size)
 {
     return hipHostMalloc(ptr, size);
 }
 
-inline cudaError_t hipHostAlloc(void **ptr, size_t size, unsigned int flags)
+[[gnu::noinline]] inline cudaError_t hipHostAlloc(void **ptr, size_t size, unsigned int flags)
 {
     return hipHostMalloc(ptr, size, flags);
 }
 
 template <typename T>
-inline cudaError_t hipHostAlloc(T **ptr, size_t size, unsigned int flags)
+[[gnu::noinline]] inline cudaError_t hipHostAlloc(T **ptr, size_t size, unsigned int flags)
 {
     return hipHostMalloc(ptr, size, flags);
 }
@@ -540,7 +541,7 @@ inline cudaError_t hipFreeHost(void *ptr)
 
 //! AMD's allocation with flags: the flags choose the kind of GPU memory,
 //! and all memory is host memory
-inline cudaError_t hipExtMallocWithFlags(void **ptr, size_t size, unsigned int /* flags */)
+[[gnu::noinline]] inline cudaError_t hipExtMallocWithFlags(void **ptr, size_t size, unsigned int /* flags */)
 {
     return cudaMalloc(ptr, size);
 }

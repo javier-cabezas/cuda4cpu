@@ -78,7 +78,8 @@ builds (and what cuda4cpu doesn't implement), run to see what it prints, and \
 check to look for bugs a GPU would hide or reveal at random: missing \
 __syncthreads() or __syncwarp() (results that depend on the order threads \
 run in), divergent barriers, out-of-bounds and use-after-free accesses, \
-undefined behavior and copies in the wrong direction. A clean check finds no \
+undefined behavior, copies in the wrong direction, reads of memory never \
+written, and allocations never freed. A clean check finds no \
 problem in the orders and checks it ran; it doesn't prove there's none. \
 Performance on the CPU says nothing about a GPU's."""
 
@@ -305,6 +306,8 @@ UBSAN = re.compile(r'^(?P<file>[^:\n]+):(?P<line>\d+):(?P<column>\d+): runtime e
 FRAME = re.compile(r'^\s*#\d+ 0x[0-9a-f]+ in (?P<function>.+?) (?P<file>/[^\s:]+):(?P<line>\d+)(?::(?P<column>\d+))?',
                    re.MULTILINE)
 LOCATION = re.compile(r'(?P<file>[^\s,]+):(?P<line>\d+)')
+# The site of a leak, whose path may have spaces
+LEAK_SITE = re.compile(r'made at (?P<file>.+):(?P<line>\d+), (?:was|were) never freed')
 # cuda4cpu's report of a crash in a kernel, or of the CUDA thread that made
 # the error a sanitizer reports
 KERNEL_CRASH = re.compile(r'^(?P<thread>(?:a )?CUDA thread (?:\(\d+, \d+, \d+\) )?of block \(\d+, \d+, \d+\))')
@@ -349,10 +352,13 @@ def findings_of(run, program):
             kind = 'divergent warp operation'
         elif 'a copy with' in message:
             kind = 'copy in the wrong direction'
+        elif 'never freed' in message:
+            kind = 'memory leak'
         else:
             kind = 'cuda4cpu report'
+        sites = LEAK_SITE.finditer(message) if kind == 'memory leak' else LOCATION.finditer(message)
         locations = [{'file': program.display(os.path.realpath(l['file'])) if os.path.isabs(l['file']) else l['file'],
-                      'line': int(l['line'])} for l in LOCATION.finditer(message) if not l['file'].startswith('0x')]
+                      'line': int(l['line'])} for l in sites if not l['file'].startswith('0x')]
         findings.append({'kind': kind, 'message': message, 'locations': locations})
     for m in SANITIZER_ERROR.finditer(stderr):
         frame = user_frame(stderr[m.end():], program)
@@ -442,8 +448,10 @@ TOOLS = [
                     'in several orders (forward, reverse, random with several seeds, warp orders): a result that '
                     'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
                     "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
-                    'direction) and runs a build with AddressSanitizer and UBSan (out-of-bounds and '
-                    'use-after-free accesses, undefined behavior), with source lines. The program should check '
+                    'direction, allocations never freed), runs once with new allocations filled with 0xff bytes '
+                    '(a changed result means reads of memory never written), and runs a build with '
+                    'AddressSanitizer and UBSan (out-of-bounds and use-after-free accesses, undefined behavior), '
+                    'with source lines. The program should check '
                     'its own results or print them; output that varies between identical runs (timings) is '
                     'compared by exit code only, unless ignore_patterns removes the lines that vary.',
      'inputSchema': {'type': 'object', 'properties': {
@@ -542,14 +550,19 @@ def comparable(run, patterns):
     return run['exit_code'], run['signal'], '\n'.join(lines)
 
 
-def first_difference(a, b):
+def first_difference(a, b, names=('forward', 'this_order')):
     a_lines, b_lines = a.splitlines(), b.splitlines()
     for i in range(max(len(a_lines), len(b_lines))):
         x = a_lines[i] if i < len(a_lines) else '<no line>'
         y = b_lines[i] if i < len(b_lines) else '<no line>'
         if x != y:
-            return {'line': i + 1, 'forward': x[:500], 'this_order': y[:500]}
+            return {'line': i + 1, names[0]: x[:500], names[1]: y[:500]}
     return None
+
+
+def how_it_ends(run):
+    return (f'{"exit code " + str(run["exit_code"]) if run["signal"] is None else run["signal"]}'
+            f'{" (timed out)" if run["timed_out"] else ""}')
 
 
 def tool_check(arguments):
@@ -574,7 +587,8 @@ def check_program(program, arguments):
         result['verdict'] = 'does not compile'
         return result
 
-    checks = {'CUDA4CPU_DIVERGENT_BARRIERS': 'warn', 'CUDA4CPU_MEMCPY_DIRECTION': 'warn'}
+    checks = {'CUDA4CPU_DIVERGENT_BARRIERS': 'warn', 'CUDA4CPU_MEMCPY_DIRECTION': 'warn',
+              'CUDA4CPU_LEAK_CHECK': 'warn'}
     runs, findings = [], []
 
     def record(name, run, note):
@@ -632,6 +646,27 @@ def check_program(program, arguments):
     deterministic = comparable(base, patterns) == comparable(again, patterns)
     result['deterministic_output'] = deterministic
 
+    # New memory is mostly zeros, which hides reads of memory never written
+    filled = execute(binary, program, arguments, dict(environment, CUDA4CPU_INIT_MEMORY='0xff'))
+    record('init_memory:0xff', filled, 'the default order, with new allocations filled with 0xff bytes')
+    if (comparable(filled, patterns) != comparable(base, patterns) if deterministic else
+            (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal'])):
+        if (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal']):
+            how = f'ends with {how_it_ends(filled)} instead of {how_it_ends(base)}'
+        else:
+            how = 'changes the output'
+        finding = {'kind': 'reads uninitialized memory',
+                   'message': f'filling new allocations with 0xff bytes (CUDA4CPU_INIT_MEMORY=0xff) {how}',
+                   'meaning': 'the program reads memory from cudaMalloc, cudaMallocManaged or the like before '
+                              'writing it. CUDA leaves new memory undefined; on the CPU it is often zeros, '
+                              'and on a GPU anything.'}
+        if deterministic:
+            difference = first_difference(comparable(base, patterns)[2], comparable(filled, patterns)[2],
+                                          ('default', 'filled'))
+            if difference:
+                finding['first_difference'] = difference
+        findings.append(finding)
+
     orders = [('reverse', 'reverse'), ('warp_reverse', 'warp_reverse')]
     for seed in seeds:
         orders += [(f'random:{seed}', 'random'), (f'warp_random:{seed}', 'warp_random')]
@@ -646,9 +681,8 @@ def check_program(program, arguments):
     if changed:
         order, family, run = changed[0]
         if (run['exit_code'], run['signal']) != (base['exit_code'], base['signal']):
-            how = (f'running {ORDER_NOTES[family]} ({order}) ends with '
-                   f'{"exit code " + str(run["exit_code"]) if run["signal"] is None else run["signal"]}'
-                   f'{" (timed out)" if run["timed_out"] else ""} instead of exit code {base["exit_code"]}')
+            how = (f'running {ORDER_NOTES[family]} ({order}) ends with {how_it_ends(run)} instead of exit code '
+                   f'{base["exit_code"]}')
         else:
             how = f'running {ORDER_NOTES[family]} ({order}) changes the output'
         finding = {'kind': 'depends on the thread order',
@@ -819,11 +853,13 @@ __CUDA4CPU_SETUP__
         status = cudaDeviceSynchronize();
     if (status != cudaSuccess) {
         std::printf("CUDA4CPU_TEST {\"launch_error\": \"%s\"}\n", cudaGetErrorString(status));
+__CUDA4CPU_FREE__
         return 2;
     }
 __CUDA4CPU_REFERENCE_CALL__
     size_t differ = 0;
 __CUDA4CPU_COMPARE__
+__CUDA4CPU_FREE__
     std::printf("CUDA4CPU_TEST {\"done\": true}\n");
     return differ == 0 ? 0 : 1;
 }
@@ -850,7 +886,7 @@ def harness_of(arguments, directory):
     tolerance = arguments.get('tolerance') or {}
     absolute, relative = tolerance.get('absolute', 1e-5), tolerance.get('relative', 1e-5)
 
-    setup, call, reference_call, compare_code, outputs = [], [], [], [], []
+    setup, call, reference_call, compare_code, outputs, frees = [], [], [], [], [], []
     for i, spec in enumerate(specs):
         if not isinstance(spec, dict) or not isinstance(spec.get('type'), str):
             raise ToolError(f'argument {i}: give its type')
@@ -882,6 +918,7 @@ def harness_of(arguments, directory):
                      f'    cudaMemcpy(d{i}, h{i}.data(), {count} * sizeof({ctype}), cudaMemcpyHostToDevice);\n'
                      f'    std::vector<{ctype}> e{i} = h{i};')
         call.append(f'd{i}')
+        frees.append(f'    cudaFree(d{i});')
         reference_call.append(f'e{i}.data()')
         if 'expected' in spec or spec.get('output'):
             outputs.append(label)
@@ -905,7 +942,7 @@ def harness_of(arguments, directory):
               .replace('__CUDA4CPU_GRID__', ', '.join(map(str, grid))).replace('__CUDA4CPU_BLOCK__', ', '.join(map(str, block)))
               .replace('__CUDA4CPU_SHARED__', str(shared)).replace('__CUDA4CPU_ARGS__', ', '.join(call))
               .replace('__CUDA4CPU_REFERENCE_CALL__', f'    reference({", ".join(reference_call)});' if reference else '')
-              .replace('__CUDA4CPU_COMPARE__', '\n'.join(compare_code)))
+              .replace('__CUDA4CPU_COMPARE__', '\n'.join(compare_code)).replace('__CUDA4CPU_FREE__', '\n'.join(frees)))
     return source, outputs
 
 

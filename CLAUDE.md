@@ -125,9 +125,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   fiber cache), the crash reports (`detail::crash_report`, see Gotchas) and
   `system` (topology via OpenMP plus optional libnuma).
 - `lib/memory.cpp`: the registry of allocations (for pointer attributes,
-  `cudaFree`, and `cudaMemcpyKind` direction checks), the unified memory hints
-  that `cudaMemRangeGetAttribute` returns, and HIP's virtual memory management
-  (see Gotchas).
+  `cudaFree`, `cudaMemcpyKind` direction checks and the leak report), the
+  unified memory hints that `cudaMemRangeGetAttribute` returns, and HIP's
+  virtual memory management (see Gotchas).
 - `tools/cuda4cpu-gdb.py`: gdb convenience functions (`$threadIdx()`, ...)
   and the `cuda4cpu` command (`cuda4cpu`, `cuda4cpu threads`,
   `cuda4cpu thread`), which read `thread_block::Vars_` and
@@ -230,8 +230,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `check` runs a sanitizer build first (memory errors stop it, since other
   results would be unreliable and a corrupted heap can hang), then the
   default order twice (exit code, and whether the output is deterministic),
-  then the other `CUDA4CPU_SCHEDULE` orders, comparing with the default
-  one; findings come from cuda4cpu's `cuda4cpu: warning:` reports (warn
+  once with `CUDA4CPU_INIT_MEMORY=0xff` (`reads uninitialized memory` if
+  the result changes), then the other `CUDA4CPU_SCHEDULE` orders, comparing
+  with the default one. Every run has `CUDA4CPU_LEAK_CHECK=warn`, so the
+  harness of `test_kernel` frees its arrays. Findings come from cuda4cpu's `cuda4cpu: warning:` reports (warn
   mode), AddressSanitizer's and UBSan's reports (`user_frame` picks the
   first frame in the program's directories), time-outs and crashes. Keep its
   patterns in sync with the reports' wording in `lib/`. `test_kernel`
@@ -318,6 +320,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     with its own `SIGSEGV` handler), each reported once with its CUDA
     thread, block and launch line, and a crash in host code, not reported.
     It passes under AddressSanitizer and UBSan too.
+  - `memory_checks` (`memory_checks.cu`, `memory_checks_test.cmake`):
+    `CUDA4CPU_INIT_MEMORY` fills every kind of allocation (graph allocations
+    on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
+    leaks (device, managed, pinned, HIP's pinned and graph memory), by line
+    (it's built with `-g`), largest first, by function in a copy built
+    without `-g`, and by offset without `addr2line`, and not memory that a static destructor or a destructor function
+    frees
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
@@ -406,7 +415,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     the protocol (initialize, version negotiation, errors), each tool, and
     `check` on programs with known bugs (the `examples/bugs` programs, a
     divergent barrier, a copy in the wrong direction, signed overflow, a
-    failure, a hang, varying output), each found at its line, and nothing in
+    leak, a read of memory never written, a failure, a hang, varying
+    output), each found at its line, and nothing in
     a correct program; and `test_kernel` on correct and wrong kernels
     (mismatches by index, an order-dependent kernel, an overflow inside an
     allocation's rounding, templates, HIP, invalid requests).
@@ -740,7 +750,26 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `CUDA4CPU_INTERLEAVE` (auto, off, or a number of loop iterations).
   `CUDA4CPU_MEMCPY_DIRECTION` (warn, error, ignore) is read in
   `lib/memory.cpp`, by `check_copy_direction`, which checks a copy's pointers
-  against the registry of allocations.
+  against the registry of allocations, and so are `CUDA4CPU_INIT_MEMORY` (a
+  byte that `initialize_allocation` fills new allocations with, graph
+  allocations each time they're committed) and `CUDA4CPU_LEAK_CHECK` (warn,
+  ignore). With leak checks on, `allocate_aligned` and graph allocations
+  keep the `backtrace()` of the call (`record_call_stack`), and the report
+  runs `addr2line` on the program's frames, in batches: the first that
+  isn't cuda4cpu's, by its function's namespace or its file, whose path
+  ends in `cuda/memory.hpp` or `hip/hip_runtime_api.h` (inlined and
+  static functions have no namespace in the debug information; the path,
+  not the disk, because headers move and `-ffile-prefix-map` changes the
+  start). Without lines, the report names the function, or the object and
+  offset. The public signatures stay CUDA's: no `std::source_location`
+  parameters on the allocation functions. They are `[[gnu::noinline]]`, so
+  that the program's call has its own line: Clang at `-O1` and above loses
+  where an inlined call was when it unrolls or merges it, and the report
+  then names only the function. `report_leaks` is a `[[gnu::destructor(101)]]` of
+  the library: it runs after the program's static destructors, which may
+  free memory, and with a priority, after its destructor functions when
+  linked statically. So the registry of graph allocations is never
+  destroyed, like the allocations'.
 - Running order: with `CUDA4CPU_SCHEDULE` other than forward, `order_` points
   to a permutation (`fibers::order`, inverse in `position`), which
   `fill_order` builds. `reverse` and `warp_reverse` fill it once per

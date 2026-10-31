@@ -117,6 +117,39 @@ for each kind of mistake), `error` (the copy fails with
 memory can be either side. `cudaMemcpyToSymbol` and `cudaMemcpyFromSymbol`
 always reject a kind they don't accept, as CUDA does.
 
+**Memory never written: `CUDA4CPU_INIT_MEMORY`.** CUDA leaves new memory
+undefined, but on the CPU it's often zeros, so a kernel that adds to a
+`cudaMalloc` buffer nobody cleared usually works. `CUDA4CPU_INIT_MEMORY=0xff`
+(any byte, in decimal or hex) fills every new allocation with that byte:
+`cudaMalloc`, `cudaMallocManaged`, `cudaMallocHost`, `cudaHostAlloc`,
+`cudaMallocPitch`, `cudaMalloc3D`, `cudaMallocAsync` and graph allocations,
+each time a graph allocates them. `0xff` makes floats NaN and integers -1, so
+results that change with it read memory that was never written. Valgrind
+finds such reads too, at the line that makes them (see below).
+
+**Allocations never freed: `CUDA4CPU_LEAK_CHECK`.** With
+`CUDA4CPU_LEAK_CHECK=warn`, the allocations still there when the program
+exits are reported, by the line that made them, largest first. That
+includes graph allocations that a graph allocated and nothing freed:
+
+```
+cuda4cpu: warning: 2 allocations of device memory (8192 bytes in all), made at saxpy.cu:41, were never freed.
+```
+
+Each allocation records its call stack (a few microseconds), and the report
+finds the program's line in its debug information with `addr2line`, from
+binutils: build with `-g` for lines, or the report names the function.
+(binutils 2.42, Ubuntu 24.04's, misreads Clang's DWARF 5 in unoptimized
+builds: the line is right, but the file is the copy that the rewriter
+compiled, `saxpy.cu.cpp` or a path in a temporary directory.) An
+allocation made through the program's own wrapper of `cudaMalloc` is
+reported at the wrapper's line. The report comes after static objects are
+destroyed and destructor functions have run, so memory they free isn't
+reported. A program that ends
+in `_exit`, or by a signal, reports nothing. `ignore`, the default, turns it
+off. Neither setting covers HIP's virtual memory management (`hipMemCreate`
+and `hipMemMap`).
+
 **AddressSanitizer and UBSan.** Compile your program with `-fsanitize=address`
 (and `undefined`). cuda4cpu tells AddressSanitizer about every switch between
 fiber stacks, so out-of-bounds accesses in kernels are reported with the
@@ -174,7 +207,9 @@ short summary first.
      heap may hang.
   2. The default order, twice: an exit code other than 0 is a finding, and
      output that differs between the two runs (timings) is compared by exit
-     code only, unless `ignore_patterns` removes the lines that vary.
+     code only, unless `ignore_patterns` removes the lines that vary. Then
+     once more with `CUDA4CPU_INIT_MEMORY=0xff`: a result that changes reads
+     memory that was never written.
   3. The other orders (`reverse`, `warp_reverse`, and `random` and
      `warp_random` with each of `seeds`, 1 to 3 by default). A result that
      changes with the order is reported once, with the orders that changed
@@ -182,9 +217,10 @@ short summary first.
      another writes without a `__syncthreads()` (or `__syncwarp()`) between
      them, or threads race.
 
-  Every run reports divergent barriers and warp operations and copies in
-  the wrong direction (in warn mode, so that the program's behavior doesn't
-  change), and a time-out stops the check. A clean check means that nothing
+  Every run reports divergent barriers and warp operations, copies in the
+  wrong direction (in warn mode, so that the program's behavior doesn't
+  change) and allocations never freed, at the line that made them, and a
+  time-out stops the check. A clean check means that nothing
   showed up in those orders and checks, not that the program has no race.
 - **`test_kernel`** tests one kernel without a program. It takes the
   kernel's source and `name` (a template with its arguments works too), the

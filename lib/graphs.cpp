@@ -55,6 +55,13 @@
 
 namespace cuda4cpu::detail {
 
+// Defined with the registry of allocations: fills new memory as
+// CUDA4CPU_INIT_MEMORY says, and records the calls that led to an allocation
+// for CUDA4CPU_LEAK_CHECK
+void initialize_allocation(void *ptr, size_t size);
+struct call_stack;
+const call_stack *record_call_stack();
+
 //! The memory of a graph allocation node, as in CUDA: an address range
 //! reserved when the node is added, so that the address is fixed, and
 //! allocated (committed) from when the node runs to when a free node, cudaFree
@@ -67,6 +74,7 @@ struct graph_allocation {
     size_t mapped;           //!< size rounded up to pages
     bool live = false;       //!< Allocated
     bool orphaned = false;   //!< No graph has the node any more
+    const call_stack *stack = nullptr;   //!< The calls that added the node, for CUDA4CPU_LEAK_CHECK
 };
 
 struct capture_session {
@@ -106,10 +114,12 @@ struct allocation_registry {
     std::atomic<size_t> count{0};   //!< Lets cudaFree skip the lookup when there are none
 };
 
+//! Never destroyed: the leak report reads it after static objects are
+//! destroyed, and they may free memory
 allocation_registry &allocations()
 {
-    static allocation_registry registry;
-    return registry;
+    static allocation_registry *registry = new allocation_registry;
+    return *registry;
 }
 
 //! Releases the address range of an allocation (with the registry locked)
@@ -140,9 +150,10 @@ std::shared_ptr<graph_allocation> new_allocation(size_t size)
     if (ptr == MAP_FAILED)
         return nullptr;
 
+    const call_stack *stack = record_call_stack();
     auto &r = allocations();
     std::lock_guard lock(r.mutex);
-    auto owned = std::make_unique<graph_allocation>(graph_allocation{ptr, size, mapped});
+    auto owned = std::make_unique<graph_allocation>(graph_allocation{ptr, size, mapped, false, false, stack});
     graph_allocation *a = owned.get();
     r.by_address.emplace(ptr, std::move(owned));
     r.count.fetch_add(1, std::memory_order_relaxed);
@@ -174,6 +185,7 @@ void commit(graph_allocation &a)
     if (a.live)
         return;
     mprotect(a.ptr, a.mapped, PROT_READ | PROT_WRITE);
+    initialize_allocation(a.ptr, a.size);
     a.live = true;
     raise_high(used_high, used_current.fetch_add(a.size, std::memory_order_relaxed) + a.size);
     raise_high(reserved_high, reserved_current.fetch_add(a.size, std::memory_order_relaxed) + a.size);
@@ -209,6 +221,18 @@ cudaError_t free_memory(void *ptr)
     if (ptr != nullptr && !release_allocation(ptr))
         return record_error(cudaErrorInvalidValue);
     return cudaSuccess;
+}
+
+std::vector<std::pair<size_t, const call_stack *>> live_graph_allocations()
+{
+    std::vector<std::pair<size_t, const call_stack *>> live;
+    auto &r = allocations();
+    std::lock_guard lock(r.mutex);
+    for (const auto &[base, a] : r.by_address) {
+        if (a->live)
+            live.emplace_back(a->size, a->stack);
+    }
+    return live;
 }
 
 bool find_graph_allocation(const void *ptr, allocation_info &info)

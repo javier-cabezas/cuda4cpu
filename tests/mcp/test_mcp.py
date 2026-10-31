@@ -233,8 +233,8 @@ class Check(unittest.TestCase):
         self.assertTrue(content['deterministic_output'])
         self.assertEqual(content['forward']['stdout'], 'reversed\n')
         self.assertEqual({r['order'] for r in content['runs']},
-                         {'sanitizers', 'forward', 'reverse', 'warp_reverse', 'random:1', 'warp_random:1',
-                          'random:2', 'warp_random:2'})
+                         {'sanitizers', 'forward', 'init_memory:0xff', 'reverse', 'warp_reverse', 'random:1',
+                          'warp_random:1', 'random:2', 'warp_random:2'})
 
     def test_missing_barrier(self):
         content = self.check(paths=[os.path.join(BUGS, 'missing_barrier.cu')])
@@ -300,6 +300,36 @@ __global__ void kernel(int *d)
                                  kernel)
         content = self.check(files={'direction.cu': program}, sanitizers=False)
         self.assertIn('copy in the wrong direction', self.kinds(content))
+
+    def test_memory_leak(self):
+        program = CORRECT.replace('cudaFree(d);', '')
+        line = program.splitlines().index('    cudaMalloc(&d, n * sizeof(int));') + 1
+        content = self.check(files={'leak.cu': program}, sanitizers=False)
+        self.assertEqual(self.kinds(content), ['memory leak'])
+        finding = content['findings'][0]
+        self.assertIn('an allocation of device memory (512 bytes)', finding['message'])
+        self.assertEqual(finding['locations'], [{'file': 'leak.cu', 'line': line}])
+
+    def test_uninitialized_memory(self):
+        source = """#include <cstdio>
+__global__ void count(int *total) { atomicAdd(total, 1); }
+int main()
+{
+    int *total;
+    cudaMallocManaged(&total, sizeof(int));
+    count<<<4, 64>>>(total);
+    cudaDeviceSynchronize();
+    std::printf("%d threads\\n", *total);
+    cudaFree(total);
+    return 0;
+}
+"""
+        content = self.check(files={'count.cu': source}, sanitizers=False)
+        self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
+        finding = content['findings'][0]
+        self.assertIn('CUDA4CPU_INIT_MEMORY=0xff', finding['message'])
+        # The default run's memory is usually zeros (256 threads), but malloc may fill it
+        self.assertEqual(finding['first_difference']['filled'], '255 threads')
 
     def test_undefined_behavior(self):
         kernel = '''
