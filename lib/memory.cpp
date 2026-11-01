@@ -620,6 +620,13 @@ object_address object_of(const void *address)
     return s.found;
 }
 
+//! Whether a path is a file that can be run (directories can be searched)
+bool executable(const std::string &path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(path.c_str(), X_OK) == 0;
+}
+
 //! llvm-symbolizer on the PATH, or the latest of the versioned names that
 //! LLVM's Debian and Ubuntu packages install (llvm-symbolizer-18). Empty if
 //! there's none.
@@ -635,7 +642,7 @@ std::string find_llvm_symbolizer()
         end = std::min(directories.find(':', begin), directories.size());
         // An empty entry is the current directory
         const std::string dir = end == begin ? std::string(".") : std::string(directories.substr(begin, end - begin));
-        if (const std::string exact = dir + "/llvm-symbolizer"; access(exact.c_str(), X_OK) == 0)
+        if (const std::string exact = dir + "/llvm-symbolizer"; executable(exact))
             return exact;
         if (DIR *d = opendir(dir.c_str())) {
             constexpr std::string_view prefix = "llvm-symbolizer-";
@@ -646,7 +653,7 @@ std::string find_llvm_symbolizer()
                     continue;
                 const unsigned long version = std::strtoul(entry->d_name + prefix.size(), nullptr, 10);
                 const std::string candidate = dir + "/" + entry->d_name;
-                if (version > latest_version && access(candidate.c_str(), X_OK) == 0) {
+                if (version > latest_version && executable(candidate)) {
                     latest = candidate;
                     latest_version = version;
                 }
@@ -658,7 +665,8 @@ std::string find_llvm_symbolizer()
 }
 
 //! The output of a program (found on the PATH, unless it's a path), or
-//! nothing if it can't run or fails
+//! nothing if it can't run or fails. If the program ignores SIGCHLD, the
+//! child isn't kept for waitpid, and any output counts as success.
 std::optional<std::string> run_program(std::vector<std::string> args)
 {
     std::vector<char *> argv;
@@ -679,7 +687,7 @@ std::optional<std::string> run_program(std::vector<std::string> args)
     posix_spawn_file_actions_destroy(&actions);
     close(out[1]);
     std::string output;
-    int status = -1;
+    bool succeeded = false;
     if (failed == 0) {
         char buffer[4096];
         for (;;) {
@@ -689,11 +697,15 @@ std::optional<std::string> run_program(std::vector<std::string> args)
             else if (n == 0 || errno != EINTR)
                 break;
         }
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        int status = 0;
+        pid_t waited;
+        while ((waited = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {
         }
+        succeeded = waited == pid ? WIFEXITED(status) && WEXITSTATUS(status) == 0
+                                  : errno == ECHILD && !output.empty();
     }
     close(out[0]);
-    if (failed != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    if (!succeeded)
         return {};
     return output;
 }

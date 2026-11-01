@@ -74,19 +74,25 @@ function(check_lines description file)
     endif()
 endfunction()
 
-# addr2line from binutils 2.42 names the rewritten copy (.cu.cpp) in
-# Clang's DWARF 5, with the original's lines
-check_lines("with the PATH's symbolizer" "memory_checks\\.cu(\\.cpp)?")
-
-# Each symbolizer alone, in a directory that the PATH has only: llvm-symbolizer
-# under a versioned name, as LLVM's Debian packages install it
-set(only "${CMAKE_CURRENT_BINARY_DIR}/symbolizer")
 find_program(addr2line addr2line)
 file(GLOB llvm_symbolizers /usr/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-[0-9]* /usr/lib/llvm-*/bin/llvm-symbolizer)
 set(llvm_symbolizer "")
 if(llvm_symbolizers)
     list(GET llvm_symbolizers 0 llvm_symbolizer)
 endif()
+
+# addr2line from binutils 2.42 names the rewritten copy (.cu.cpp) in
+# Clang's DWARF 5, with the original's lines
+if(addr2line OR llvm_symbolizer)
+    check_lines("with the PATH's symbolizer" "memory_checks\\.cu(\\.cpp)?")
+    # A program that ignores SIGCHLD can't wait for the symbolizer's status
+    run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks_ignoring_children)
+    check_lines("with SIGCHLD ignored" "memory_checks\\.cu(\\.cpp)?")
+endif()
+
+# Each symbolizer alone, in a directory that the PATH has only: llvm-symbolizer
+# under a versioned name, as LLVM's Debian packages install it
+set(only "${CMAKE_CURRENT_BINARY_DIR}/symbolizer")
 foreach(tool addr2line llvm-symbolizer-99)
     set(path "${addr2line}")
     set(file "memory_checks\\.cu(\\.cpp)?")

@@ -25,6 +25,7 @@
 // them after main returns: from a static object's destructor, and from a
 // destructor function.
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -200,6 +201,11 @@ int main(int argc, char **argv)
         return fill();
     if (argc == 2 && std::strcmp(argv[1], "leaks") == 0)
         return leaks();
-    std::printf("usage: memory_checks fill|leaks\n");
+    // Children aren't kept for waitpid: the report's symbolizer must still count
+    if (argc == 2 && std::strcmp(argv[1], "leaks_ignoring_children") == 0) {
+        std::signal(SIGCHLD, SIG_IGN);
+        return leaks();
+    }
+    std::printf("usage: memory_checks fill|leaks|leaks_ignoring_children\n");
     return 2;
 }
