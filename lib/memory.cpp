@@ -736,6 +736,29 @@ std::string symbolizer_output(const std::string &object, const std::vector<uintp
     return {};
 }
 
+//! A function's name without the suffixes of the compiler's copies of it
+//! (GCC's .isra.0, .constprop.0, .part.0): " [clone .isra.0]" from
+//! addr2line and the C++ ABI's demangler, " (.isra.0)" from llvm-symbolizer
+std::string without_clones(std::string name)
+{
+    for (;;) {
+        if (name.ends_with("]")) {
+            const size_t open = name.rfind(" [clone .");
+            if (open != std::string::npos) {
+                name.erase(open);
+                continue;
+            }
+        } else if (name.ends_with(")")) {
+            const size_t open = name.rfind(" (.");
+            if (open != std::string::npos && name.find_first_of("() ", open + 3) == name.size() - 1) {
+                name.erase(open);
+                continue;
+            }
+        }
+        return name;
+    }
+}
+
 //! The calls at each return address, innermost (inlined) first: from the
 //! debug information through addr2line, or from the dynamic symbols
 std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const void *> &addresses)
@@ -767,7 +790,7 @@ std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const
                     current = next < last ? &frames[located[next++].first] : nullptr;
                     function_next = true;
                 } else if (current != nullptr && function_next) {
-                    current->push_back({line == "??" ? std::string() : std::string(line)});
+                    current->push_back({line == "??" ? std::string() : without_clones(std::string(line))});
                     function_next = false;
                 } else if (current != nullptr) {
                     // file:line, maybe followed by " (discriminator N)"
@@ -794,7 +817,7 @@ std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const
             continue;
         int status = 0;
         char *demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
-        calls.assign(1, {demangled != nullptr ? demangled : info.dli_sname});
+        calls.assign(1, {without_clones(demangled != nullptr ? demangled : info.dli_sname)});
         std::free(demangled);
     }
     return frames;

@@ -90,6 +90,20 @@ if(addr2line OR llvm_symbolizer)
     check_lines("with SIGCHLD ignored" "memory_checks\\.cu(\\.cpp)?")
 endif()
 
+# Without a symbolizer, the report gives the program and an offset, and without
+# debug information, the function. Leaks from the same function (or offset)
+# are then one line.
+function(check_sites description site)
+    string(REGEX MATCHALL "cuda4cpu: warning: [^\n]*" warnings "${errors}")
+    string(REGEX MATCHALL "made ${site}, (was|were) never freed" sites "${errors}")
+    list(LENGTH warnings warning_count)
+    list(LENGTH sites site_count)
+    if(warning_count EQUAL 0 OR NOT site_count EQUAL warning_count OR
+       NOT errors MATCHES "cuda4cpu: note: build the program with -g")
+        message(FATAL_ERROR "expected the leaks ${description}:\n${errors}")
+    endif()
+endfunction()
+
 # Each symbolizer alone, in a directory that the PATH has only: llvm-symbolizer
 # under a versioned name, as LLVM's Debian packages install it
 set(only "${CMAKE_CURRENT_BINARY_DIR}/symbolizer")
@@ -109,22 +123,12 @@ foreach(tool addr2line llvm-symbolizer-99)
     file(CREATE_LINK "${path}" "${only}/${tool}" SYMBOLIC)
     run(0 PATH=${only} CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
     check_lines("with ${tool} only" "${file}")
+    # Without -g, the function's name, without the suffix of GCC's copy
+    # (leaks() [clone .isra.0], or leaks() (.isra.0) from llvm-symbolizer)
+    run(0 PATH=${only} CUDA4CPU_LEAK_CHECK=warn "${PROGRAM_WITHOUT_DEBUG_INFO}" leaks)
+    check_sites("in their function, without -g, with ${tool} only" "in (main|leaks\\(\\))")
 endforeach()
 file(REMOVE_RECURSE "${only}")
-
-# Without a symbolizer, the report gives the program and an offset, and without
-# debug information, the function. Leaks from the same function (or offset)
-# are then one line.
-function(check_sites description site)
-    string(REGEX MATCHALL "cuda4cpu: warning: [^\n]*" warnings "${errors}")
-    string(REGEX MATCHALL "made ${site}, (was|were) never freed" sites "${errors}")
-    list(LENGTH warnings warning_count)
-    list(LENGTH sites site_count)
-    if(warning_count EQUAL 0 OR NOT site_count EQUAL warning_count OR
-       NOT errors MATCHES "cuda4cpu: note: build the program with -g")
-        message(FATAL_ERROR "expected the leaks ${description}:\n${errors}")
-    endif()
-endfunction()
 
 run(0 PATH=${CMAKE_CURRENT_BINARY_DIR}/no-such-directory CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
 check_sites("at offsets in the program, without a symbolizer" "at [^\n]*memory_checks\\+0x[0-9a-f]+")
