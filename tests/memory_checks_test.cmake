@@ -22,7 +22,8 @@
 # the line that made them, graph allocations included. Memory that a static
 # object's destructor or a destructor function frees after main returns isn't
 # reported. Without debug information or addr2line, the report names the
-# function or the program's offset instead of the line.
+# function or the program's offset instead of the line. The lines come from
+# llvm-symbolizer, if it's installed, or addr2line: each is tested alone.
 # Usage: cmake -DPROGRAM=... -DPROGRAM_WITHOUT_DEBUG_INFO=... -P memory_checks_test.cmake
 
 function(run expected_status)
@@ -56,21 +57,56 @@ foreach(leak device managed pinned hip_pinned graph)
     endif()
     set(${leak}_line ${CMAKE_MATCH_1})
 endforeach()
+
+# Exactly the five leaks, largest first, by line. file is the pattern of the
+# source's name.
+function(check_lines description file)
+    set(at "made at [^\n]*${file}")
+    set(expected
+        "cuda4cpu: warning: an allocation of graph memory \\(1000 bytes\\), ${at}:${graph_line}, was never freed\\.\n"
+        "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), ${at}:${device_line}, were never freed\\.\n"
+        "cuda4cpu: warning: an allocation of pinned host memory \\(50 bytes\\), ${at}:${pinned_line}, was never freed\\.\n"
+        "cuda4cpu: warning: an allocation of pinned host memory \\(30 bytes\\), ${at}:${hip_pinned_line}, was never freed\\.\n"
+        "cuda4cpu: warning: an allocation of managed memory \\(4 bytes\\), ${at}:${managed_line}, was never freed\\.\n")
+    string(JOIN "" expected ${expected})
+    if(NOT errors MATCHES "^${expected}$")
+        message(FATAL_ERROR "expected exactly the five leaks, largest first, ${description}, got:\n${errors}")
+    endif()
+endfunction()
+
 # addr2line from binutils 2.42 names the rewritten copy (.cu.cpp) in
 # Clang's DWARF 5, with the original's lines
-set(at "made at [^\n]*memory_checks\\.cu(\\.cpp)?")
-set(expected
-    "cuda4cpu: warning: an allocation of graph memory \\(1000 bytes\\), ${at}:${graph_line}, was never freed\\.\n"
-    "cuda4cpu: warning: 2 allocations of device memory \\(200 bytes in all\\), ${at}:${device_line}, were never freed\\.\n"
-    "cuda4cpu: warning: an allocation of pinned host memory \\(50 bytes\\), ${at}:${pinned_line}, was never freed\\.\n"
-    "cuda4cpu: warning: an allocation of pinned host memory \\(30 bytes\\), ${at}:${hip_pinned_line}, was never freed\\.\n"
-    "cuda4cpu: warning: an allocation of managed memory \\(4 bytes\\), ${at}:${managed_line}, was never freed\\.\n")
-string(JOIN "" expected ${expected})
-if(NOT errors MATCHES "^${expected}$")
-    message(FATAL_ERROR "expected exactly the five leaks, largest first, got:\n${errors}")
-endif()
+check_lines("with the PATH's symbolizer" "memory_checks\\.cu(\\.cpp)?")
 
-# Without addr2line, the report gives the program and an offset, and without
+# Each symbolizer alone, in a directory that the PATH has only: llvm-symbolizer
+# under a versioned name, as LLVM's Debian packages install it
+set(only "${CMAKE_CURRENT_BINARY_DIR}/symbolizer")
+find_program(addr2line addr2line)
+file(GLOB llvm_symbolizers /usr/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-[0-9]* /usr/lib/llvm-*/bin/llvm-symbolizer)
+set(llvm_symbolizer "")
+if(llvm_symbolizers)
+    list(GET llvm_symbolizers 0 llvm_symbolizer)
+endif()
+foreach(tool addr2line llvm-symbolizer-99)
+    set(path "${addr2line}")
+    set(file "memory_checks\\.cu(\\.cpp)?")
+    if(tool STREQUAL "llvm-symbolizer-99")
+        set(path "${llvm_symbolizer}")
+        set(file "memory_checks\\.cu")
+    endif()
+    if(NOT path)
+        message(STATUS "${tool} isn't installed: not tested")
+        continue()
+    endif()
+    file(REMOVE_RECURSE "${only}")
+    file(MAKE_DIRECTORY "${only}")
+    file(CREATE_LINK "${path}" "${only}/${tool}" SYMBOLIC)
+    run(0 PATH=${only} CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
+    check_lines("with ${tool} only" "${file}")
+endforeach()
+file(REMOVE_RECURSE "${only}")
+
+# Without a symbolizer, the report gives the program and an offset, and without
 # debug information, the function. Leaks from the same function (or offset)
 # are then one line.
 function(check_sites description site)
@@ -85,7 +121,7 @@ function(check_sites description site)
 endfunction()
 
 run(0 PATH=${CMAKE_CURRENT_BINARY_DIR}/no-such-directory CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
-check_sites("at offsets in the program, without addr2line" "at [^\n]*memory_checks\\+0x[0-9a-f]+")
+check_sites("at offsets in the program, without a symbolizer" "at [^\n]*memory_checks\\+0x[0-9a-f]+")
 run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM_WITHOUT_DEBUG_INFO}" leaks)
 check_sites("in their function, without -g" "in (main|leaks\\(\\))")
 

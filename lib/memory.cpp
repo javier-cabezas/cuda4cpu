@@ -44,6 +44,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -51,6 +52,7 @@
 #include <vector>
 
 #include <cxxabi.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <fcntl.h>
@@ -618,17 +620,47 @@ object_address object_of(const void *address)
     return s.found;
 }
 
-//! What addr2line prints for offsets into an object file: each offset, then
-//! the function and file:line of the call there, followed by those of the
-//! calls it was inlined into. Empty if addr2line can't run.
-std::string run_addr2line(const std::string &object, const std::vector<uintptr_t> &offsets)
+//! llvm-symbolizer on the PATH, or the latest of the versioned names that
+//! LLVM's Debian and Ubuntu packages install (llvm-symbolizer-18). Empty if
+//! there's none.
+std::string find_llvm_symbolizer()
 {
-    std::vector<std::string> args{"addr2line", "-a", "-f", "-C", "-i", "-e", object};
-    for (uintptr_t offset : offsets) {
-        char hex[32];
-        std::snprintf(hex, sizeof hex, "%#zx", size_t(offset));
-        args.emplace_back(hex);
+    const char *path = std::getenv("PATH");
+    if (path == nullptr)
+        return {};
+    std::string latest;
+    unsigned long latest_version = 0;
+    const std::string_view directories = path;
+    for (size_t begin = 0, end; begin <= directories.size(); begin = end + 1) {
+        end = std::min(directories.find(':', begin), directories.size());
+        // An empty entry is the current directory
+        const std::string dir = end == begin ? std::string(".") : std::string(directories.substr(begin, end - begin));
+        if (const std::string exact = dir + "/llvm-symbolizer"; access(exact.c_str(), X_OK) == 0)
+            return exact;
+        if (DIR *d = opendir(dir.c_str())) {
+            constexpr std::string_view prefix = "llvm-symbolizer-";
+            while (const dirent *entry = readdir(d)) {
+                const std::string_view name = entry->d_name;
+                if (!name.starts_with(prefix) || name.size() == prefix.size() ||
+                    name.find_first_not_of("0123456789", prefix.size()) != std::string_view::npos)
+                    continue;
+                const unsigned long version = std::strtoul(entry->d_name + prefix.size(), nullptr, 10);
+                const std::string candidate = dir + "/" + entry->d_name;
+                if (version > latest_version && access(candidate.c_str(), X_OK) == 0) {
+                    latest = candidate;
+                    latest_version = version;
+                }
+            }
+            closedir(d);
+        }
     }
+    return latest;
+}
+
+//! The output of a program (found on the PATH, unless it's a path), or
+//! nothing if it can't run or fails
+std::optional<std::string> run_program(std::vector<std::string> args)
+{
     std::vector<char *> argv;
     for (std::string &a : args)
         argv.push_back(a.data());
@@ -643,10 +675,11 @@ std::string run_addr2line(const std::string &object, const std::vector<uintptr_t
     posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
     posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
     pid_t pid;
-    const int failed = posix_spawnp(&pid, "addr2line", &actions, nullptr, argv.data(), environ);
+    const int failed = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), environ);
     posix_spawn_file_actions_destroy(&actions);
     close(out[1]);
     std::string output;
+    int status = -1;
     if (failed == 0) {
         char buffer[4096];
         for (;;) {
@@ -656,11 +689,39 @@ std::string run_addr2line(const std::string &object, const std::vector<uintptr_t
             else if (n == 0 || errno != EINTR)
                 break;
         }
-        while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
         }
     }
     close(out[0]);
+    if (failed != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        return {};
     return output;
+}
+
+//! What addr2line prints for offsets into an object file: each offset, then
+//! the function and file:line of the call there, followed by those of the
+//! calls it was inlined into. From llvm-symbolizer, which prints the same
+//! with --output-style=GNU, if it's installed: binutils 2.42's addr2line
+//! names the wrong file in Clang's DWARF 5. Empty if neither can run.
+std::string symbolizer_output(const std::string &object, const std::vector<uintptr_t> &offsets)
+{
+    std::vector<std::string> addresses;
+    for (uintptr_t offset : offsets) {
+        char hex[32];
+        std::snprintf(hex, sizeof hex, "%#zx", size_t(offset));
+        addresses.emplace_back(hex);
+    }
+    static const std::string llvm_symbolizer = find_llvm_symbolizer();
+    std::vector<std::vector<std::string>> commands;
+    if (!llvm_symbolizer.empty())
+        commands.push_back({llvm_symbolizer, "--output-style=GNU", "-a", "-f", "-C", "-i", "--obj=" + object});
+    commands.push_back({"addr2line", "-a", "-f", "-C", "-i", "-e", object});
+    for (std::vector<std::string> &command : commands) {
+        command.insert(command.end(), addresses.begin(), addresses.end());
+        if (std::optional<std::string> output = run_program(std::move(command)))
+            return *output;
+    }
+    return {};
 }
 
 //! The calls at each return address, innermost (inlined) first: from the
@@ -683,7 +744,7 @@ std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const
             std::vector<uintptr_t> offsets;
             for (size_t i = first; i < last; ++i)
                 offsets.push_back(located[i].second);
-            const std::string output = run_addr2line(object, offsets);
+            const std::string output = symbolizer_output(object, offsets);
             std::vector<source_frame> *current = nullptr;
             size_t next = first;
             bool function_next = true;
@@ -711,7 +772,7 @@ std::map<const void *, std::vector<source_frame>> symbolize(const std::set<const
         }
     }
     for (const void *address : addresses) {
-        // addr2line's "??" for both: nothing is known
+        // "??" for both: nothing is known
         std::vector<source_frame> &calls = frames[address];
         std::erase_if(calls, [](const source_frame &call) { return call.function.empty() && call.file.empty(); });
         if (!calls.empty())
@@ -863,7 +924,8 @@ allocation_site site_of(const call_stack *stack, const std::map<const void *, st
                              "were never freed.\n", count, bytes, leaks.size() - shown);
     }
     if (without_lines)
-        std::fprintf(stderr, "cuda4cpu: note: build the program with -g, and install addr2line (binutils), "
+        std::fprintf(stderr, "cuda4cpu: note: build the program with -g, and install llvm-symbolizer or "
+                             "addr2line (binutils), "
                              "to see the lines that made the allocations.\n");
 }
 

@@ -328,8 +328,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
     leaks (device, managed, pinned, HIP's pinned and graph memory), by line
     (it's built with `-g`), largest first, by function in a copy built
-    without `-g`, and by offset without `addr2line`, and not memory that a static destructor or a destructor function
-    frees
+    without `-g`, and by offset without a symbolizer, with `llvm-symbolizer`
+    alone (under a versioned name) and `addr2line` alone, and not memory
+    that a static destructor or a destructor function frees
   - `warp`: every shuffle and vote variant (widths, partial warps), exited
     lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
   - `atomics`: every atomic function, racing across blocks
@@ -763,7 +764,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   allocations each time they're committed) and `CUDA4CPU_LEAK_CHECK` (warn,
   ignore). With leak checks on, `allocate_aligned` and graph allocations
   keep the `backtrace()` of the call (`record_call_stack`), and the report
-  runs `addr2line` on the program's frames, in batches: the first that
+  runs `llvm-symbolizer --output-style=GNU` (or the latest
+  `llvm-symbolizer-N` on the `PATH`, as LLVM's Debian packages name it) or
+  else `addr2line`, which print the same, on the program's frames, in
+  batches (binutils 2.42's `addr2line` names the rewriter's copy of a
+  source in Clang's unoptimized DWARF 5): the first that
   isn't cuda4cpu's, by its function's namespace or its file, whose path
   ends in `cuda/memory.hpp` or `hip/hip_runtime_api.h` (inlined and
   static functions have no namespace in the debug information; the path,
