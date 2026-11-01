@@ -50,8 +50,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   check names them (`block_sync_name`, `grid_sync_name`, with line 0), and
   can't tell two of them apart. A macro named `sync` would break POSIX's
   `sync()` and every other `sync` member. `coalesced_threads()` is a macro,
-  defined at the end of the header, for `cuda4cpu_coalesced_threads(__FILE__,
-  __LINE__)`.
+  defined at the end of the header, for `cuda4cpu_coalesced_threads`.
 - `include/cuda/*.hpp`: the CUDA runtime API (types, errors, device, memory,
   streams, events), plus device-side `atomics.hpp` (on `std::atomic_ref`) and
   `math.hpp`. All CUDA names live in the **inline namespace
@@ -342,7 +341,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     warps and tiles, tiles of several warps that sync independently, or
     while some of their threads are at `__syncthreads()` or return,
     `coalesced_threads()` in a branch (warp-aggregated atomics), and
-    `grid.sync()` across rounds of a cooperative launch
+    `grid.sync()` across rounds of a cooperative launch, and the forms of the
+    calls that are macros (a using-declaration of `coalesced_threads`, calls
+    around the macros, a qualified `::cudaLaunchKernel`)
   - `runtime`: error codes and the last error, launch limits, allocation,
     copies, memset, symbols, events, device queries and intrinsics, through
     `cuda_runtime.h` only. It and `hip_memory` run with
@@ -833,8 +834,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   address or calls them as `(name)(...)`, which shares one place. A macro's
   expansion starts with a name in the same namespace, so `::cudaLaunchKernel(...)`
   and `cg::coalesced_threads()` keep working, and it must be defined after
-  the function, or it would rename its definition. Never add parameters to
-  CUDA's or HIP's functions.
+  the function, or it would rename its definition. `coalesced_threads()`
+  passes a `cooperative_groups::cuda4cpu_place`, so that argument-dependent
+  lookup finds its function after `using cooperative_groups::coalesced_threads;`.
+  Like `__syncthreads`, the macros break members of the program's classes
+  with those names. Never add parameters to CUDA's or HIP's functions.
 - AddressSanitizer: `__sanitizer_start/finish_switch_fiber` are weak
   references, called only when the runtime is present. Every switch goes
   through `fibers::switch_to`/`start_fiber`, which call `sanitizer_leave` as

@@ -586,19 +586,28 @@ public:
     }
 };
 
-//! The lanes of the calling warp that call it together at file:line: lanes
-//! in other branches are left out. The coalesced_threads() macro, at the end
-//! of this header, calls it with the call's place, and keeps its namespace
+//! A call's place, which the coalesced_threads() macro passes. Its type is
+//! in this namespace, so that argument-dependent lookup finds
+//! cuda4cpu_coalesced_threads after a using-declaration of coalesced_threads.
+struct cuda4cpu_place {
+    const char *file;
+    unsigned line;
+};
+
+//! The lanes of the calling warp that call it together at a place: lanes in
+//! other branches are left out. The coalesced_threads() macro, at the end of
+//! this header, calls it with the call's place, and keeps its namespace
 //! qualification (cg::coalesced_threads()).
-inline coalesced_group cuda4cpu_coalesced_threads(const char *file, unsigned line)
+inline coalesced_group cuda4cpu_coalesced_threads(cuda4cpu_place place)
 {
-    return coalesced_group(cuda4cpu::thread_block::warp_active_mask(cuda4cpu::detail::call_site(file, line)));
+    return coalesced_group(
+        cuda4cpu::thread_block::warp_active_mask(cuda4cpu::detail::call_site(place.file, place.line)));
 }
 
 //! Calls that bypass the macro, such as (coalesced_threads)(), all share one place
 inline coalesced_group coalesced_threads()
 {
-    return cuda4cpu_coalesced_threads(nullptr, 0);
+    return cuda4cpu_coalesced_threads({nullptr, 0});
 }
 
 //! Splits a coalesced group into groups of tilesz consecutive ranks
@@ -670,4 +679,4 @@ inline unsigned long long group_size(const Group &group)
 
 }
 
-#define coalesced_threads() cuda4cpu_coalesced_threads(__FILE__, __LINE__)
+#define coalesced_threads() cuda4cpu_coalesced_threads(::cooperative_groups::cuda4cpu_place{__FILE__, __LINE__})
