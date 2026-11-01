@@ -87,7 +87,10 @@ at kernel.cu:12 and kernel.cu:15. CUDA requires every thread of a block to reach
 ```
 
 `CUDA4CPU_DIVERGENT_BARRIERS` chooses what happens: `warn` (the default), `error`
-(abort, to stop in a debugger) or `ignore`.
+(abort, to stop in a debugger) or `ignore`. A cooperative group's `sync()`
+keeps CUDA's signature, which gives it no way to know its caller's line: the
+report names it (`cooperative_groups::thread_block::sync()`), and threads at
+two different `sync()` calls aren't reported.
 
 **Threads taking turns in loops: `CUDA4CPU_INTERLEAVE`.** `auto` (the default)
 chooses per kernel how often the threads of a block take turns in their loops.

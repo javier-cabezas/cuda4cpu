@@ -323,8 +323,10 @@ private:
     static std::mutex lock;
     static std::set<std::pair<std::string, std::string>> reported;
 
+    // Line 0 is a cooperative group's sync(), by its name
     auto where = [](const char *file, int line) {
-        return file == nullptr ? std::string("unknown location") : std::string(file) + ":" + std::to_string(line);
+        return file == nullptr ? std::string("unknown location")
+                               : line == 0 ? std::string(file) : std::string(file) + ":" + std::to_string(line);
     };
     const std::string first = where(file1, line1), other = where(file2, line2);
 

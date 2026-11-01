@@ -25,7 +25,11 @@
 // - Tiles of up to 32 threads are built on the warp functions. Larger tiles
 //   (64 to 1024 threads) synchronize with a barrier over their warps.
 // - coalesced_threads() is __activemask(): the lanes that reach the call
-//   together, leaving out lanes in other branches.
+//   together, leaving out lanes in other branches. Like __activemask(), it's
+//   a macro too, which gives each call its place.
+// - The divergent barrier check names a block's or a grid's sync() by its
+//   name, not by its line: it would need a parameter that CUDA's sync()
+//   doesn't have, and sync is too common a name for a macro.
 // - grid_group::sync() requires cudaLaunchCooperativeKernel, which runs every
 //   block at the same time, each on its own OS thread.
 
@@ -34,7 +38,6 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
-#include <source_location>
 
 #include "cuda_runtime.h"
 
@@ -119,9 +122,20 @@ inline unsigned tile_extent(unsigned size)
     return std::min(size, block_size() - first);
 }
 
-inline void block_sync(const std::source_location &site)
+//! What the divergent barrier check reports for a block's and a grid's
+//! sync(), as a file with line 0. Inline variables have one address in the
+//! program, which the barriers' fast path compares.
+inline constexpr char block_sync_name[] = "cooperative_groups::thread_block::sync()";
+inline constexpr char grid_sync_name[]  = "cooperative_groups::grid_group::sync()";
+
+inline void block_sync()
 {
-    thread_block::syncthreads(site.file_name(), int(site.line()));
+    thread_block::syncthreads(block_sync_name, 0);
+}
+
+inline void grid_sync()
+{
+    thread_block::sync_grid(grid_sync_name, 0);
 }
 
 struct tile_tag {};
@@ -164,12 +178,12 @@ public:
         return 0;
     }
 
-    void sync(std::source_location site = std::source_location::current()) const
+    void sync() const
     {
         namespace cg = cuda4cpu::detail::cg;
         switch (kind_) {
-        case kind::block:     cg::block_sync(site); break;
-        case kind::grid:      cuda4cpu::thread_block::sync_grid(site.file_name(), int(site.line())); break;
+        case kind::block:     cg::block_sync(); break;
+        case kind::grid:      cg::grid_sync(); break;
         case kind::tile:      cg::tile_sync(size_); break;
         case kind::coalesced: __syncwarp(mask_); break;
         }
@@ -196,9 +210,9 @@ protected:
 //! The calling thread's block
 class thread_block : public thread_group {
 public:
-    static void sync(std::source_location site = std::source_location::current())
+    static void sync()
     {
-        cuda4cpu::detail::cg::block_sync(site);
+        cuda4cpu::detail::cg::block_sync();
     }
 
     static unsigned thread_rank()
@@ -261,9 +275,9 @@ inline thread_block this_thread_block(block_tile_memory<MaxBlockSize> & /* scrat
 //! All the threads of the grid. sync() requires a cooperative launch.
 class grid_group : public thread_group {
 public:
-    static void sync(std::source_location site = std::source_location::current())
+    static void sync()
     {
-        cuda4cpu::thread_block::sync_grid(site.file_name(), int(site.line()));
+        cuda4cpu::detail::cg::grid_sync();
     }
 
     //! Whether the kernel was launched with cudaLaunchCooperativeKernel
@@ -572,11 +586,19 @@ public:
     }
 };
 
-//! The lanes of the calling warp that call it together: lanes in other
-//! branches are left out
-inline coalesced_group coalesced_threads(std::source_location site = std::source_location::current())
+//! The lanes of the calling warp that call it together at file:line: lanes
+//! in other branches are left out. The coalesced_threads() macro, at the end
+//! of this header, calls it with the call's place, and keeps its namespace
+//! qualification (cg::coalesced_threads()).
+inline coalesced_group cuda4cpu_coalesced_threads(const char *file, unsigned line)
 {
-    return coalesced_group(__activemask(site));
+    return coalesced_group(cuda4cpu::thread_block::warp_active_mask(cuda4cpu::detail::call_site(file, line)));
+}
+
+//! Calls that bypass the macro, such as (coalesced_threads)(), all share one place
+inline coalesced_group coalesced_threads()
+{
+    return cuda4cpu_coalesced_threads(nullptr, 0);
 }
 
 //! Splits a coalesced group into groups of tilesz consecutive ranks
@@ -629,13 +651,9 @@ inline coalesced_group binary_partition(const thread_block_tile<Size, Parent> &p
 }
 
 template <typename Group>
-inline void sync(const Group &group, std::source_location site = std::source_location::current())
+inline void sync(const Group &group)
 {
-    if constexpr (std::is_same_v<Group, thread_block> || std::is_same_v<Group, grid_group> ||
-                  std::is_same_v<Group, thread_group>)
-        group.sync(site);
-    else
-        group.sync();
+    group.sync();
 }
 
 template <typename Group>
@@ -651,3 +669,5 @@ inline unsigned long long group_size(const Group &group)
 }
 
 }
+
+#define coalesced_threads() cuda4cpu_coalesced_threads(__FILE__, __LINE__)

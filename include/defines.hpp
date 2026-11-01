@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <source_location>
 
 //
 // CUDA keyword overrides
@@ -61,6 +62,16 @@
 // The file and line identify each __syncthreads() for the divergent barrier
 // check, and are the same in every copy the compiler inlines
 #define __syncthreads() cuda4cpu::thread_block::syncthreads(__FILE__, __LINE__)
+
+// __activemask() groups the lanes that call it from the same place, by file
+// and line. The function keeps CUDA's signature.
+#define __activemask() cuda4cpu::thread_block::warp_active_mask(cuda4cpu::detail::call_site(__FILE__, __LINE__))
+
+// Crash reports name the line of a kernel's launch. The functions keep CUDA's
+// signatures, and the macros the call's namespace qualification, if any.
+#define cudaLaunchKernel(...) cuda4cpu_cudaLaunchKernel(::std::source_location::current(), __VA_ARGS__)
+#define cudaLaunchCooperativeKernel(...) \
+    cuda4cpu_cudaLaunchCooperativeKernel(::std::source_location::current(), __VA_ARGS__)
 
 #define threadIdx (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_thread()))
 #define blockIdx  (cuda4cpu::detail::builtin_dim3(cuda4cpu::thread_block::get_block()))
