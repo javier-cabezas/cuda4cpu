@@ -247,7 +247,8 @@ class Build(unittest.TestCase):
                      (['-MD', '-c', '-o', 'program.o'], 'program.d'),
                      (['-MMD', '-MP', '-c'], 'program.d'),
                      (['-M', '-o', 'deps.txt'], 'deps.txt'),
-                     (['-M'], None)]
+                     (['-M'], None),
+                     (['-M', '-o', '-'], None)]
             for options, depfile in cases:
                 with self.subTest(options=options):
                     result = nvcc(*options, source, cwd=work)

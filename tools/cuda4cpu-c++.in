@@ -340,18 +340,15 @@ def work_directory(argv):
     as ccache hit; a temporary directory otherwise. Also when the output isn't
     a file (-o /dev/null, -o -) or its directory can't be written to, where
     the compiler reports the error."""
-    for i, arg in enumerate(argv):
-        output = argv[i + 1] if arg == '-o' and i + 1 < len(argv) else arg[2:] if arg.startswith('-o') and len(arg) > 2 else None
-        if output:
-            if output == '-' or (os.path.exists(output) and not os.path.isfile(output)):
-                break
-            work = os.path.abspath(output) + '.cuda4cpu-src'
-            shutil.rmtree(work, ignore_errors=True)
-            try:
-                os.makedirs(work)
-            except OSError:
-                break
+    output = output_of(argv, None)
+    if output and output != '-' and (os.path.isfile(output) or not os.path.exists(output)):
+        work = os.path.abspath(output) + '.cuda4cpu-src'
+        shutil.rmtree(work, ignore_errors=True)
+        try:
+            os.makedirs(work)
             return work
+        except OSError:
+            pass
     return tempfile.mkdtemp(prefix='cuda4cpu-')
 
 
@@ -413,12 +410,14 @@ def run(command, request, env=None):
 
 
 def output_of(args, default):
+    """The output file of a command: its last -o, as for the compiler"""
+    output = default
     for i, arg in enumerate(args):
         if arg == '-o' and i + 1 < len(args):
-            return args[i + 1]
-        if arg.startswith('-o') and len(arg) > 2:
-            return arg[2:]
-    return default
+            output = args[i + 1]
+        elif arg.startswith('-o') and len(arg) > 2:
+            output = arg[2:]
+    return output
 
 
 def nvcc_device_link(compiler, args, request):
@@ -473,7 +472,8 @@ def hipcc_static_library(argv, request):
             if status != 0:
                 return status
             objects.append(obj)
-        if os.path.exists(output):
+        if os.path.isfile(output):
+            # Not /dev/null, which ar refuses to replace
             os.remove(output)
         return run([os.environ.get('AR', 'ar'), 'rcs', output] + objects, request)
     finally:
@@ -495,7 +495,8 @@ def escape_depfile(path):
 
 def dependency_outputs(args, sources):
     """Where the compiler writes dependencies with args: a list of files, and
-    whether it writes them to standard output instead (-M or -MM without -o).
+    whether it writes them to standard output instead (-M or -MM without -o,
+    or with -o -).
     sources are the rewritten files, which -MD without -MF or -o names its
     files after."""
     files, flags, output = [], set(), None
@@ -519,7 +520,7 @@ def dependency_outputs(args, sources):
         if output is not None and '-E' not in flags:
             return [os.path.splitext(output)[0] + '.d'], False
         return [os.path.splitext(os.path.basename(s))[0] + '.d' for s in sources], False
-    return ([output], False) if output is not None else ([], True)
+    return ([output], False) if output not in (None, '-') else ([], True)
 
 
 def restore_dependencies(text, renamed):
@@ -561,6 +562,9 @@ def compile_sources(command, request, env, args, renamed):
     status = run(command, request, env)
     if status == 0:
         for path in files:
+            if not os.path.isfile(path):
+                # /dev/null, or /dev/stdout on a terminal, which reading would wait on
+                continue
             try:
                 with open(path, encoding='utf-8', errors='surrogateescape') as f:
                     text = f.read()
