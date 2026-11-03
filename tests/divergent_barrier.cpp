@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "cooperative_groups.h"
 #include "cuda4cpu.hpp"
 
 using namespace cuda4cpu;
@@ -67,6 +68,19 @@ __global__ void divergent_later(int *out)
     }
 }
 
+// A cooperative group's sync() and __syncthreads(): the report names sync()
+// by its name, since it has no parameter for its caller's line
+__global__ void divergent_group(int *out)
+{
+    if (threadIdx.x % 2 == 0) {
+        out[threadIdx.x] = 1;
+        __syncthreads();
+    } else {
+        out[threadIdx.x] = 2;
+        cooperative_groups::this_thread_block().sync();
+    }
+}
+
 // Lanes of a warp that execute different warp operations with overlapping masks
 __global__ void divergent_warp(int *out)
 {
@@ -89,6 +103,8 @@ int main(int argc, char **argv)
     std::printf("uniform: done\n");
     if (argc > 1 && std::strcmp(argv[1], "later") == 0)
         launch(divergent_later, 4, 64).call(out);
+    else if (argc > 1 && std::strcmp(argv[1], "group") == 0)
+        launch(divergent_group, 4, 64).call(out);
     else if (argc > 1 && std::strcmp(argv[1], "warp") == 0)
         launch(divergent_warp, 4, 64).call(out);
     else if (argc > 1 && std::strcmp(argv[1], "warp_mask") == 0)

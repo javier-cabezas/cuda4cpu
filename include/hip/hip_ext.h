@@ -45,16 +45,26 @@ inline void record_launch_event(cudaEvent_t event, cudaStream_t stream)
 
 inline namespace hip_api {
 
-inline cudaError_t hipExtLaunchKernel(const void *function_address, dim3 numBlocks, dim3 dimBlocks, void **args,
-                                      size_t sharedMemBytes, cudaStream_t stream, cudaEvent_t startEvent,
-                                      cudaEvent_t stopEvent, int /* flags */,
-                                      std::source_location site = std::source_location::current())
+//! hipExtLaunchKernel with the call's site, which the hipExtLaunchKernel
+//! macro passes, as cudaLaunchKernel's does
+inline cudaError_t cuda4cpu_hipExtLaunchKernel(std::source_location site, const void *function_address,
+                                               dim3 numBlocks, dim3 dimBlocks, void **args, size_t sharedMemBytes,
+                                               cudaStream_t stream, cudaEvent_t startEvent, cudaEvent_t stopEvent,
+                                               int /* flags */)
 {
     detail::record_launch_event(startEvent, stream);
-    const cudaError_t err = cudaLaunchKernel(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream,
-                                             site);
+    const cudaError_t err =
+        cuda4cpu_cudaLaunchKernel(site, function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
     detail::record_launch_event(stopEvent, stream);
     return err;
+}
+
+inline cudaError_t hipExtLaunchKernel(const void *function_address, dim3 numBlocks, dim3 dimBlocks, void **args,
+                                      size_t sharedMemBytes, cudaStream_t stream, cudaEvent_t startEvent,
+                                      cudaEvent_t stopEvent, int flags)
+{
+    return cuda4cpu_hipExtLaunchKernel({}, function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream,
+                                       startEvent, stopEvent, flags);
 }
 
 #ifdef HIP_TEMPLATE_KERNEL_LAUNCH
@@ -87,3 +97,5 @@ inline void hipExtLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &d
     } while (0)
 
 #endif
+
+#define hipExtLaunchKernel(...) cuda4cpu_hipExtLaunchKernel(::std::source_location::current(), __VA_ARGS__)

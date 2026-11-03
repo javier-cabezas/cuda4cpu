@@ -48,6 +48,11 @@
   that called them from the same place. Lanes in another branch don't call
   them from there, so they are left out. Lanes that reach that place in
   different loop iterations may still be grouped together, unlike on a GPU.
+- **The divergent barrier check can't tell cooperative groups' `sync()`
+  calls apart**: it knows `__syncthreads()` by its line, but `sync()` has
+  CUDA's signature, without one. Threads at two different `block.sync()`
+  calls aren't reported, and a `sync()` that diverges from a
+  `__syncthreads()` is reported by its name.
 - **Cooperative launches are limited to one block per OS thread**
   (`multiProcessorCount` blocks), because all their blocks must run at the
   same time. Larger grids fail with `cudaErrorCooperativeLaunchTooLarge`, as

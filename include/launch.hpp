@@ -929,12 +929,19 @@ inline cudaError_t launch_registered(const void *func, dim3 grid, dim3 block, vo
 
 inline namespace cuda_api {
 
+//
+// The launches with an array of arguments. The cudaLaunchKernel and
+// cudaLaunchCooperativeKernel macros (defines.hpp) call the cuda4cpu_
+// functions with the call's site, which crash reports name, so that the
+// functions keep CUDA's signatures.
+//
+
 //! Launches func with the arguments that args points to, one pointer per
 //! parameter, as in CUDA
 template <typename... Args>
-cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
-                             size_t sharedMem = 0, cudaStream_t stream = nullptr,
-                             std::source_location site = std::source_location::current())
+cudaError_t cuda4cpu_cudaLaunchKernel(std::source_location site, void (*func)(Args...), dim3 gridDim,
+                                      dim3 blockDim, void **args, size_t sharedMem = 0,
+                                      cudaStream_t stream = nullptr)
 {
     return detail::launch_with_argument_array(func, gridDim, blockDim, args, sharedMem, stream, site,
                                               std::index_sequence_for<Args...>{});
@@ -945,19 +952,34 @@ cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim,
 //! Otherwise it fails with cudaErrorInvalidDeviceFunction.
 template <typename T>
     requires std::is_void_v<T>
-cudaError_t cudaLaunchKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem = 0,
-                             cudaStream_t stream = nullptr, std::source_location site = std::source_location::current())
+cudaError_t cuda4cpu_cudaLaunchKernel(std::source_location site, const T *func, dim3 gridDim, dim3 blockDim,
+                                      void **args, size_t sharedMem = 0, cudaStream_t stream = nullptr)
 {
     return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, false, site);
+}
+
+template <typename... Args>
+cudaError_t cudaLaunchKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
+                             size_t sharedMem = 0, cudaStream_t stream = nullptr)
+{
+    return cuda4cpu_cudaLaunchKernel({}, func, gridDim, blockDim, args, sharedMem, stream);
+}
+
+template <typename T>
+    requires std::is_void_v<T>
+cudaError_t cudaLaunchKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args, size_t sharedMem = 0,
+                             cudaStream_t stream = nullptr)
+{
+    return cuda4cpu_cudaLaunchKernel({}, func, gridDim, blockDim, args, sharedMem, stream);
 }
 
 //! Launches func so that all its blocks run at the same time, which
 //! cooperative_groups::grid_group::sync() requires. The grid can have at most
 //! multiProcessorCount blocks (one per OS thread).
 template <typename... Args>
-cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
-                                        size_t sharedMem = 0, cudaStream_t stream = nullptr,
-                                        std::source_location site = std::source_location::current())
+cudaError_t cuda4cpu_cudaLaunchCooperativeKernel(std::source_location site, void (*func)(Args...), dim3 gridDim,
+                                                 dim3 blockDim, void **args, size_t sharedMem = 0,
+                                                 cudaStream_t stream = nullptr)
 {
     return [&]<size_t... I>(std::index_sequence<I...>) {
         const launch_conf conf{gridDim, blockDim, sharedMem};
@@ -982,11 +1004,26 @@ cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim
 
 template <typename T>
     requires std::is_void_v<T>
-cudaError_t cudaLaunchCooperativeKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args,
-                                        size_t sharedMem = 0, cudaStream_t stream = nullptr,
-                                        std::source_location site = std::source_location::current())
+cudaError_t cuda4cpu_cudaLaunchCooperativeKernel(std::source_location site, const T *func, dim3 gridDim,
+                                                 dim3 blockDim, void **args, size_t sharedMem = 0,
+                                                 cudaStream_t stream = nullptr)
 {
     return detail::launch_registered(func, gridDim, blockDim, args, sharedMem, stream, true, site);
+}
+
+template <typename... Args>
+cudaError_t cudaLaunchCooperativeKernel(void (*func)(Args...), dim3 gridDim, dim3 blockDim, void **args,
+                                        size_t sharedMem = 0, cudaStream_t stream = nullptr)
+{
+    return cuda4cpu_cudaLaunchCooperativeKernel({}, func, gridDim, blockDim, args, sharedMem, stream);
+}
+
+template <typename T>
+    requires std::is_void_v<T>
+cudaError_t cudaLaunchCooperativeKernel(const T *func, dim3 gridDim, dim3 blockDim, void **args,
+                                        size_t sharedMem = 0, cudaStream_t stream = nullptr)
+{
+    return cuda4cpu_cudaLaunchCooperativeKernel({}, func, gridDim, blockDim, args, sharedMem, stream);
 }
 
 //

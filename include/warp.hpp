@@ -23,7 +23,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <source_location>
 #include <type_traits>
 
 #include "launch.hpp"
@@ -93,11 +92,13 @@ shuffle(unsigned mask, T var, unsigned src_lane)
     }
 }
 
-//! Identifies a call site: user-space addresses fit in 47 bits
+//! Identifies a call site, from __FILE__ and __LINE__: user-space addresses
+//! fit in 47 bits. A literal has one address in a source file, and so in
+//! every copy of its code that the compiler inlines.
 inline uint64_t
-call_site(const std::source_location &site)
+call_site(const char *file, unsigned line)
 {
-    return uint64_t(reinterpret_cast<uintptr_t>(site.file_name())) ^ (uint64_t(site.line()) << 47);
+    return uint64_t(reinterpret_cast<uintptr_t>(file)) ^ (uint64_t(line) << 47);
 }
 
 }
@@ -112,10 +113,17 @@ inline void __syncwarp(unsigned mask = 0xffffffff)
 //! Lanes of the calling warp that call __activemask() at the same place
 //! together. It waits until every lane of the warp that hasn't returned is
 //! blocked (at a warp operation or a barrier) and returns the lanes waiting
-//! here: lanes in another branch don't come here, so they are left out.
-inline unsigned __activemask(std::source_location site = std::source_location::current())
+//! here: lanes in another branch don't come here, so they are left out. The
+//! __activemask() macro (defines.hpp) calls it with the call's place.
+inline unsigned cuda4cpu_activemask(const char *file, unsigned line)
 {
-    return thread_block::warp_active_mask(detail::call_site(site));
+    return thread_block::warp_active_mask(detail::call_site(file, line));
+}
+
+//! Calls that bypass the macro, such as (__activemask)(), all share one place
+inline unsigned __activemask()
+{
+    return cuda4cpu_activemask(nullptr, 0);
 }
 
 //! Value of var in lane srcLane of the caller's group of width lanes
@@ -196,3 +204,8 @@ inline unsigned __match_all_sync(unsigned mask, T value, int *pred)
 }
 
 }
+
+// The __activemask() macro's function, in every scope the call may be
+// qualified with: ::__activemask(), cuda4cpu::__activemask(), or unqualified
+// in any namespace, with or without cuda_runtime.h's using-directive
+using cuda4cpu::cuda_api::cuda4cpu_activemask;
