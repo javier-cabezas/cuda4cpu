@@ -187,7 +187,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the CMake languages need 4.1 or later. CI's setup action installs
   Kitware's CMake 4.2.3, cached, for that.
   Both handle `.hip` files and `-x cu`/`-x hip`. The rewritten sources go in
-  `<output>.cuda4cpu-src/` (a temporary directory without `-o`), removed
+  `<output>.cuda4cpu-src/` (a temporary directory without `-o`, or when the
+  output isn't a file, as `/dev/null`, or its directory can't be written), removed
   after the compile: their paths reach the command line and the
   preprocessed output, so they must be the same on every build for ccache to
   hit. So the dependencies the compiler writes (`-MD`, `-MF`, `-M`, ...)
@@ -411,7 +412,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     syntax that must stay untouched, errors, and shadow headers with depfiles.
   - `driver`: builds `samples/vector_add.cu` with the build-tree
     `cuda4cpu-c++`, in one step and with separate compile and link, with its
-    default compiler and `CXX` set to the driver itself. `driver_hipcc` and
+    default compiler and `CXX` set to the driver itself, and to `-o /dev/null`. `driver_hipcc` and
     `driver_x_hip` build a HIP `.cpp` file with `cuda4cpu-hipcc` (and an
     AMD-only option) and with `cuda4cpu-c++ -x hip`. `driver_nvcc` builds it
     with `cuda4cpu-nvcc` and nvcc's options for the GPU, and

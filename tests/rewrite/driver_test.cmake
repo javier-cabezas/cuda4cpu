@@ -42,3 +42,7 @@ run("${DRIVER}" ${flags} -O2 -c "${SOURCE}")
 cmake_path(GET SOURCE STEM stem)
 run("${DRIVER}" -o "${WORK}/two_steps" "${WORK}/${stem}.o")
 run("${WORK}/two_steps")
+
+# An output that isn't a file, as in checks that only compile: the rewritten
+# sources go in a temporary directory, not next to it (/dev/null.cuda4cpu-src)
+run("${DRIVER}" ${flags} -c -o /dev/null "${SOURCE}")
