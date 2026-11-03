@@ -342,8 +342,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     while some of their threads are at `__syncthreads()` or return,
     `coalesced_threads()` in a branch (warp-aggregated atomics), and
     `grid.sync()` across rounds of a cooperative launch, and the forms of the
-    calls that are macros (a using-declaration of `coalesced_threads`, calls
-    around the macros, a qualified `::cudaLaunchKernel`)
+    calls that are macros (using-declarations of `coalesced_threads`, calls
+    around the macros, qualified `::coalesced_threads()`,
+    `cuda4cpu::__activemask()` and `::cudaLaunchKernel`)
   - `runtime`: error codes and the last error, launch limits, allocation,
     copies, memset, symbols, events, device queries and intrinsics, through
     `cuda_runtime.h` only. It and `hip_memory` run with
@@ -832,11 +833,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   place first (`defines.hpp`, `cooperative_groups.h`, `hip_ext.h`). The
   functions keep CUDA's and HIP's signatures, for code that takes their
   address or calls them as `(name)(...)`, which shares one place. A macro's
-  expansion starts with a name in the same namespace, so `::cudaLaunchKernel(...)`
-  and `cg::coalesced_threads()` keep working, and it must be defined after
-  the function, or it would rename its definition. `coalesced_threads()`
-  passes a `cooperative_groups::cuda4cpu_place`, so that argument-dependent
-  lookup finds its function after `using cooperative_groups::coalesced_threads;`.
+  expansion starts with a name in the same namespace, so `::cudaLaunchKernel(...)`,
+  `cuda4cpu::__activemask()` and `cg::coalesced_threads()` keep working, and
+  it must be defined after the function, or it would rename its definition.
+  `cuda4cpu_activemask` and `cuda4cpu_coalesced_threads` are also brought to
+  global scope by using-declarations, for unqualified calls in any namespace
+  and for `::coalesced_threads()` after a using-declaration of it there.
+  `coalesced_threads()` passes a `cooperative_groups::cuda4cpu_place`, so
+  that argument-dependent lookup finds its function after
+  `using cooperative_groups::coalesced_threads;` in another namespace.
   Like `__syncthreads`, the macros break members of the program's classes
   with those names. Never add parameters to CUDA's or HIP's functions.
 - AddressSanitizer: `__sanitizer_start/finish_switch_fiber` are weak

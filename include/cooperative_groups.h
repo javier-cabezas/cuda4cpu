@@ -679,4 +679,9 @@ inline unsigned long long group_size(const Group &group)
 
 }
 
+// After a using-declaration of coalesced_threads at global scope,
+// ::coalesced_threads() becomes ::cuda4cpu_coalesced_threads(...), which
+// qualified lookup finds only here: argument-dependent lookup doesn't apply
+using cooperative_groups::cuda4cpu_coalesced_threads;
+
 #define coalesced_threads() cuda4cpu_coalesced_threads(::cooperative_groups::cuda4cpu_place{__FILE__, __LINE__})

@@ -64,8 +64,9 @@
 #define __syncthreads() cuda4cpu::thread_block::syncthreads(__FILE__, __LINE__)
 
 // __activemask() groups the lanes that call it from the same place, by file
-// and line. The function keeps CUDA's signature.
-#define __activemask() cuda4cpu::thread_block::warp_active_mask(cuda4cpu::detail::call_site(__FILE__, __LINE__))
+// and line. The function keeps CUDA's signature, and the macro the call's
+// namespace qualification, if any (cuda4cpu_activemask is in both).
+#define __activemask() cuda4cpu_activemask(__FILE__, __LINE__)
 
 // Crash reports name the line of a kernel's launch. The functions keep CUDA's
 // signatures, and the macros the call's namespace qualification, if any.

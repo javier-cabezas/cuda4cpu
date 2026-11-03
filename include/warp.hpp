@@ -114,11 +114,16 @@ inline void __syncwarp(unsigned mask = 0xffffffff)
 //! together. It waits until every lane of the warp that hasn't returned is
 //! blocked (at a warp operation or a barrier) and returns the lanes waiting
 //! here: lanes in another branch don't come here, so they are left out. The
-//! __activemask() macro (defines.hpp) gives each call its own place; calls
-//! that bypass it, such as (__activemask)(), all share one.
+//! __activemask() macro (defines.hpp) calls it with the call's place.
+inline unsigned cuda4cpu_activemask(const char *file, unsigned line)
+{
+    return thread_block::warp_active_mask(detail::call_site(file, line));
+}
+
+//! Calls that bypass the macro, such as (__activemask)(), all share one place
 inline unsigned __activemask()
 {
-    return thread_block::warp_active_mask(detail::call_site(nullptr, 0));
+    return cuda4cpu_activemask(nullptr, 0);
 }
 
 //! Value of var in lane srcLane of the caller's group of width lanes
@@ -199,3 +204,8 @@ inline unsigned __match_all_sync(unsigned mask, T value, int *pred)
 }
 
 }
+
+// The __activemask() macro's function, in every scope the call may be
+// qualified with: ::__activemask(), cuda4cpu::__activemask(), or unqualified
+// in any namespace, with or without cuda_runtime.h's using-directive
+using cuda4cpu::cuda_api::cuda4cpu_activemask;

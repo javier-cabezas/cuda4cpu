@@ -481,6 +481,8 @@ static void test_grid()
 // free sync() and a qualified launch
 //
 
+using cooperative_groups::coalesced_threads;
+
 namespace using_declaration {
 
 using cooperative_groups::coalesced_threads;
@@ -490,14 +492,16 @@ __global__ void call_forms(unsigned *out)
     // Only the even lanes use the shared place
     const unsigned t = threadIdx.x;
     if (t % 2 == 0) {
-        out[t * 3]     = unsigned(coalesced_threads().num_threads());
-        out[t * 3 + 1] = (__activemask)();
-        out[t * 3 + 2] = unsigned((coalesced_threads)().num_threads());
+        out[t * 4]     = unsigned(coalesced_threads().num_threads());
+        out[t * 4 + 1] = (__activemask)();
+        out[t * 4 + 2] = unsigned((coalesced_threads)().num_threads());
+        out[t * 4 + 3] = unsigned(::coalesced_threads().num_threads());
     } else {
         __syncwarp(0xaaaaaaaa);
-        out[t * 3]     = unsigned(cg::coalesced_threads().num_threads());
-        out[t * 3 + 1] = __activemask();
-        out[t * 3 + 2] = 16;
+        out[t * 4]     = unsigned(cg::coalesced_threads().num_threads());
+        out[t * 4 + 1] = __activemask();
+        out[t * 4 + 2] = 16;
+        out[t * 4 + 3] = cuda4cpu::__activemask() == 0xaaaaaaaa ? 16 : 0;
     }
     cg::sync(cg::this_thread_block());
     cg::sync(cg::tiled_partition<16>(cg::this_thread_block()));
@@ -508,14 +512,15 @@ __global__ void call_forms(unsigned *out)
 static void test_call_forms()
 {
     const unsigned threads = 64;
-    std::vector<unsigned> out(threads * 3);
+    std::vector<unsigned> out(threads * 4);
     unsigned *out_ptr = out.data();
     void *args[] = {&out_ptr};
     EXPECT(::cudaLaunchKernel(using_declaration::call_forms, dim3(1), dim3(threads), args) == cudaSuccess);
     for (unsigned t = 0; t < threads; ++t) {
-        EXPECT(out[t * 3] == 16);
-        EXPECT(out[t * 3 + 1] == (t % 2 == 0 ? 0x55555555u : 0xaaaaaaaau));
-        EXPECT(out[t * 3 + 2] == 16);
+        EXPECT(out[t * 4] == 16);
+        EXPECT(out[t * 4 + 1] == (t % 2 == 0 ? 0x55555555u : 0xaaaaaaaau));
+        EXPECT(out[t * 4 + 2] == 16);
+        EXPECT(out[t * 4 + 3] == 16);
     }
 }
 
