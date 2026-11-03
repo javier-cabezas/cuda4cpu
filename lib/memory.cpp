@@ -701,8 +701,10 @@ std::optional<std::string> run_program(std::vector<std::string> args)
         pid_t waited;
         while ((waited = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {
         }
-        succeeded = waited == pid ? WIFEXITED(status) && WEXITSTATUS(status) == 0
-                                  : errno == ECHILD && !output.empty();
+        // Output is required either way: a tool that prints nothing can't
+        // have symbolized anything, and the next one is tried
+        succeeded = !output.empty() && (waited == pid ? WIFEXITED(status) && WEXITSTATUS(status) == 0
+                                                      : errno == ECHILD);
     }
     close(out[0]);
     if (!succeeded)
@@ -738,9 +740,17 @@ std::string symbolizer_output(const std::string &object, const std::vector<uintp
 
 //! A function's name without the suffixes of the compiler's copies of it
 //! (GCC's .isra.0, .constprop.0, .part.0): " [clone .isra.0]" from
-//! addr2line and the C++ ABI's demangler, " (.isra.0)" from llvm-symbolizer
+//! addr2line and the C++ ABI's demangler, " (.isra.0)" from llvm-symbolizer,
+//! and ".isra.0" on a C function's name, which isn't demangled
 std::string without_clones(std::string name)
 {
+    if (name.find('(') == std::string::npos) {
+        // Not a demangled C++ function: a C name, which has no dots but its
+        // copies' (one.constprop.0.isra.0)
+        if (const size_t dot = name.find('.'); dot != 0 && dot != std::string::npos)
+            name.erase(dot);
+        return name;
+    }
     for (;;) {
         if (name.ends_with("]")) {
             const size_t open = name.rfind(" [clone .");

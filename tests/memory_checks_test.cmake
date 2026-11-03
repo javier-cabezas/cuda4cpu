@@ -81,9 +81,20 @@ if(llvm_symbolizers)
     list(GET llvm_symbolizers 0 llvm_symbolizer)
 endif()
 
+# Whether the PATH has a symbolizer, which the library looks for there only
+# (the GLOB above also finds LLVM's directories)
+set(path_symbolizer "")
+string(REPLACE ":" ";" path_directories "$ENV{PATH}")
+foreach(directory IN LISTS path_directories)
+    if(directory)
+        file(GLOB found "${directory}/addr2line" "${directory}/llvm-symbolizer" "${directory}/llvm-symbolizer-[0-9]*")
+        list(APPEND path_symbolizer ${found})
+    endif()
+endforeach()
+
 # addr2line from binutils 2.42 names the rewritten copy (.cu.cpp) in
 # Clang's DWARF 5, with the original's lines
-if(addr2line OR llvm_symbolizer)
+if(path_symbolizer)
     check_lines("with the PATH's symbolizer" "memory_checks\\.cu(\\.cpp)?")
     # A program that ignores SIGCHLD can't wait for the symbolizer's status
     run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks_ignoring_children)
@@ -132,8 +143,10 @@ file(REMOVE_RECURSE "${only}")
 
 run(0 PATH=${CMAKE_CURRENT_BINARY_DIR}/no-such-directory CUDA4CPU_LEAK_CHECK=warn "${PROGRAM}" leaks)
 check_sites("at offsets in the program, without a symbolizer" "at [^\n]*memory_checks\\+0x[0-9a-f]+")
-run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM_WITHOUT_DEBUG_INFO}" leaks)
-check_sites("in their function, without -g" "in (main|leaks\\(\\))")
+if(path_symbolizer)
+    run(0 CUDA4CPU_LEAK_CHECK=warn "${PROGRAM_WITHOUT_DEBUG_INFO}" leaks)
+    check_sites("in their function, without -g" "in (main|leaks\\(\\))")
+endif()
 
 foreach(setting "" CUDA4CPU_LEAK_CHECK=ignore)
     run(0 ${setting} "${PROGRAM}" leaks)
