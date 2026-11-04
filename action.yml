@@ -26,8 +26,8 @@ branding:
 inputs:
   version:
     description: >
-      The release to install, such as v0.4.1, or latest. By default, the
-      release the action is used at (javier-cabezas/cuda4cpu@v0.4.1), or the
+      The release to install, such as v0.5.0, or latest. By default, the
+      release the action is used at (javier-cabezas/cuda4cpu@v0.5.0), or the
       latest one for a branch or commit.
     required: false
     default: ''
