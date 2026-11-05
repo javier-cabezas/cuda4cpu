@@ -35,7 +35,8 @@ is compiled with cuda4cpu-c++, or with cuda4cpu-hipcc for suites whose
     skipped       not run, for the reason the manifest gives ("skip")
 
 A program's "timeout" in the manifest replaces --timeout; programs with longer
-timeouts start first.
+timeouts start first. "env" gives environment variables to run it with, such
+as the compute capability that programs check before using tensor cores.
 
 The report lists every program with its status and the first error. With
 --baseline, programs that passed in the baseline and don't pass now are
@@ -133,6 +134,7 @@ def run_program(program, source_dir, work_dir, timeout):
     start = time.monotonic()
     try:
         p = subprocess.run([exe] + program.get('args', []), cwd=run_dir, capture_output=True,
+                           env=dict(os.environ, **program.get('env', {})),
                            text=True, errors='replace', timeout=program.get('timeout', timeout))
     except subprocess.TimeoutExpired as e:
         return 'timeout', time.monotonic() - start, (e.stdout or '') if isinstance(e.stdout, str) else ''

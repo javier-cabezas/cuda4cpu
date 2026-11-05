@@ -126,6 +126,14 @@
           "dir": "cpp/3_CUDA_Features/StreamPriorities"
         },
         {
+          "dir": "cpp/3_CUDA_Features/bf16TensorCoreGemm",
+          "env": {
+            "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
+          },
+          "verified": false,
+          "timeout": 600
+        },
+        {
           "dir": "cpp/3_CUDA_Features/binaryPartitionCG"
         },
         {
@@ -138,6 +146,22 @@
           "dir": "cpp/3_CUDA_Features/cdpSimpleQuicksort"
         },
         {
+          "dir": "cpp/3_CUDA_Features/cudaTensorCoreGemm",
+          "env": {
+            "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
+          },
+          "verified": false,
+          "timeout": 600
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/dmmaTensorCoreGemm",
+          "env": {
+            "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
+          },
+          "verified": false,
+          "timeout": 600
+        },
+        {
           "dir": "cpp/3_CUDA_Features/graphConditionalNodes"
         },
         {
@@ -148,6 +172,14 @@
           "dir": "cpp/3_CUDA_Features/graphMemoryNodes"
         },
         {
+          "dir": "cpp/3_CUDA_Features/immaTensorCoreGemm",
+          "env": {
+            "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
+          },
+          "verified": false,
+          "timeout": 600
+        },
+        {
           "dir": "cpp/3_CUDA_Features/jacobiCudaGraphs"
         },
         {
@@ -155,6 +187,14 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/newdelete"
+        },
+        {
+          "dir": "cpp/3_CUDA_Features/tf32TensorCoreGemm",
+          "env": {
+            "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
+          },
+          "verified": false,
+          "timeout": 600
         },
         {
           "dir": "cpp/3_CUDA_Features/warpAggregatedAtomicsCG"

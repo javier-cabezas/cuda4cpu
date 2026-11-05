@@ -27,6 +27,9 @@
   extern __shared__ T name[];
       -> T *name = cuda4cpu::dynamic_shared<T>();               (in a function)
       -> static cuda4cpu::dynamic_shared_array<T> name;         (at namespace scope)
+  extern __shared__ T name[][N];  (and further dimensions)
+      -> T (*name)[N] = cuda4cpu::dynamic_shared<T[N]>();
+      -> static cuda4cpu::dynamic_shared_array<T[N]> name;
   HIP_DYNAMIC_SHARED(T, name), HIP's macro for that declaration, likewise
 
   cudaLaunchKernel((void *)kernel, ...), cudaLaunchCooperativeKernel, and
@@ -58,6 +61,11 @@
       -> params.cuda4cpu_gridDim, params->cuda4cpu_blockDim
       gridDim and blockDim are macros for the built-in variables, so the fields
       of cudaKernelNodeParams have other names.
+
+  dim3 gridDim, blockDim; (variables, parameters and fields the program declares)
+      -> dim3 cuda4cpu_gridDim, cuda4cpu_blockDim;
+      Renamed where the declaration is in scope, where it hides the built-in
+      variable, as host code that computes a launch's configuration does.
 
 The kernel, the launch configuration and the arguments are copied verbatim, so
 the result behaves like the CUDA launch: template arguments are deduced from the
@@ -381,9 +389,10 @@ def config_end(tokens, i):
 
 
 def find_extern_shared(tokens):
-    """Returns (first, last, type_tokens, name, namespace_scope) for every
-    `extern __shared__ T name[];` declaration, and every
-    HIP_DYNAMIC_SHARED(T, name), whose last token is its ')'."""
+    """Returns (first, last, type_tokens, name, namespace_scope, dimensions)
+    for every `extern __shared__ T name[];` declaration, and every
+    HIP_DYNAMIC_SHARED(T, name), whose last token is its ')'. dimensions are
+    the tokens of the bounds after the first, `[N][M]` in `name[][N][M]`."""
     found = []
     scopes = []                                     # True for namespace scopes
     for i, t in enumerate(tokens):
@@ -399,7 +408,7 @@ def find_extern_shared(tokens):
             if close is None or close - i < 5 or tokens[close - 2].text != ',' or \
                     tokens[close - 1].kind != 'id':
                 raise RewriteError(line_of(t), 'unsupported HIP_DYNAMIC_SHARED declaration')
-            found.append((i, close, tokens[i + 2:close - 2], tokens[close - 1].text, all(scopes)))
+            found.append((i, close, tokens[i + 2:close - 2], tokens[close - 1].text, all(scopes), []))
         elif t.text == 'extern' and i + 1 < len(tokens) and tokens[i + 1].kind != 'string':
             semi = i
             while semi < len(tokens) and tokens[semi].text not in (';', '{', '}'):
@@ -409,6 +418,20 @@ def find_extern_shared(tokens):
             decl = tokens[i + 1:semi]
             if not any(d.text == '__shared__' for d in decl):
                 continue
+            # The bounds after the first, each a bracketed expression
+            dims_start = len(decl)
+            while dims_start > 0 and decl[dims_start - 1].text == ']':
+                depth, k = 0, dims_start - 1
+                while k >= 0:
+                    depth += {']': 1, '[': -1}.get(decl[k].text, 0)
+                    if depth == 0:
+                        break
+                    k -= 1
+                if k < 0 or k == dims_start - 2:
+                    break
+                dims_start = k
+            dimensions = decl[dims_start:]
+            decl = decl[:dims_start]
             if len(decl) < 4 or decl[-1].text != ']' or decl[-2].text != '[' or decl[-3].kind != 'id':
                 raise RewriteError(line_of(t), 'unsupported extern __shared__ declaration')
             # The type is what remains without __shared__ and alignment specifiers
@@ -433,7 +456,7 @@ def find_extern_shared(tokens):
                     k += 1
             if not type_tokens:
                 raise RewriteError(line_of(t), 'extern __shared__ declaration without a type')
-            found.append((i, semi, type_tokens, decl[-3].text, all(scopes)))
+            found.append((i, semi, type_tokens, decl[-3].text, all(scopes), dimensions))
     return found
 
 
@@ -648,6 +671,59 @@ def find_dim_fields(tokens):
             yield i
 
 
+# Words after which gridDim or blockDim is an expression, not a declaration
+EXPRESSION_WORDS = frozenset(('return', 'case', 'sizeof', 'throw', 'co_return', 'co_yield', 'else', 'do',
+                              'delete', 'new', 'typeid', 'alignof', 'goto', 'not', 'and', 'or', 'xor',
+                              'bitand', 'bitor', 'compl', 'not_eq', 'and_eq', 'or_eq', 'xor_eq',
+                              'define', 'undef', 'ifdef', 'ifndef', 'defined'))
+
+
+def find_dim_variables(tokens):
+    """Yields the indices of gridDim and blockDim where they name a variable,
+    parameter or field that the program declares (`dim3 gridDim;`): in the
+    declaration's scope, from it to the end of its block, or for a parameter,
+    the function's body. Declarations at namespace scope are left alone."""
+    enclosing, stack, match = [], [], {}
+    for i, t in enumerate(tokens):
+        enclosing.append(stack[-1] if stack else None)
+        if t.text in ('(', '[', '{'):
+            stack.append(i)
+        elif t.text in (')', ']', '}') and stack:
+            match[stack.pop()] = i
+    renamed = set()
+    for i in range(1, len(tokens) - 1):
+        name, prev, next_ = tokens[i].text, tokens[i - 1], tokens[i + 1]
+        # A name after a type, which no expression has
+        if name not in ('gridDim', 'blockDim') or prev.kind != 'id' or prev.text in EXPRESSION_WORDS or \
+                next_.text not in (';', '=', '(', '{', ',', '[', ')'):
+            continue
+        opener = enclosing[i]
+        if opener is None:
+            continue
+        last = len(tokens) - 1
+        if tokens[opener].text == '(':
+            # A parameter: its scope is the body that follows, if any
+            close = match.get(opener, last)
+            body = next((k for k in range(close + 1, len(tokens)) if tokens[k].text in ('{', ';')), None)
+            end = match.get(body, last) if body is not None and tokens[body].text == '{' else close
+        elif tokens[opener].text == '{' and not opens_namespace(tokens, opener):
+            end = match.get(opener, last)
+        else:
+            continue
+        declared = {name}
+        if tokens[opener].text == '{':
+            # The declaration's other declarators: dim3 gridDim, blockDim;
+            k = i + 1
+            while k < end and tokens[k].text != ';':
+                if tokens[k].text == ',' and enclosing[k] == opener and tokens[k + 1].text in ('gridDim', 'blockDim'):
+                    declared.add(tokens[k + 1].text)
+                k += 1
+        for k in range(i, end):
+            if tokens[k].text in declared and tokens[k - 1].text not in ('.', '->', '::'):
+                renamed.add(k)
+    yield from sorted(renamed)
+
+
 def opens_namespace(tokens, i):
     """True if the '{' at tokens[i] opens a namespace or an extern "C" block."""
     k = i - 1
@@ -722,10 +798,13 @@ def rewrite_text(text, path, include_hook=None, kernels=None):
                 if target is not None:
                     replacements.append((tokens[i + 2].start, tokens[i + 2].end, quote(target)))
 
-    for first, semi, type_tokens, name, namespace_scope in find_extern_shared(tokens):
+    for first, semi, type_tokens, name, namespace_scope, dimensions in find_extern_shared(tokens):
         type_text = ' '.join(source(text, type_tokens[0], type_tokens[-1]).split())
+        dims = ' '.join(source(text, dimensions[0], dimensions[-1]).split()) if dimensions else ''
         if namespace_scope:
-            new = f'static cuda4cpu::dynamic_shared_array<{type_text}> {name};'
+            new = f'static cuda4cpu::dynamic_shared_array<{type_text}{dims}> {name};'
+        elif dims:
+            new = f'{type_text} (*{name}){dims} = cuda4cpu::dynamic_shared<{type_text}{dims}>();'
         else:
             new = f'{type_text} *{name} = cuda4cpu::dynamic_shared<{type_text}>();'
         # Keep the newlines the declaration may span, so that line numbers don't change
@@ -751,6 +830,9 @@ def rewrite_text(text, path, include_hook=None, kernels=None):
         replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu::device_clock'))
 
     for i in find_dim_fields(tokens):
+        replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu_' + tokens[i].text))
+
+    for i in find_dim_variables(tokens):
         replacements.append((tokens[i].start, tokens[i].end, 'cuda4cpu_' + tokens[i].text))
 
     for i in find_loop_bodies(tokens):

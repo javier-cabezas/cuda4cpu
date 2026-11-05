@@ -214,6 +214,16 @@ class ExternShared(unittest.TestCase):
         self.assertEqual(rewrite('namespace a { extern "C" { extern __shared__ int s[]; } }'),
                          'namespace a { extern "C" { static cuda4cpu::dynamic_shared_array<int> s; } }')
 
+    def test_dimensions_after_the_first(self):
+        self.assertEqual(rewrite('void k() { extern __shared__ half s[][CHUNK * K + SKEW]; }'),
+                         'void k() { half (*s)[CHUNK * K + SKEW] = cuda4cpu::dynamic_shared<half[CHUNK * K + SKEW]>(); }')
+        self.assertEqual(rewrite('void k() { extern __shared__ int s[][a[1]][2]; }'),
+                         'void k() { int (*s)[a[1]][2] = cuda4cpu::dynamic_shared<int[a[1]][2]>(); }')
+        self.assertEqual(rewrite('extern __shared__ float s[][4];'),
+                         'static cuda4cpu::dynamic_shared_array<float[4]> s;')
+        self.assertEqual(rewrite('void k() { extern __shared__ float s[][\n4]; }'),
+                         'void k() { float (*s)[ 4] = cuda4cpu::dynamic_shared<float[ 4]>();\n }')
+
     def test_other_externs_untouched(self):
         text = 'extern int x; extern "C" void f(); extern __device__ int y[];'
         self.assertEqual(rewrite(text), text)
@@ -221,6 +231,39 @@ class ExternShared(unittest.TestCase):
     def test_multiline_keeps_line_count(self):
         self.assertEqual(rewrite('void k() { extern __shared__\n float s[]; }'),
                          'void k() { float *s = cuda4cpu::dynamic_shared<float>();\n }')
+
+
+class DimVariables(unittest.TestCase):
+    def test_local_variables(self):
+        self.assertEqual(rewrite('void f() { dim3 gridDim; gridDim.x = 2; k<<<gridDim, 1>>>(); }'),
+                         'void f() { dim3 cuda4cpu_gridDim; cuda4cpu_gridDim.x = 2; '
+                         + launch('k', 'cuda4cpu_gridDim, 1', '') + '; }')
+
+    def test_several_declarators(self):
+        self.assertEqual(rewrite('void f() { dim3 gridDim(2), blockDim(64); g(gridDim, blockDim); }'),
+                         'void f() { dim3 cuda4cpu_gridDim(2), cuda4cpu_blockDim(64); '
+                         'g(cuda4cpu_gridDim, cuda4cpu_blockDim); }')
+        self.assertEqual(rewrite('void f() { int gridDim[3]; unsigned blockDim = 4; g(gridDim[0], blockDim); }'),
+                         'void f() { int cuda4cpu_gridDim[3]; unsigned cuda4cpu_blockDim = 4; '
+                         'g(cuda4cpu_gridDim[0], cuda4cpu_blockDim); }')
+
+    def test_parameters(self):
+        self.assertEqual(rewrite('void f(dim3 gridDim) { g(gridDim); } void h(dim3 blockDim);'),
+                         'void f(dim3 cuda4cpu_gridDim) { g(cuda4cpu_gridDim); } void h(dim3 cuda4cpu_blockDim);')
+
+    def test_only_in_scope(self):
+        # The built-in variables outside the declaration's block, before it,
+        # and in expressions
+        text = ('void f() { { dim3 gridDim; } g(gridDim); } '
+                'void k() { int n = blockDim.x * gridDim.x; dim3 d = gridDim; x(a * gridDim.y); '
+                'h(sizeof gridDim); }')
+        self.assertEqual(rewrite(text), text.replace('{ dim3 gridDim; }', '{ dim3 cuda4cpu_gridDim; }'))
+        self.assertEqual(rewrite('void f() { g(gridDim); dim3 gridDim; }'),
+                         'void f() { g(gridDim); dim3 cuda4cpu_gridDim; }')
+
+    def test_namespace_scope_and_macros_untouched(self):
+        text = 'dim3 gridDim; namespace a { dim3 blockDim; }\n#define G gridDim\n#undef blockDim\n'
+        self.assertEqual(rewrite(text), text)
 
 
 class HipDynamicShared(unittest.TestCase):
@@ -261,6 +304,10 @@ class Errors(unittest.TestCase):
     def test_extern_shared_that_is_not_an_array(self):
         with self.assertRaises(rw.RewriteError):
             rewrite('void k() { extern __shared__ float s; }')
+
+    def test_extern_shared_with_a_first_bound(self):
+        with self.assertRaises(rw.RewriteError):
+            rewrite('void k() { extern __shared__ float s[4][]; }')
 
 
 class Headers(unittest.TestCase):
