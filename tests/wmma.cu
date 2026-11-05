@@ -30,6 +30,7 @@
 
 #include <mma.h>
 
+#include <algorithm>
 #include <bit>
 #include <climits>
 #include <cmath>
@@ -93,13 +94,18 @@ static P &at(P *p, bool row_major, unsigned ld, int row, int col)
 }
 
 //! Each warp of the block computes a tile of D = 2 (A B + C), over k_tiles
-//! tiles of A and B
+//! tiles of A and B. Each block has its own matrices, sizes[] apart.
 template <typename T, int M, int N, int K, typename LA, typename LB, typename TC, typename TD>
 __global__ void tiled(const storage<T> *a, unsigned lda, const storage<T> *b, unsigned ldb, const TC *c, unsigned ldc,
-                      wmma::layout_t c_layout, TD *d, unsigned ldd, wmma::layout_t d_layout, int tiles_n, int k_tiles)
+                      wmma::layout_t c_layout, TD *d, unsigned ldd, wmma::layout_t d_layout, int tiles_n, int k_tiles,
+                      const size_t *sizes)
 {
     constexpr bool a_rows = std::is_same_v<LA, wmma::row_major>, b_rows = std::is_same_v<LB, wmma::row_major>;
     const int warp = int(threadIdx.x / 32), tile_m = warp / tiles_n, tile_n = warp % tiles_n;
+    a += blockIdx.x * sizes[0];
+    b += blockIdx.x * sizes[1];
+    c += blockIdx.x * sizes[2];
+    d += blockIdx.x * sizes[3];
 
     wmma::fragment<wmma::accumulator, M, N, K, TC> acc;
     wmma::load_matrix_sync(acc, &at(c, c_layout == wmma::mem_row_major, ldc, tile_m * M, tile_n * N), ldc, c_layout);
@@ -146,10 +152,14 @@ static long double exact_input(storage<T> x)
         return value_of(x);
 }
 
-template <typename T, int M, int N, int K, typename LA, typename LB, typename TC, typename TD>
+//! D = 2 (A B + C) for every memory layout of C and D, with tiles x tiles
+//! warps per block, in each of blocks blocks
+template <typename T, int M, int N, int K, typename LA, typename LB, typename TC, typename TD, int tiles = 2,
+          int blocks = 1>
 static void check(const char *name, std::mt19937 &random)
 {
-    constexpr int tiles_m = 2, tiles_n = 2, k_tiles = 2, rows = tiles_m * M, cols = tiles_n * N, depth = k_tiles * K;
+    constexpr int tiles_m = tiles, tiles_n = tiles, k_tiles = 2;
+    constexpr int rows = tiles_m * M, cols = tiles_n * N, depth = k_tiles * K;
     constexpr bool a_rows = std::is_same_v<LA, wmma::row_major>, b_rows = std::is_same_v<LB, wmma::row_major>;
     // Every combination of the memory layouts of C and D, with leading
     // dimensions larger than the matrices
@@ -157,9 +167,11 @@ static void check(const char *name, std::mt19937 &random)
         const bool c_rows = layouts & 1, d_rows = layouts & 2;
         const unsigned lda = (a_rows ? depth : rows) + 8, ldb = (b_rows ? cols : depth) + 8;
         const unsigned ldc = (c_rows ? cols : rows) + 4, ldd = (d_rows ? cols : rows) + 4;
-        std::vector<storage<T>> a(size_t(lda) * (a_rows ? rows : depth)), b(size_t(ldb) * (b_rows ? depth : cols));
-        std::vector<TC> c(size_t(ldc) * (c_rows ? rows : cols));
-        std::vector<TD> d(size_t(ldd) * (d_rows ? rows : cols), TD(0.0f));
+        const size_t sizes[4] = {size_t(lda) * (a_rows ? rows : depth), size_t(ldb) * (b_rows ? depth : cols),
+                                 size_t(ldc) * (c_rows ? rows : cols), size_t(ldd) * (d_rows ? rows : cols)};
+        std::vector<storage<T>> a(sizes[0] * blocks), b(sizes[1] * blocks);
+        std::vector<TC> c(sizes[2] * blocks);
+        std::vector<TD> d(sizes[3] * blocks, TD(0.0f));
         for (auto &x : a)
             x = input<T>(random);
         for (auto &x : b)
@@ -173,17 +185,21 @@ static void check(const char *name, std::mt19937 &random)
 
         const auto c_layout = c_rows ? wmma::mem_row_major : wmma::mem_col_major;
         const auto d_layout = d_rows ? wmma::mem_row_major : wmma::mem_col_major;
-        tiled<T, M, N, K, LA, LB, TC, TD><<<1, 32 * tiles_m * tiles_n>>>(a.data(), lda, b.data(), ldb, c.data(), ldc,
-                                                                        c_layout, d.data(), ldd, d_layout, tiles_n,
-                                                                        k_tiles);
+        tiled<T, M, N, K, LA, LB, TC, TD><<<blocks, 32 * tiles_m * tiles_n>>>(
+            a.data(), lda, b.data(), ldb, c.data(), ldc, c_layout, d.data(), ldd, d_layout, tiles_n, k_tiles, sizes);
         unsigned wrong = 0;
-        for (int i = 0; i < rows; ++i)
-            for (int j = 0; j < cols; ++j) {
-                long double sum = value_of(at(c.data(), c_rows, ldc, i, j));
-                for (int k = 0; k < depth; ++k)
-                    sum += exact_input<T>(at(a.data(), a_rows, lda, i, k)) * exact_input<T>(at(b.data(), b_rows, ldb, k, j));
-                wrong += value_of(at(d.data(), d_rows, ldd, i, j)) != 2 * sum;
-            }
+        for (int block = 0; block < blocks; ++block) {
+            const storage<T> *pa = a.data() + block * sizes[0], *pb = b.data() + block * sizes[1];
+            const TC *pc = c.data() + block * sizes[2];
+            const TD *pd = d.data() + block * sizes[3];
+            for (int i = 0; i < rows; ++i)
+                for (int j = 0; j < cols; ++j) {
+                    long double sum = value_of(at(pc, c_rows, ldc, i, j));
+                    for (int k = 0; k < depth; ++k)
+                        sum += exact_input<T>(at(pa, a_rows, lda, i, k)) * exact_input<T>(at(pb, b_rows, ldb, k, j));
+                    wrong += value_of(at(pd, d_rows, ldd, i, j)) != 2 * sum;
+                }
+        }
         if (wrong != 0) {
             std::printf("%s, A %s, B %s, C %s, D %s: %u wrong elements\n", name, a_rows ? "row" : "col",
                         b_rows ? "row" : "col", c_rows ? "row" : "col", d_rows ? "row" : "col", wrong);
@@ -202,20 +218,60 @@ static void check_layouts(const char *name, std::mt19937 &random)
     check<T, M, N, K, wmma::col_major, wmma::col_major, TC, TD>(name, random);
 }
 
-//! D = (2 A) B + C, with A doubled element by element: every lane's copy of
-//! an element must change the same way
-__global__ void doubled_a(const half *a, const half *b, float *d)
+//! D = (2 A)(3 B) + 1, with A and B changed element by element: every lane's
+//! copy of an element must change the same way. A and B are packed (ld is
+//! their rows' or columns' length), D is row-major.
+template <int M, int N, int K, typename LA, typename LB>
+__global__ void scaled(const half *a, const half *b, float *d)
 {
-    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fa;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> fb;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
-    wmma::load_matrix_sync(fa, a, 16);
-    wmma::load_matrix_sync(fb, b, 16);
+    wmma::fragment<wmma::matrix_a, M, N, K, half, LA> fa;
+    wmma::fragment<wmma::matrix_b, M, N, K, half, LB> fb;
+    wmma::fragment<wmma::accumulator, M, N, K, float> acc;
+    wmma::load_matrix_sync(fa, a, std::is_same_v<LA, wmma::row_major> ? K : M);
+    wmma::load_matrix_sync(fb, b, std::is_same_v<LB, wmma::row_major> ? N : K);
     for (int i = 0; i < fa.num_elements; ++i)
         fa.x[i] = fa.x[i] * half(2.0f);
+    for (int i = 0; i < fb.num_elements; ++i)
+        fb.x[i] = fb.x[i] * half(3.0f);
     wmma::fill_fragment(acc, 1.0f);
     wmma::mma_sync(acc, fa, fb, acc);
-    wmma::store_matrix_sync(d, acc, 16, wmma::mem_row_major);
+    wmma::store_matrix_sync(d, acc, N, wmma::mem_row_major);
+}
+
+template <int M, int N, int K, typename LA, typename LB>
+static void check_scaled(const char *name)
+{
+    constexpr bool a_rows = std::is_same_v<LA, wmma::row_major>, b_rows = std::is_same_v<LB, wmma::row_major>;
+    std::vector<half> a(M * K), b(K * N);
+    for (int i = 0; i < M * K; ++i)
+        a[i] = half(float(i % 7 - 3));
+    for (int i = 0; i < K * N; ++i)
+        b[i] = half(float(i % 5 - 2));
+    std::vector<float> d(M * N);
+    scaled<M, N, K, LA, LB><<<1, 32>>>(a.data(), b.data(), d.data());
+    unsigned wrong = 0;
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < N; ++j) {
+            float sum = 1;
+            for (int k = 0; k < K; ++k)
+                sum += 6 * float(at(a.data(), a_rows, a_rows ? K : M, i, k)) * float(at(b.data(), b_rows, b_rows ? N : K, k, j));
+            wrong += d[i * N + j] != sum;
+        }
+    if (wrong != 0) {
+        std::printf("%s changed element by element: %u wrong elements\n", name, wrong);
+        ++errors;
+    }
+}
+
+//! Each lane reads, right after store_matrix_sync, an element that another
+//! lane stored: on a GPU the warp's stores are one instruction
+__global__ void store_then_read(float *out)
+{
+    __shared__ float tile[16 * 16];
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+    wmma::fill_fragment(acc, float(threadIdx.x / 32 + 1));
+    wmma::store_matrix_sync(tile, acc, 16, wmma::mem_row_major);
+    out[threadIdx.x] = tile[(threadIdx.x * 37 + 101) % 256];
 }
 
 //! One element of A and B each, so that D's first element is a * b + c:
@@ -283,24 +339,20 @@ int main()
     check_layouts<signed char, 8, 32, 16, int>("s8 m8n32k16", random);
     check_layouts<unsigned char, 16, 16, 16, int>("u8 m16n16k16", random);
 
-    // A changed element by element
+    // 16 warps per block, in several blocks on several OS threads
+    check<half, 16, 16, 16, wmma::row_major, wmma::col_major, float, float, 4, 8>("half, 16 warps in 8 blocks", random);
+    check<signed char, 32, 8, 16, wmma::col_major, wmma::row_major, int, int, 4, 8>("s8, 16 warps in 8 blocks", random);
+
+    // A and B changed element by element, in each shape and layout
+    check_scaled<16, 16, 16, wmma::row_major, wmma::col_major>("half m16n16k16");
+    check_scaled<32, 8, 16, wmma::col_major, wmma::row_major>("half m32n8k16");
+    check_scaled<8, 32, 16, wmma::col_major, wmma::col_major>("half m8n32k16");
+
+    // What store_matrix_sync stored, for the whole warp
     {
-        std::vector<half> a(256), b(256);
-        for (int i = 0; i < 256; ++i) {
-            a[i] = half(float(i % 7 - 3));
-            b[i] = half(float(i % 5 - 2));
-        }
-        std::vector<float> d(256);
-        doubled_a<<<1, 32>>>(a.data(), b.data(), d.data());
-        unsigned wrong = 0;
-        for (int i = 0; i < 16; ++i)
-            for (int j = 0; j < 16; ++j) {
-                float sum = 1;
-                for (int k = 0; k < 16; ++k)
-                    sum += 2 * float(a[i * 16 + k]) * float(b[j * 16 + k]);
-                wrong += d[i * 16 + j] != sum;
-            }
-        EXPECT(wrong == 0);
+        std::vector<float> out(64);
+        store_then_read<<<1, 32>>>(out.data());
+        EXPECT(std::count(out.begin(), out.begin() + 32, 1.0f) == 32);
     }
 
     // Saturation: infinities become the largest finite value, NaN zero, and
@@ -344,6 +396,9 @@ int main()
         EXPECT(std::isinf(wmma::__float_to_tf32(std::numeric_limits<float>::max())));
         EXPECT(std::isinf(wmma::__float_to_tf32(-INFINITY)) && std::isnan(wmma::__float_to_tf32(NAN)));
         EXPECT((bits(wmma::__float_to_tf32(3.14159265f)) & 0x1fffu) == 0);
+        const float nan_with_low_bits = std::bit_cast<float>(0x7f800001u);
+        EXPECT(std::isnan(wmma::__float_to_tf32(nan_with_low_bits)) &&
+               (bits(wmma::__float_to_tf32(nan_with_low_bits)) & 0x1fffu) == 0);
         EXPECT((first_element<wmma::precision::tf32, float>(1.0f + 0x1p-11f, 3.0f, 0.0f, false)) == 3.0f);
     }
 

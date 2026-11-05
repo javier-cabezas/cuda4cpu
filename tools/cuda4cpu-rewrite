@@ -672,17 +672,23 @@ def find_dim_fields(tokens):
 
 
 # Words after which gridDim or blockDim is an expression, not a declaration
-EXPRESSION_WORDS = frozenset(('return', 'case', 'sizeof', 'throw', 'co_return', 'co_yield', 'else', 'do',
-                              'delete', 'new', 'typeid', 'alignof', 'goto', 'not', 'and', 'or', 'xor',
+EXPRESSION_WORDS = frozenset(('return', 'case', 'sizeof', 'throw', 'co_return', 'co_yield', 'co_await', 'else',
+                              'do', 'delete', 'new', 'typeid', 'alignof', 'goto', 'not', 'and', 'or', 'xor',
                               'bitand', 'bitor', 'compl', 'not_eq', 'and_eq', 'or_eq', 'xor_eq',
                               'define', 'undef', 'ifdef', 'ifndef', 'defined'))
+
+# Tokens that can follow a declared name: an initializer, the next declarator,
+# the end of a parameter list, an array bound, a range-for's colon
+DECLARATOR_ENDS = (';', '=', '(', '{', ',', '[', ')', ':')
 
 
 def find_dim_variables(tokens):
     """Yields the indices of gridDim and blockDim where they name a variable,
     parameter or field that the program declares (`dim3 gridDim;`): in the
     declaration's scope, from it to the end of its block, or for a parameter,
-    the function's body. Declarations at namespace scope are left alone."""
+    the function's body or the statement of a for, if, while or switch.
+    Declarations at namespace scope are left alone, and so are uses of a field
+    outside its class's braces (in member functions defined out of line)."""
     enclosing, stack, match = [], [], {}
     for i, t in enumerate(tokens):
         enclosing.append(stack[-1] if stack else None)
@@ -690,22 +696,89 @@ def find_dim_variables(tokens):
             stack.append(i)
         elif t.text in (')', ']', '}') and stack:
             match[stack.pop()] = i
+    last = len(tokens) - 1
+
+    def after_type(i):
+        """Whether tokens[i] follows a type: dim3 x, const dim3 &x, dim3 *x,
+        std::vector<dim3> x. No expression puts a name there."""
+        k = i - 1
+        while k > 0 and tokens[k].text in ('*', '&', '&&'):
+            k -= 1
+        return (tokens[k].kind == 'id' and tokens[k].text not in EXPRESSION_WORDS) or \
+            tokens[k].text in ('>', '>>')
+
+    def later_declarator(i, opener):
+        """Whether the comma before tokens[i] separates the declarators of a
+        declaration statement: dim3 threads(64), blockDim(32);"""
+        if tokens[i - 1].text != ',' or tokens[opener].text != '{':
+            return False
+        j, depth = i - 2, 0
+        while j > opener:
+            t = tokens[j].text
+            if t in (')', ']', '}'):
+                if depth == 0 and t == '}':
+                    break
+                depth += 1
+            elif t in ('(', '[', '{'):
+                depth -= 1
+            elif t == ';' and depth == 0:
+                break
+            j -= 1
+        first = j + 1
+        return first + 1 < i and tokens[first].kind == 'id' and tokens[first].text not in EXPRESSION_WORDS and \
+            (tokens[first + 1].kind == 'id' or tokens[first + 1].text in ('::', '<'))
+
+    def statement_end(k):
+        """The last token of the statement that starts at tokens[k]"""
+        if tokens[k].text == '{':
+            return match.get(k, last)
+        while k < last and tokens[k].text != ';':
+            if tokens[k].text in ('(', '[', '{'):
+                k = match.get(k, last)
+            k += 1
+        return k
+
+    def function_body(close):
+        """The '{' of the body of the function whose parameters close at
+        tokens[close], past qualifiers and a constructor's initializers, or
+        None for a declaration"""
+        k = close + 1
+        if k <= last and tokens[k].text == ':':
+            # Initializers: member(...) or member{...}, separated by commas
+            k += 1
+            while k <= last:
+                while k <= last and tokens[k].text not in ('(', '{', ';'):
+                    k += 1
+                if k > last or tokens[k].text == ';':
+                    return None
+                k = match.get(k, last) + 1
+                if k <= last and tokens[k].text == ',':
+                    k += 1
+                    continue
+                break
+            return k if k <= last and tokens[k].text == '{' else None
+        while k <= last and tokens[k].text not in ('{', ';'):
+            if tokens[k].text in ('(', '['):
+                k = match.get(k, last)
+            k += 1
+        return k if k <= last and tokens[k].text == '{' else None
+
     renamed = set()
     for i in range(1, len(tokens) - 1):
-        name, prev, next_ = tokens[i].text, tokens[i - 1], tokens[i + 1]
-        # A name after a type, which no expression has
-        if name not in ('gridDim', 'blockDim') or prev.kind != 'id' or prev.text in EXPRESSION_WORDS or \
-                next_.text not in (';', '=', '(', '{', ',', '[', ')'):
+        name = tokens[i].text
+        if name not in ('gridDim', 'blockDim') or tokens[i + 1].text not in DECLARATOR_ENDS:
             continue
         opener = enclosing[i]
-        if opener is None:
+        if opener is None or not (after_type(i) or later_declarator(i, opener)):
             continue
-        last = len(tokens) - 1
         if tokens[opener].text == '(':
-            # A parameter: its scope is the body that follows, if any
             close = match.get(opener, last)
-            body = next((k for k in range(close + 1, len(tokens)) if tokens[k].text in ('{', ';')), None)
-            end = match.get(body, last) if body is not None and tokens[body].text == '{' else close
+            if opener > 0 and tokens[opener - 1].text in ('for', 'if', 'while', 'switch'):
+                end = statement_end(close + 1) if close < last else close
+            else:
+                # A parameter: its scope is the body that follows, if any
+                body = function_body(close)
+                end = match.get(body, last) if body is not None else close
         elif tokens[opener].text == '{' and not opens_namespace(tokens, opener):
             end = match.get(opener, last)
         else:
@@ -718,7 +791,7 @@ def find_dim_variables(tokens):
                 if tokens[k].text == ',' and enclosing[k] == opener and tokens[k + 1].text in ('gridDim', 'blockDim'):
                     declared.add(tokens[k + 1].text)
                 k += 1
-        for k in range(i, end):
+        for k in range(i, end + 1):
             if tokens[k].text in declared and tokens[k - 1].text not in ('.', '->', '::'):
                 renamed.add(k)
     yield from sorted(renamed)

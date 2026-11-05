@@ -261,6 +261,29 @@ class DimVariables(unittest.TestCase):
         self.assertEqual(rewrite('void f() { g(gridDim); dim3 gridDim; }'),
                          'void f() { g(gridDim); dim3 cuda4cpu_gridDim; }')
 
+    def test_later_declarators_references_and_templates(self):
+        self.assertEqual(rewrite('void f() { dim3 threads(64), blockDim(32); g(threads, blockDim); }'),
+                         'void f() { dim3 threads(64), cuda4cpu_blockDim(32); g(threads, cuda4cpu_blockDim); }')
+        self.assertEqual(rewrite('void f(const dim3 &gridDim, dim3 *blockDim) { g(gridDim, blockDim->x); }'),
+                         'void f(const dim3 &cuda4cpu_gridDim, dim3 *cuda4cpu_blockDim) '
+                         '{ g(cuda4cpu_gridDim, cuda4cpu_blockDim->x); }')
+        self.assertEqual(rewrite('void f() { std::vector<dim3> gridDim; gridDim.clear(); }'),
+                         'void f() { std::vector<dim3> cuda4cpu_gridDim; cuda4cpu_gridDim.clear(); }')
+
+    def test_statements_and_constructors(self):
+        self.assertEqual(rewrite('void f() { for (dim3 gridDim : dims) g(gridDim); h(gridDim); }'),
+                         'void f() { for (dim3 cuda4cpu_gridDim : dims) g(cuda4cpu_gridDim); h(gridDim); }')
+        self.assertEqual(rewrite('void f() { for (dim3 gridDim : dims) { g(gridDim); } h(gridDim); }'),
+                         'void f() { for (dim3 cuda4cpu_gridDim : dims) { g(cuda4cpu_gridDim); } h(gridDim); }')
+        self.assertEqual(rewrite('struct R { int v; R(dim3 gridDim) : v{0}, w(1) { run(gridDim); } };'),
+                         'struct R { int v; R(dim3 cuda4cpu_gridDim) : v{0}, w(1) { run(cuda4cpu_gridDim); } };')
+
+    def test_expressions_untouched(self):
+        # Initializer lists, arguments and operators: the built-in variables
+        text = ('__global__ void k() { dim3 d[] = {gridDim, blockDim, x}; f(a, blockDim); '
+                'g(&gridDim); co_await gridDim; }')
+        self.assertEqual(rewrite(text), text)
+
     def test_namespace_scope_and_macros_untouched(self):
         text = 'dim3 gridDim; namespace a { dim3 blockDim; }\n#define G gridDim\n#undef blockDim\n'
         self.assertEqual(rewrite(text), text)

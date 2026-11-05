@@ -308,7 +308,9 @@ The rewriter also handles a few things that only nvcc understands:
 - **Variables named `gridDim` or `blockDim`**, as host code that computes a
   launch's configuration declares (`dim3 gridDim, blockDim;`), become
   `cuda4cpu_gridDim` and `cuda4cpu_blockDim` wherever the declaration is in
-  scope. Parameters and the fields of the program's classes too.
+  scope. Parameters and the fields of the program's classes too, except in
+  member functions defined outside the class, which must write
+  `this->gridDim`.
 - **`extern __shared__ T name[][N];`**, with further dimensions, becomes a
   pointer to arrays: `T (*name)[N] = cuda4cpu::dynamic_shared<T[N]>();`.
 - **`clock()` in `__global__` and `__device__` functions** becomes the device

@@ -103,7 +103,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   fragment's layout (row-major for accumulators), so loads are contiguous;
   half's A and B have CUDA's 16 elements per lane, so lanes hold copies.
   `load_matrix_sync`, `store_matrix_sync` and `mma_sync` sync the warp, as
-  PTX's `.sync` does. `mma_sync` converts A and B into a thread-local buffer
+  PTX's `.sync` does, and `store_matrix_sync` again after its stores (a
+  GPU's are one instruction). `mma_sync` converts A and B into a thread-local buffer
   per warp (the block's, like `__shared__`), syncs, and each lane computes
   its row of D: exact products, float sums in order of k (`fma` only for
   double: without `-mfma` it's a libm call, and float products of these
@@ -163,7 +164,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     the name of the `cudaKernelNodeParams` fields, and so the variables,
     parameters and fields the program declares with those names, where the
     declaration is in scope (`find_dim_variables`), as the tensor-core
-    samples' `dim3 gridDim;` in host code
+    samples' `dim3 gridDim;` in host code: after a type (`dim3`, `&`, `*`,
+    `std::vector<dim3>`), or a later declarator of a statement that starts
+    with a type; a parameter's scope is the function's body, past a
+    constructor's initializers, or a for/if/while/switch statement. Not
+    member functions defined out of line.
   - turns `extern __shared__ T x[][N]` into a pointer to arrays,
     `dynamic_shared<T[N]>()`
   - turns `clock()` inside `__global__`/`__device__` bodies into
@@ -398,7 +403,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `wmma` (`wmma.cu`): every type, shape and layout of A, B, C and D of
     `mma.h` against an exact host reference (small integers, and tf32
     inputs with low bits that must be ignored), fragments changed element by
-    element, `satf`, `__float_to_tf32`, CUDA's elements per lane, the fast
+    element (A and B, each shape, column-major too), 16 warps per block in
+    several blocks, reading a neighbor's element right after
+    `store_matrix_sync`, `satf`, `__float_to_tf32` (NaN too), CUDA's
+    elements per lane, the fast
     half conversion against `__half2float` for every half, and the compute
     capability that `CUDA4CPU_COMPUTE_CAPABILITY=7.5` sets.
     `wmma_invalid_capability`: a wrong value is reported and ignored.

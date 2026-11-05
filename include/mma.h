@@ -29,10 +29,12 @@
 //   A and B fragments have 16 elements per lane, as in CUDA, so lanes hold
 //   some elements twice.
 // - load_matrix_sync, store_matrix_sync and mma_sync wait for the whole warp,
-//   as PTX's .sync instructions do. mma_sync gathers A and B in a buffer of
-//   the warp and each lane computes its elements of D: products are exact,
-//   and sums are float (double for double, 64-bit for integers) in order of
-//   k, rounded once to D's type. Tensor cores add in an unspecified order.
+//   as PTX's .sync instructions do, and store_matrix_sync once more after
+//   its stores, which a GPU makes in one instruction. mma_sync gathers A and
+//   B in a buffer of the warp and each lane computes its elements of D:
+//   products are exact, and sums are float (double for double, 64-bit for
+//   integers) in order of k, rounded once to D's type. Tensor cores add in
+//   an unspecified order.
 // - Types: half and bfloat16 (m16n16k16, m32n8k16, m8n32k16, into float, or
 //   half for half), tf32 (m16n16k8, into float), double (m8n8k4) and 8-bit
 //   integers (m16n16k16, m32n8k16, m8n32k16, into int). The sub-byte types
@@ -325,10 +327,12 @@ class fragment
 };
 
 //! Rounds a float to tf32, to nearest with ties away from zero, as
-//! cvt.rna.tf32.f32: the 13 low bits of the result are zero
+//! cvt.rna.tf32.f32: the 13 low bits of the result are zero, NaN's too
 inline float __float_to_tf32(float in)
 {
-    if (!std::isfinite(in))
+    if (std::isnan(in))
+        return std::bit_cast<float>((std::bit_cast<uint32_t>(in) & 0xffffe000u) | 0x7fc00000u);
+    if (std::isinf(in))
         return in;
     return std::bit_cast<float>((std::bit_cast<uint32_t>(in) + 0x1000u) & 0xffffe000u);
 }
@@ -385,6 +389,9 @@ inline void store_matrix_sync(T *mptr, const fragment<accumulator, m, n, k, T> &
         const size_t row = size_t((first + i) / n), col = size_t((first + i) % n);
         (layout == mem_row_major ? mptr[row * ldm + col] : mptr[col * ldm + row]) = a.x[i];
     }
+    // On a GPU the warp's stores are one instruction, so every lane can read
+    // what the others stored once it's done
+    d::sync_warp();
 }
 
 //! D = A * B + C, for the whole warp. d may be c.
@@ -396,9 +403,7 @@ inline void mma_sync(fragment<accumulator, m, n, k, Td> &d, const fragment<matri
     namespace w = cuda4cpu::detail::wmma;
     using C = typename w::element<Ta>::compute;
     constexpr bool integers = std::is_same_v<C, int64_t>;
-    static_assert(std::is_same_v<C, typename w::element<Tb>::compute> &&
-                      (std::is_same_v<Ta, Tb> || integers),
-                  "A and B must have the same type");
+    static_assert(std::is_same_v<Ta, Tb>, "A and B must have the same type");
     static_assert(integers ? std::is_same_v<Tc, int> && std::is_same_v<Td, int>
                   : std::is_same_v<Ta, double> ? std::is_same_v<Tc, double> && std::is_same_v<Td, double>
                   : std::is_same_v<Ta, __half>
