@@ -49,7 +49,10 @@ so the result is wrong.
 The tensor-core samples check the compute capability, so the suite runs them
 with `CUDA4CPU_COMPUTE_CAPABILITY=8.0`. The bfloat16, tf32 and double ones
 have their kernels inside `#if __CUDA_ARCH__ >= 800`, so the suite builds
-them with `-D__CUDA_ARCH__=800`. They don't check their results.
+them with `-D__CUDA_ARCH__=800`. They don't check their results; with their
+`CPU_DEBUG` check, all match the host's except bf16TensorCoreGemm, whose
+kernel for GPUs with less shared memory than Ampere's, which cuda4cpu runs,
+reads B transposed (see `compat/upstream-bugs`).
 
 To run the programs yourself (they need git and network access):
 

@@ -16,6 +16,7 @@ they do on a GPU.
 | `rodinia-srad_v2.patch` | Rodinia srad_v2 | Out-of-bounds reads at the grid's edges (`srad_kernel.cu`): both kernels load `index_n`, `index_s`, `index_w` and `index_e` before replacing them at the edges, so they read up to a row before the array and past its end. With cuda4cpu at 256×256, 14 of 100 runs crashed with SIGSEGV, and none with the patch, whose results are identical. |
 | `cuda-samples-sobolqrng.patch` | cuda-samples SobolQRNG | Arrays allocated with `new[]` freed with `delete` (`sobol.cpp`). |
 | `cuda-samples-graphmemorynodes.patch` | cuda-samples graphMemoryNodes | `foundValidationFailure`, from `cudaMallocManaged`, is read before anything sets it, and CUDA doesn't clear managed memory (`graphMemoryNodes.cu`). |
+| `cuda-samples-bf16tensorcoregemm.patch` | cuda-samples bf16TensorCoreGemm | The kernel for GPUs with less shared memory, `simple_wmma_bf16gemm`, swaps the row and column of B's tile (`bCol = i; bRow = warpN * N;`), so it multiplies by tiles of B's transpose. tf32TensorCoreGemm has the same code fixed. A GPU with Ampere's shared memory never runs that kernel; cuda4cpu, which reports 48 KB, does. Built with `-DCPU_DEBUG=1` (and 64 tiles a side), 1,040,070 of 1,048,576 results differ from the host's, and none with the patch. Found by comparing with the host instead of by `check`. |
 
 Other reports were undefined behavior that does no harm: signed overflow in
 warp lanes whose sums are discarded (reduction), in a host timing loop
