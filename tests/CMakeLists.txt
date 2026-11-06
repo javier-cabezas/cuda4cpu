@@ -182,6 +182,17 @@ set_target_properties(complex PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(complex complex.cu)
 add_test(NAME complex COMMAND complex)
 
+add_executable(wmma)
+set_target_properties(wmma PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(wmma wmma.cu)
+add_test(NAME wmma COMMAND wmma)
+set_tests_properties(wmma PROPERTIES ENVIRONMENT "CUDA4CPU_COMPUTE_CAPABILITY=7.5")
+# A wrong compute capability is reported and ignored
+add_test(NAME wmma_invalid_capability COMMAND wmma)
+set_tests_properties(wmma_invalid_capability PROPERTIES
+                     ENVIRONMENT "CUDA4CPU_COMPUTE_CAPABILITY=7"
+                     PASS_REGULAR_EXPRESSION "ignoring CUDA4CPU_COMPUTE_CAPABILITY=7: expected <major>\\.<minor>, such as 7\\.0(.|\n)*wmma: PASS")
+
 # Loops with interleaved threads (loop ticks inserted by the rewriter), with
 # the interleaving chosen per kernel, off, and fixed
 add_executable(interleave)

@@ -6,16 +6,19 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 130 of 154 pass today; most of the rest need
+shows what blocks real programs. 132 of 159 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
   `surf2Dwrite`, CUDA arrays): 10 programs.
+- **`memcpy_async` and `cuda::pipeline`**, and a way to compile code under
+  `#if __CUDA_ARCH__ >= 800`: the tensor-core samples for bfloat16, tf32
+  and double. 3 programs.
 - **Dynamic parallelism**: kernels that launch kernels. 2 programs.
 - **Smaller API gaps**, one program each: libcu++ headers (`<cuda/...>`),
   device-side `assert` reported as a launch error, green contexts.
-- **Kernel language:** `__reduce_*_sync`, `memcpy_async`, 16-bit integer
-  atomics.
+- **Kernel language:** `__reduce_*_sync`, 16-bit integer atomics, and the
+  sub-byte types of `wmma::experimental`.
 - **Platforms:** CI on AArch64, where the portable context switch
   (`_setjmp`/`_longjmp`) is used but hasn't been tested yet, and an assembly
   context switch for it. macOS and Windows would need their own fiber stacks
@@ -41,3 +44,9 @@ of it: about half of its time goes to barriers, because it waits at
    CuPBoP do) avoids switching altogether, and is the only way to make
    barrier-dense kernels an order of magnitude faster. It needs a Clang-based
    transform, so it would be an option next to the plain C++ compiler path.
+3. **Warp matrix functions in one synchronization.** `mma_sync` syncs the
+   warp twice, once when the lanes have given their elements of A and B and
+   once before the next one reuses the buffer, and those syncs take about
+   half its time. A warp operation whose releasing lane computes D for every
+   lane would need one. A 4096×4096×4096 GEMM (`cudaTensorCoreGemm`) takes
+   about 14 s on 16 OS threads.

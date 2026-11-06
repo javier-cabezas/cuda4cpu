@@ -2138,10 +2138,24 @@ void detail::get_device_properties(cudaDeviceProp &prop)
         p.textureAlignment      = 512;
         p.texturePitchAlignment = 32;
 
-        // The newest compute capability whose features cuda4cpu implements
-        // (no tensor cores), so that code that checks it picks supported paths
+        // By default the newest compute capability whose features cuda4cpu
+        // implements, so that code that checks it picks supported paths.
+        // CUDA4CPU_COMPUTE_CAPABILITY raises it for programs that check it
+        // before using what cuda4cpu has from newer ones, such as the warp
+        // matrix functions of mma.h (7.0 and later).
         p.major = 6;
         p.minor = 0;
+        if (const char *v = std::getenv("CUDA4CPU_COMPUTE_CAPABILITY"); v != nullptr && *v != '\0') {
+            unsigned major = 0, minor = 0;
+            char extra = 0;
+            if (std::sscanf(v, "%u.%u%c", &major, &minor, &extra) == 2 && major >= 1 && major <= 99 && minor <= 9) {
+                p.major = int(major);
+                p.minor = int(minor);
+            } else {
+                std::fprintf(stderr, "cuda4cpu: ignoring CUDA4CPU_COMPUTE_CAPABILITY=%s: expected "
+                                     "<major>.<minor>, such as 7.0\n", v);
+            }
+        }
 
         // Each OS thread is a multiprocessor that runs one block at a time
         p.multiProcessorCount         = omp_get_max_threads();

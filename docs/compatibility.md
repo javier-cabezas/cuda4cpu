@@ -22,7 +22,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 43 of 61 (1 more waives itself, and 2 are skipped as too slow) | 15 |
+| cuda-samples | 45 of 66 (1 more waives itself, and 2 are skipped as too slow) | 18 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 | rocm-examples | 77 of 82 | 5 |
 
@@ -31,6 +31,7 @@ Most of what's missing is a few features:
 | Programs | Missing |
 |---|---|
 | 10 | Textures and surfaces |
+| 3 | `cuda::memcpy_async` and `cuda::pipeline` (libcu++), and `__CUDA_ARCH__`: the tensor-core samples for bfloat16, tf32 and double |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
 | 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
@@ -45,6 +46,9 @@ their last warp reduces through shared memory without `__syncwarp()` between
 steps. That relies on the lanes of a warp running in lockstep, as AMD's do.
 CUDA doesn't promise it, and on cuda4cpu each lane runs to its next barrier,
 so the result is wrong.
+
+The tensor-core samples check the compute capability, so the suite runs them
+with `CUDA4CPU_COMPUTE_CAPABILITY=8.0`. They don't check their results.
 
 To run the programs yourself (they need git and network access):
 

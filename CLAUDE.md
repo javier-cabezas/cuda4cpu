@@ -97,6 +97,19 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `float2`/`double2`, with CUDA's formulas (scaled division and absolute
   value, `cuCfmaf`'s order of additions). The HIP names are macros for the
   CUDA ones, except `hipCsqabsf`/`hipCsqabs`.
+- `include/mma.h`: CUDA's warp matrix functions (`nvcuda::wmma`), for half,
+  bfloat16, tf32, double and 8-bit integers. Lane l holds elements
+  `l * num_elements ...` of the tile, modulo its size, in the order of the
+  fragment's layout (row-major for accumulators), so loads are contiguous;
+  half's A and B have CUDA's 16 elements per lane, so lanes hold copies.
+  `load_matrix_sync`, `store_matrix_sync` and `mma_sync` sync the warp, as
+  PTX's `.sync` does, and `store_matrix_sync` again after its stores (a
+  GPU's are one instruction). `mma_sync` converts A and B into a thread-local buffer
+  per warp (the block's, like `__shared__`), syncs, and each lane computes
+  its row of D: exact products, float sums in order of k (`fma` only for
+  double: without `-mfma` it's a libm call, and float products of these
+  types are exact). Syncs are about half of its time; a warp operation that
+  the releasing lane computes would need one.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -148,7 +161,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - turns `(void *)kernel` elsewhere into `cuda4cpu::kernel_address(kernel)`,
     for the `__global__` functions it has seen (`find_kernels`)
   - turns `.gridDim`/`->gridDim` (and `blockDim`) into `cuda4cpu_gridDim`,
-    the name of the `cudaKernelNodeParams` fields
+    the name of the `cudaKernelNodeParams` fields, and so the variables,
+    parameters and fields the program declares with those names, where the
+    declaration is in scope (`find_dim_variables`), as the tensor-core
+    samples' `dim3 gridDim;` in host code: after a type (`dim3`, `&`, `*`,
+    `std::vector<dim3>`), or a later declarator of a statement that starts
+    with a type; a parameter's scope is the function's body, past a
+    constructor's initializers, or a for/if/while/switch statement. Not
+    member functions defined out of line.
+  - turns `extern __shared__ T x[][N]` into a pointer to arrays,
+    `dynamic_shared<T[N]>()`
   - turns `clock()` inside `__global__`/`__device__` bodies into
     `cuda4cpu::device_clock()`
   - inserts `cuda4cpu::loop_tick();` after the `{` of the outermost loops of
@@ -257,8 +279,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   cuda-samples, Rodinia and rocm-examples (HIP), pinned by revision, with
   their sources, include directories, arguments and checks: `expect` and
   `reject` are output regexes, `verified: false` marks programs that don't
-  check their results, `skip` gives a reason not to run one, and `timeout`
-  gives a long program more time (such programs start first). `run.py`
+  check their results, `skip` gives a reason not to run one, `timeout`
+  gives a long program more time (such programs start first), and `env`
+  sets environment variables (the tensor-core samples' compute capability). `run.py`
   fetches the suites, builds each program with `cuda4cpu-c++`, or
   `cuda4cpu-hipcc` for suites with `"driver": "hipcc"` (`.c` files with the
   C compiler), runs it, and reports. `baseline.json` holds the expected status of each
@@ -377,6 +400,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `complex` (`complex.cu`): cuComplex.h against `long double` arithmetic
     on random operands, the overflow and underflow its formulas avoid, and a
     DFT in a kernel
+  - `wmma` (`wmma.cu`): every type, shape and layout of A, B, C and D of
+    `mma.h` against an exact host reference (small integers, and tf32
+    inputs with low bits that must be ignored), fragments changed element by
+    element (A and B, each shape, column-major too), 16 warps per block in
+    several blocks, reading a neighbor's element right after
+    `store_matrix_sync`, `satf`, `__float_to_tf32` (NaN too), CUDA's
+    elements per lane, the fast
+    half conversion against `__half2float` for every half, and the compute
+    capability that `CUDA4CPU_COMPUTE_CAPABILITY=7.5` sets.
+    `wmma_invalid_capability`: a wrong value is reported and ignored.
   - `stencil{2,3}d`: shared memory, `__constant__` and `__syncthreads`, checked
     against a host reference
   - `vectorize` (`vectorize.cu`): kernels without barriers (odd block sizes,
@@ -691,8 +724,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `gridDim` and `blockDim` are object-like macros, so any struct field with
   those names breaks. CUDA's `cudaKernelNodeParams` has them: ours are named
   `cuda4cpu_gridDim`/`cuda4cpu_blockDim`, and the rewriter renames member
-  accesses. Name new fields like that if a CUDA struct needs them
-  (`cudaLaunchConfig_t` does).
+  accesses, and variables the program declares with those names. Name new
+  fields like that if a CUDA struct needs them (`cudaLaunchConfig_t` does).
 - Kernel nodes and `cudaLaunchKernel(const void *)` find a kernel's binder in
   a registry keyed by address, filled by `kernel_address()`. Launches of a
   typed function pointer don't need it.
@@ -758,7 +791,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   warp_random[:seed], mixed[:seed]),
   `CUDA4CPU_DIVERGENT_BARRIERS` (warn, error, ignore) and
   `CUDA4CPU_INTERLEAVE` (auto, off, or a number of loop iterations).
-  `CUDA4CPU_MEMCPY_DIRECTION` (warn, error, ignore) is read in
+  `CUDA4CPU_COMPUTE_CAPABILITY` (major.minor; 6.0 by default) is read in
+  `get_device_properties`, for programs that check it before using
+  `mma.h`. `CUDA4CPU_MEMCPY_DIRECTION` (warn, error, ignore) is read in
   `lib/memory.cpp`, by `check_copy_direction`, which checks a copy's pointers
   against the registry of allocations, and so are `CUDA4CPU_INIT_MEMORY` (a
   byte that `initialize_allocation` fills new allocations with, graph

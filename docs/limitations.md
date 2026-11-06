@@ -29,8 +29,12 @@
 - **One device: the CPU.** `cudaGetDeviceProperties` reports the CPU's name,
   memory, L2 cache and clock, one multiprocessor per OS thread, CUDA's limits
   for blocks and grids, and compute capability 6.0. That's the newest whose
-  features cuda4cpu implements (no tensor cores), so code that checks it picks
-  supported paths.
+  features cuda4cpu has all of, so code that checks it picks supported paths.
+  Code that checks it before using tensor cores (`mma.h`) needs
+  `CUDA4CPU_COMPUTE_CAPABILITY=7.0` or later (8.0 for bfloat16, tf32 and
+  double), which may also lead it to features that cuda4cpu doesn't have,
+  such as `memcpy_async`. `__CUDA_ARCH__` isn't defined, so code inside
+  `#if __CUDA_ARCH__ >= 800` doesn't compile in.
 - **Errors follow CUDA where the CPU can detect them.** Invalid arguments,
   failed allocations, and launches outside CUDA's limits (more than 1024
   threads per block, zero sizes, grids too large) return or record the CUDA
