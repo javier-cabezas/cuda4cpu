@@ -32,9 +32,11 @@
   features cuda4cpu has all of, so code that checks it picks supported paths.
   Code that checks it before using tensor cores (`mma.h`) needs
   `CUDA4CPU_COMPUTE_CAPABILITY=7.0` or later (8.0 for bfloat16, tf32 and
-  double), which may also lead it to features that cuda4cpu doesn't have,
-  such as `memcpy_async`. `__CUDA_ARCH__` isn't defined, so code inside
-  `#if __CUDA_ARCH__ >= 800` doesn't compile in.
+  double), which may also lead it to features that cuda4cpu doesn't have.
+- **`__CUDA_ARCH__` isn't defined**, because host and device code compile
+  together: code inside `#if __CUDA_ARCH__ >= 800` doesn't compile in.
+  Defining it yourself (`-D__CUDA_ARCH__=800`) compiles that code in, but
+  also drops the host code under `#ifndef __CUDA_ARCH__`.
 - **Errors follow CUDA where the CPU can detect them.** Invalid arguments,
   failed allocations, and launches outside CUDA's limits (more than 1024
   threads per block, zero sizes, grids too large) return or record the CUDA
@@ -74,7 +76,8 @@
   supports AMD GPUs doesn't compile: AMD builtins (`__builtin_amdgcn_*`),
   `__HIP_PLATFORM_AMD__` branches, and code that assumes 64-lane wavefronts.
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
-  `__reduce_*_sync`, `memcpy_async`, 16-bit integer atomics, inline PTX, and
-  the driver API. [Compatibility with real CUDA and HIP
+  `__reduce_*_sync`, 16-bit integer atomics, pipelines that a group shares
+  (`cuda::pipeline<cuda::thread_scope_block>`), inline PTX, and the driver
+  API. [Compatibility with real CUDA and HIP
   code](compatibility.md) shows which programs each
   one blocks.

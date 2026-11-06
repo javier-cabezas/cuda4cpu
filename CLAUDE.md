@@ -110,6 +110,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   double: without `-mfma` it's a libm call, and float products of these
   types are exact). Syncs are about half of its time; a warp operation that
   the releasing lane computes would need one.
+- `include/cuda/async_copy.hpp` (`cuda/pipeline`, `cuda/barrier`) and
+  `include/cooperative_groups/memcpy_async.h`: libcu++'s asynchronous
+  copies and cooperative groups'. A copy is done when `memcpy_async`
+  returns (a group's: each thread copies its share, `detail::copy_share`),
+  so pipelines of a thread do nothing, and `cg::wait` syncs the group.
+  `cuda::barrier` counts arrivals in atomics and waits with
+  `thread_block::interleave()`, so the block's other threads run. Only
+  thread-scope pipelines. `cuda/cmath` (`ceil_div`, `round_up`,
+  `round_down`) and `cuda/std/type_traits` (`cuda::std`, a using-directive
+  of `::std`) are libcu++'s too; code in namespace `cuda` writes `::std::`.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -400,6 +410,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `complex` (`complex.cu`): cuComplex.h against `long double` arithmetic
     on random operands, the overflow and underflow its formulas avoid, and a
     DFT in a kernel
+  - `async_copy` (`async_copy.cu`): copies into shared memory through a
+    thread's pipeline, a block and its tiles (`cg::memcpy_async`), and a
+    block's `cuda::barrier`, read by other threads after the wait; a barrier
+    of half the block's threads with a completion function, over several
+    phases, with a thread that drops out; `<cuda/cmath>` and `cuda::std`.
   - `wmma` (`wmma.cu`): every type, shape and layout of A, B, C and D of
     `mma.h` against an exact host reference (small integers, and tf32
     inputs with low bits that must be ignored), fragments changed element by

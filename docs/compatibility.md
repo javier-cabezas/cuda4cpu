@@ -22,7 +22,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 45 of 66 (1 more waives itself, and 2 are skipped as too slow) | 18 |
+| cuda-samples | 49 of 66 (1 more waives itself, and 2 are skipped as too slow) | 14 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 | rocm-examples | 77 of 82 | 5 |
 
@@ -31,10 +31,9 @@ Most of what's missing is a few features:
 | Programs | Missing |
 |---|---|
 | 10 | Textures and surfaces |
-| 3 | `cuda::memcpy_async` and `cuda::pipeline` (libcu++), and `__CUDA_ARCH__`: the tensor-core samples for bfloat16, tf32 and double |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
-| 1 each | libcu++ (`<cuda/...>`), green contexts, device-side `assert` reported as an error, OpenGL |
+| 1 each | green contexts, device-side `assert` reported as an error, OpenGL |
 
 `low_precision_float_fp8` builds, but converts only on AMD's gfx94x GPUs:
 it reads the device's `gcnArchName`, and on any other device prints that it
@@ -48,7 +47,9 @@ CUDA doesn't promise it, and on cuda4cpu each lane runs to its next barrier,
 so the result is wrong.
 
 The tensor-core samples check the compute capability, so the suite runs them
-with `CUDA4CPU_COMPUTE_CAPABILITY=8.0`. They don't check their results.
+with `CUDA4CPU_COMPUTE_CAPABILITY=8.0`. The bfloat16, tf32 and double ones
+have their kernels inside `#if __CUDA_ARCH__ >= 800`, so the suite builds
+them with `-D__CUDA_ARCH__=800`. They don't check their results.
 
 To run the programs yourself (they need git and network access):
 

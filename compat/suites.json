@@ -127,6 +127,9 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/bf16TensorCoreGemm",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
@@ -155,6 +158,9 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/dmmaTensorCoreGemm",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
@@ -190,6 +196,9 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/tf32TensorCoreGemm",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
