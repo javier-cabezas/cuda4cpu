@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 136 of 159 pass today; most of the rest need
+shows what blocks real programs. 133 of 159 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -47,4 +47,6 @@ of it: about half of its time goes to barriers, because it waits at
    once before the next one reuses the buffer, and those syncs take about
    half its time. A warp operation whose releasing lane computes D for every
    lane would need one. A 4096×4096×4096 GEMM (`cudaTensorCoreGemm`) takes
-   about 14 s on 16 OS threads.
+   about 14 s on 16 OS threads, and the 8192³ tensor-core samples, which
+   the compatibility suite skips, from 45 s (bfloat16, tf32) to 5 minutes
+   (double, whose 8×8×4 tiles need sixteen times as many `mma_sync` calls).

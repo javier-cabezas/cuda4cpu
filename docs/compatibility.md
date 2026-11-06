@@ -22,7 +22,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 49 of 66 (1 more waives itself, and 2 are skipped as too slow) | 14 |
+| cuda-samples | 46 of 66 (1 more waives itself, and 5 are skipped as too slow) | 14 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 | rocm-examples | 77 of 82 | 5 |
 
@@ -49,10 +49,12 @@ so the result is wrong.
 The tensor-core samples check the compute capability, so the suite runs them
 with `CUDA4CPU_COMPUTE_CAPABILITY=8.0`. The bfloat16, tf32 and double ones
 have their kernels inside `#if __CUDA_ARCH__ >= 800`, so the suite builds
-them with `-D__CUDA_ARCH__=800`. They don't check their results; with their
-`CPU_DEBUG` check, all match the host's except bf16TensorCoreGemm, whose
-kernel for GPUs with less shared memory than Ampere's, which cuda4cpu runs,
-reads B transposed (see `compat/upstream-bugs`).
+them with `-D__CUDA_ARCH__=800`. Those three pass, but multiply 8192×8192
+matrices, which takes 45 s to 5 minutes on 16 cores, so the suite skips
+them. They don't check their results; with their `CPU_DEBUG` check, all
+match the host's except bf16TensorCoreGemm, whose kernel for GPUs with less
+shared memory than Ampere's, which cuda4cpu runs, reads B transposed (see
+`compat/upstream-bugs`).
 
 To run the programs yourself (they need git and network access):
 
