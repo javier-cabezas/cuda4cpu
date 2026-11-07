@@ -149,8 +149,11 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   - atomics: `atomic_inc`, `atomic_dec`, and the floating-point adds,
     minimums and maximums on global, flat and LDS memory.
 
-  Lane operations exchange the values of the lanes that take part (EXEC: not
-  those that returned, or that wait at a barrier in another branch). Reading
+  Lane operations exchange the values of the lanes that take part (EXEC):
+  those that reach the call together, as `__activemask()` groups them, so
+  lanes in two branches that each call one don't mix. Like
+  `__activemask()`, they are macros that pass the call's place, and break
+  members of the program's classes with those names. Reading
   a lane outside EXEC gives zero, or keeps the old value where the
   instruction does, where a GPU may give a stale one. The semantics come from
   AMD's ISA manuals and LLVM's AMDGPU backend, without a GPU to compare

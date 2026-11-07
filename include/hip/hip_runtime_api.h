@@ -140,7 +140,7 @@ inline cudaError_t hipGetDeviceProperties(hipDeviceProp_t *prop, int device)
     if (cudaError_t err = cudaGetDeviceProperties(&p, device))
         return err;
 
-#if defined(__HIP_PLATFORM_AMD__)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
     // The emulated GPU, whose gfx version is its major.minor, as on AMD's
     std::snprintf(p.gcnArchName, sizeof(p.gcnArchName), "%s", CUDA4CPU_AMDGPU_TARGET);
     p.major = (CUDA4CPU_AMDGPU_TARGET[3] - '0') * 10 + (CUDA4CPU_AMDGPU_TARGET[4] - '0');

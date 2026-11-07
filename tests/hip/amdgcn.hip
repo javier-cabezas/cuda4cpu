@@ -21,7 +21,8 @@
 //
 // HIP's AMD platform (built with __HIP_PLATFORM_AMD__ and __gfx1101__) and
 // AMD's GPU builtins: the platform's macros and device properties, dispatch
-// IDs, every lane operation with lanes that returned (which aren't in EXEC),
+// IDs, every lane operation with lanes that returned (which aren't in EXEC)
+// and in branches (each call has its own EXEC),
 // rocPRIM's DPP scan and reduction, a spin-wait with s_sleep, and the
 // integer, floating-point and atomic builtins against references written
 // apart from amdgcn.h.
@@ -263,6 +264,27 @@ __global__ void rocprim_dpp(int *scan, int *reduce)
     reduce[threadIdx.x] = __shfl(r, warp - 1, warp);
 }
 
+//! Lanes in two branches, and in a branch that some lanes skip: each call's
+//! EXEC is the lanes that reach it, as a GPU runs each branch on its own
+__global__ void branches(int *out)
+{
+    const int lane = int(__lane_id());
+    if (lane < 16)
+        out[lane] = __builtin_amdgcn_readfirstlane(lane + 100);
+    else
+        out[lane] = __builtin_amdgcn_readfirstlane(lane + 200);
+    if (lane % 3 == 0) {
+        // Warp-aggregated atomic: the leader adds for the branch's lanes
+        const unsigned mask = __builtin_amdgcn_ballot_w32(true);
+        const int leader = std::countr_zero(mask);
+        if (lane == leader)
+            atomicAdd(&out[64], std::popcount(mask));
+        out[32 + lane] = __builtin_amdgcn_wave_reduce_add_u32(1u, 0) == unsigned(std::popcount(mask));
+    } else {
+        out[32 + lane] = __builtin_amdgcn_wave_reduce_add_u32(1u, 0) == 32u - 11u;
+    }
+}
+
 //! Thread 0 waits for a flag that thread 40 sets, sleeping: on one OS
 //! thread, the wait must let thread 40 run
 __global__ void sleep_wait(int *out)
@@ -337,6 +359,15 @@ int main()
             wrong += scan[t] != (l + 1) * (l + 2) / 2 || reduce[t] != warp * (warp + 1) / 2;
         }
         EXPECT(wrong == 0);
+    }
+
+    {
+        std::vector<int> out(65);
+        branches<<<1, warp>>>(out.data());
+        unsigned wrong = 0;
+        for (int l = 0; l < warp; ++l)
+            wrong += out[l] != (l < 16 ? 100 : 216) || out[32 + l] != 1;
+        EXPECT(wrong == 0 && out[64] == 11);
     }
 
     {
@@ -419,6 +450,7 @@ int main()
     EXPECT(std::fabs(__builtin_amdgcn_sinf(0.25f) - 1.0f) < 1e-6f && std::fabs(__builtin_amdgcn_cosf(0.5f) + 1.0f) < 1e-6f);
     EXPECT(std::fabs(__builtin_amdgcn_sinf(1e6f + 0.125f) - std::sqrt(0.5f)) < 1e-4f);
     EXPECT(std::isnan(__builtin_amdgcn_sinf(INFINITY)));
+    EXPECT(std::signbit(__builtin_amdgcn_sinf(-0.0f)) && __builtin_amdgcn_sinf(0.0f) == 0.0f);
     EXPECT(__builtin_amdgcn_exp2f(-3.0f) == 0.125f && __builtin_amdgcn_logf(32.0f) == 5.0f);
     EXPECT(__builtin_amdgcn_ldexpf(3.0f, 4) == 48.0f && __builtin_amdgcn_ldexp(1.0, -1074) > 0.0);
     EXPECT(__builtin_amdgcn_frexp_mantf(48.0f) == 0.75f && __builtin_amdgcn_frexp_expf(48.0f) == 6);

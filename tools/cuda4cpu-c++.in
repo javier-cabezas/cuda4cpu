@@ -379,10 +379,19 @@ def hip_platform(argv):
     if platform == 'nvidia':
         return rest, [], None
     argv, rest = rest, []
-    for arg in argv:
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
+        value = None
         if arg.startswith(('--offload-arch=', '--amdgpu-target=')):
+            value = arg.split('=', 1)[1]
+        elif arg in ('--offload-arch', '--amdgpu-target') and i < len(argv):
+            value = argv[i]
+            i += 1
+        if value is not None:
             # gfx1100:xnack-, or several separated by commas
-            targets += [t.split(':')[0] for t in arg.split('=', 1)[1].split(',') if t]
+            targets += [t.split(':')[0] for t in value.split(',') if t]
         elif arg == '-mwavefrontsize64':
             return argv, [], ('cuda4cpu emulates AMD GPUs with 32-lane wavefronts; '
                               '-mwavefrontsize64 is not supported')
@@ -675,12 +684,16 @@ def main(argv):
     try:
         args = []
         renamed = []                        # (rewritten, original, shadow directory) of each source
+        renamed_languages = []              # the same, with each one's language
         x_language = None                   # set by -x: a language, 'other', or None (by extension)
         i = 0
         while i < len(argv):
             arg = argv[i]
             if MODE == 'hip' and (arg in HIPCC_DROPPED or arg.startswith(HIPCC_DROPPED_PREFIXES)):
                 i += 1
+                continue
+            if MODE == 'hip' and arg in ('--offload-arch', '--amdgpu-target'):
+                i += 2
                 continue
             if arg.startswith('-std='):
                 arg = raise_standard(arg)
@@ -714,11 +727,14 @@ def main(argv):
                     return status
                 args += ['-x', 'c++', out, '-x', 'none']
                 renamed.append((out, arg, shadow_dir))
+                renamed_languages.append((out, arg, shadow_dir, language))
             else:
                 args.append(arg)
             i += 1
 
-        front = ['-I' + INCLUDE_DIR] + platform_defines
+        # The AMD platform's macros are for HIP sources, not CUDA ones
+        hip_sources = any(language == 'hip' for *_, language in renamed_languages)
+        front = ['-I' + INCLUDE_DIR] + (platform_defines if hip_sources else [])
         if not any(a.startswith('-std=') for a in args):
             front.append('-std=c++23')
         if '-fopenmp' not in args:

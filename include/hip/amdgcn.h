@@ -23,8 +23,9 @@
 // RDNA3 GPU, whose wavefronts have 32 lanes, as cuda4cpu's warps.
 //
 // - The lane operations exchange the values of the lanes that take part:
-//   EXEC, the lanes of the warp that haven't returned and don't wait at a
-//   barrier in another branch. A lane gets nothing from a lane outside EXEC
+//   EXEC, the lanes of the warp that reach the call together, as
+//   __activemask() finds them (see the macros at the end). A lane gets
+//   nothing from a lane outside EXEC
 //   (zero, or its old value where the instruction keeps it), where a GPU may
 //   give a stale value. DPP, ds_swizzle and permlane follow the encodings of
 //   LLVM's AMDGPU backend and AMD's ISA manuals: ds_swizzle's FFT and rotate
@@ -110,20 +111,29 @@ inline uint64_t *warp_slots()
 {
     static thread_local std::unique_ptr<uint64_t[]> slots;
     if (!slots)
-        slots.reset(new uint64_t[(1024 / wavefront_size) * wavefront_size]);
+        slots.reset(new uint64_t[(1024 / wavefront_size) * wavefront_size]());
     return slots.get() + warp() * wavefront_size;
 }
 
-//! Gives the calling lane's value to its warp, and gets every lane's: the
-//! ballot waits for the lanes that take part, which have written their
-//! slots, and the sync keeps them from being overwritten before everyone
-//! has read them
-inline lanes exchange(uint64_t value)
+//! The lanes of the calling warp that reach the call at site together,
+//! which a GPU runs the instruction for: lanes in another branch are at
+//! another call
+inline uint32_t exec(uint64_t site)
 {
+    return thread_block::warp_active_mask(site);
+}
+
+//! Gives the calling lane's value to the lanes that reach the call at site
+//! with it (EXEC), and gets theirs. The first sync waits for them to write
+//! their slots, the second keeps the slots from being overwritten before
+//! everyone has read them.
+inline lanes exchange(uint64_t site, uint64_t value)
+{
+    lanes all;
+    all.exec = exec(site);
     uint64_t *const slots = warp_slots();
     slots[lane()] = value;
-    lanes all;
-    all.exec = __ballot_sync(0xffffffffu, 1);
+    __syncwarp(all.exec);
     std::memcpy(all.value, slots, sizeof all.value);
     __syncwarp(all.exec);
     return all;
@@ -167,9 +177,9 @@ inline int dpp_source(unsigned l, int ctrl)
 }
 
 template <typename T>
-inline T update_dpp(T old, T src, int ctrl, int row_mask, int bank_mask, bool bound_ctrl)
+inline T update_dpp(uint64_t site, T old, T src, int ctrl, int row_mask, int bank_mask, bool bound_ctrl)
 {
-    const lanes all = exchange(to_bits(src));
+    const lanes all = exchange(site, to_bits(src));
     const unsigned l = lane();
     const int from = dpp_source(l, ctrl);
     // Lanes of the rows and banks that the masks leave out keep their old value
@@ -196,9 +206,9 @@ inline unsigned swizzle_source(unsigned l, int offset)
 }
 
 template <typename T>
-inline T permlane16(T old, T src, unsigned lo, unsigned hi, bool fi, bool bound_ctrl, bool other_row)
+inline T permlane16(uint64_t site, T old, T src, unsigned lo, unsigned hi, bool fi, bool bound_ctrl, bool other_row)
 {
-    const lanes all = exchange(to_bits(src));
+    const lanes all = exchange(site, to_bits(src));
     const unsigned l = lane(), i = l & 15;
     const unsigned select = (i < 8 ? lo >> (4 * i) : hi >> (4 * (i - 8))) & 15;
     const unsigned from = ((l & ~15u) ^ (other_row ? 16u : 0u)) | select;
@@ -209,9 +219,9 @@ inline T permlane16(T old, T src, unsigned lo, unsigned hi, bool fi, bool bound_
 
 //! The reduction of the active lanes' values, in their order
 template <typename T, typename Op>
-inline T reduce(T value, Op op)
+inline T reduce(uint64_t site, T value, Op op)
 {
-    const lanes all = exchange(to_bits(value));
+    const lanes all = exchange(site, to_bits(value));
     bool first = true;
     T result{};
     for (unsigned l = 0; l < wavefront_size; ++l) {
@@ -226,9 +236,9 @@ inline T reduce(T value, Op op)
 
 //! The same, from an identity: for subtractions, 0 - v0 - v1 ...
 template <typename T, typename Op>
-inline T fold(T value, T identity, Op op)
+inline T fold(uint64_t site, T value, T identity, Op op)
 {
-    const lanes all = exchange(to_bits(value));
+    const lanes all = exchange(site, to_bits(value));
     T result = identity;
     for (unsigned l = 0; l < wavefront_size; ++l)
         if (all.active(l))
@@ -265,7 +275,8 @@ inline uint32_t clamp_uint(int64_t v, bool clamp)
     return uint32_t(uint64_t(v));
 }
 
-//! sin(2 pi x) and cos(2 pi x), as the hardware's: x in turns
+//! sin(2 pi x) and cos(2 pi x), as the hardware's: x in turns. The
+//! reduction to [-0.5, 0.5] makes -0 a +0, so sin keeps a zero as it is.
 inline double turns(double x)
 {
     return 2 * std::numbers::pi * (x - std::nearbyint(x));
@@ -390,43 +401,50 @@ inline void *__builtin_amdgcn_dispatch_ptr()
 }
 
 //
-// Lane operations
+// Lane operations. Each is a function cuda4cpu_amdgcn_<name> that takes the
+// call's place first, which the macro __builtin_amdgcn_<name> passes (at
+// the end of this header): the lanes that reach the call together are the
+// instruction's EXEC. The functions with the builtins' names, for calls
+// that bypass the macros, share one place.
 //
 
+//! The place of a call, from its file and line
+#define CUDA4CPU_AMDGCN_SITE ::cuda4cpu::detail::call_site(__FILE__, __LINE__)
+
 template <typename T>
-inline T __builtin_amdgcn_readfirstlane(T value)
+inline T cuda4cpu_amdgcn_readfirstlane(uint64_t site, T value)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(value));
+    const a::lanes all = a::exchange(site, a::to_bits(value));
     return a::from_bits<T>(all.value[std::countr_zero(all.exec)]);
 }
 
 template <typename T>
-inline T __builtin_amdgcn_readlane(T value, int lane)
+inline T cuda4cpu_amdgcn_readlane(uint64_t site, T value, int lane)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(value));
+    const a::lanes all = a::exchange(site, a::to_bits(value));
     const unsigned from = unsigned(lane) % a::wavefront_size;
     return all.active(from) ? a::from_bits<T>(all.value[from]) : a::from_bits<T>(0);
 }
 
 //! old, except in the given lane, which gets the first active lane's src
 template <typename T>
-inline T __builtin_amdgcn_writelane(T src, int lane, T old)
+inline T cuda4cpu_amdgcn_writelane(uint64_t site, T src, int lane, T old)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const T value = __builtin_amdgcn_readfirstlane(src);
+    const T value = cuda4cpu_amdgcn_readfirstlane(site, src);
     return a::lane() == unsigned(lane) % a::wavefront_size ? value : old;
 }
 
-inline uint64_t __builtin_amdgcn_read_exec()
+inline uint64_t cuda4cpu_amdgcn_read_exec(uint64_t site)
 {
-    return __ballot_sync(0xffffffffu, 1);
+    return cuda4cpu::detail::amdgcn::exec(site);
 }
 
-inline uint32_t __builtin_amdgcn_read_exec_lo()
+inline uint32_t cuda4cpu_amdgcn_read_exec_lo(uint64_t site)
 {
-    return __ballot_sync(0xffffffffu, 1);
+    return cuda4cpu::detail::amdgcn::exec(site);
 }
 
 inline uint32_t __builtin_amdgcn_read_exec_hi()
@@ -434,14 +452,19 @@ inline uint32_t __builtin_amdgcn_read_exec_hi()
     return 0;
 }
 
-inline uint32_t __builtin_amdgcn_ballot_w32(bool predicate)
+inline uint32_t cuda4cpu_amdgcn_ballot_w32(uint64_t site, bool predicate)
 {
-    return __ballot_sync(0xffffffffu, predicate);
+    namespace a = cuda4cpu::detail::amdgcn;
+    const a::lanes all = a::exchange(site, predicate);
+    uint32_t mask = 0;
+    for (unsigned l = 0; l < a::wavefront_size; ++l)
+        mask |= all.active(l) && all.value[l] != 0 ? 1u << l : 0;
+    return mask;
 }
 
-inline uint64_t __builtin_amdgcn_ballot_w64(bool predicate)
+inline uint64_t cuda4cpu_amdgcn_ballot_w64(uint64_t site, bool predicate)
 {
-    return __ballot_sync(0xffffffffu, predicate);
+    return cuda4cpu_amdgcn_ballot_w32(site, predicate);
 }
 
 inline bool __builtin_amdgcn_inverse_ballot_w32(uint32_t mask)
@@ -468,21 +491,21 @@ inline unsigned int __builtin_amdgcn_mbcnt_hi(unsigned int, unsigned int add)
 }
 
 //! src of the lane that addr / 4 names: a backward permutation
-inline int __builtin_amdgcn_ds_bpermute(int addr, int src)
+inline int cuda4cpu_amdgcn_ds_bpermute(uint64_t site, int addr, int src)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(src));
+    const a::lanes all = a::exchange(site, a::to_bits(src));
     const unsigned from = (unsigned(addr) >> 2) % a::wavefront_size;
     return all.active(from) ? a::from_bits<int>(all.value[from]) : 0;
 }
 
 //! The src that a lane sent to the calling lane, whose number is its addr / 4:
 //! a forward permutation. The highest such lane wins; zero if none.
-inline int __builtin_amdgcn_ds_permute(int addr, int src)
+inline int cuda4cpu_amdgcn_ds_permute(uint64_t site, int addr, int src)
 {
     namespace a = cuda4cpu::detail::amdgcn;
     const unsigned to = (unsigned(addr) >> 2) % a::wavefront_size;
-    const a::lanes all = a::exchange(uint64_t(to) << 32 | uint32_t(src));
+    const a::lanes all = a::exchange(site, uint64_t(to) << 32 | uint32_t(src));
     const unsigned l = a::lane();
     int result = 0;
     for (unsigned from = 0; from < a::wavefront_size; ++from)
@@ -491,51 +514,55 @@ inline int __builtin_amdgcn_ds_permute(int addr, int src)
     return result;
 }
 
-inline int __builtin_amdgcn_ds_swizzle(int src, int offset)
+inline int cuda4cpu_amdgcn_ds_swizzle(uint64_t site, int src, int offset)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(src));
+    const a::lanes all = a::exchange(site, a::to_bits(src));
     const unsigned from = a::swizzle_source(a::lane(), offset);
     return all.active(from) ? a::from_bits<int>(all.value[from]) : 0;
 }
 
 template <typename T>
-inline T __builtin_amdgcn_update_dpp(T old, T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
+inline T cuda4cpu_amdgcn_update_dpp(uint64_t site, T old, T src, int dpp_ctrl, int row_mask, int bank_mask,
+                                    bool bound_ctrl)
 {
-    return cuda4cpu::detail::amdgcn::update_dpp(old, src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
+    return cuda4cpu::detail::amdgcn::update_dpp(site, old, src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
 }
 
 //! update_dpp with no old value: lanes that keep theirs get zero here
 template <typename T>
-inline T __builtin_amdgcn_mov_dpp(T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
+inline T cuda4cpu_amdgcn_mov_dpp(uint64_t site, T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    return a::update_dpp(a::from_bits<T>(0), src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
+    return a::update_dpp(site, a::from_bits<T>(0), src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
 }
 
 //! Within groups of 8 lanes, each lane reads the one that its 3 bits of sel name
 template <typename T>
-inline T __builtin_amdgcn_mov_dpp8(T src, unsigned int sel)
+inline T cuda4cpu_amdgcn_mov_dpp8(uint64_t site, T src, unsigned int sel)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(src));
+    const a::lanes all = a::exchange(site, a::to_bits(src));
     const unsigned l = a::lane(), from = (l & ~7u) | ((sel >> (3 * (l & 7))) & 7);
     return all.active(from) ? a::from_bits<T>(all.value[from]) : a::from_bits<T>(0);
 }
 
 //! Within rows of 16 lanes, each lane reads the one that its 4 bits of
-//! {src2, src1} name
+//! {src2, src1} name. fi would read inactive lanes, whose values aren't
+//! known here: they give zero.
 template <typename T>
-inline T __builtin_amdgcn_permlane16(T old, T src, unsigned int src1, unsigned int src2, bool fi, bool bound_ctrl)
+inline T cuda4cpu_amdgcn_permlane16(uint64_t site, T old, T src, unsigned int src1, unsigned int src2, bool fi,
+                                    bool bound_ctrl)
 {
-    return cuda4cpu::detail::amdgcn::permlane16(old, src, src1, src2, fi, bound_ctrl, false);
+    return cuda4cpu::detail::amdgcn::permlane16(site, old, src, src1, src2, fi, bound_ctrl, false);
 }
 
 //! The same, reading the other row
 template <typename T>
-inline T __builtin_amdgcn_permlanex16(T old, T src, unsigned int src1, unsigned int src2, bool fi, bool bound_ctrl)
+inline T cuda4cpu_amdgcn_permlanex16(uint64_t site, T old, T src, unsigned int src1, unsigned int src2, bool fi,
+                                     bool bound_ctrl)
 {
-    return cuda4cpu::detail::amdgcn::permlane16(old, src, src1, src2, fi, bound_ctrl, true);
+    return cuda4cpu::detail::amdgcn::permlane16(site, old, src, src1, src2, fi, bound_ctrl, true);
 }
 
 //! Swaps the halves of a 64-lane wavefront: nothing with 32 lanes
@@ -546,10 +573,10 @@ inline T __builtin_amdgcn_permlane64(T src)
 }
 
 //! src of lane idx, modulo the wavefront size
-inline int __builtin_amdgcn_wave_shuffle(int src, int idx)
+inline int cuda4cpu_amdgcn_wave_shuffle(uint64_t site, int src, int idx)
 {
     namespace a = cuda4cpu::detail::amdgcn;
-    const a::lanes all = a::exchange(a::to_bits(src));
+    const a::lanes all = a::exchange(site, a::to_bits(src));
     const unsigned from = unsigned(idx) % a::wavefront_size;
     return all.active(from) ? a::from_bits<int>(all.value[from]) : 0;
 }
@@ -557,37 +584,80 @@ inline int __builtin_amdgcn_wave_shuffle(int src, int idx)
 // Reductions over the active lanes, whose strategy argument only matters to
 // the compiler
 #define CUDA4CPU_WAVE_REDUCE(name, T, ...)                                    \
-    inline T __builtin_amdgcn_wave_reduce_##name(T value, int)                 \
+    inline T cuda4cpu_amdgcn_wave_reduce_##name(uint64_t site, T value, int)   \
     {                                                                          \
         return cuda4cpu::detail::amdgcn::__VA_ARGS__;                          \
+    }                                                                          \
+    inline T __builtin_amdgcn_wave_reduce_##name(T value, int strategy)        \
+    {                                                                          \
+        return cuda4cpu_amdgcn_wave_reduce_##name(0, value, strategy);         \
     }
-CUDA4CPU_WAVE_REDUCE(add_u32, uint32_t, fold<uint32_t>(value, 0, [](uint32_t a, uint32_t b) { return a + b; }))
-CUDA4CPU_WAVE_REDUCE(add_u64, uint64_t, fold<uint64_t>(value, 0, [](uint64_t a, uint64_t b) { return a + b; }))
-CUDA4CPU_WAVE_REDUCE(sub_u32, uint32_t, fold<uint32_t>(value, 0, [](uint32_t a, uint32_t b) { return a - b; }))
-CUDA4CPU_WAVE_REDUCE(sub_u64, uint64_t, fold<uint64_t>(value, 0, [](uint64_t a, uint64_t b) { return a - b; }))
-CUDA4CPU_WAVE_REDUCE(min_i32, int32_t, reduce(value, [](int32_t a, int32_t b) { return std::min(a, b); }))
-CUDA4CPU_WAVE_REDUCE(min_i64, int64_t, reduce(value, [](int64_t a, int64_t b) { return std::min(a, b); }))
-CUDA4CPU_WAVE_REDUCE(min_u32, uint32_t, reduce(value, [](uint32_t a, uint32_t b) { return std::min(a, b); }))
-CUDA4CPU_WAVE_REDUCE(min_u64, uint64_t, reduce(value, [](uint64_t a, uint64_t b) { return std::min(a, b); }))
-CUDA4CPU_WAVE_REDUCE(max_i32, int32_t, reduce(value, [](int32_t a, int32_t b) { return std::max(a, b); }))
-CUDA4CPU_WAVE_REDUCE(max_i64, int64_t, reduce(value, [](int64_t a, int64_t b) { return std::max(a, b); }))
-CUDA4CPU_WAVE_REDUCE(max_u32, uint32_t, reduce(value, [](uint32_t a, uint32_t b) { return std::max(a, b); }))
-CUDA4CPU_WAVE_REDUCE(max_u64, uint64_t, reduce(value, [](uint64_t a, uint64_t b) { return std::max(a, b); }))
-CUDA4CPU_WAVE_REDUCE(and_b32, int32_t, fold<int32_t>(value, -1, [](int32_t a, int32_t b) { return a & b; }))
-CUDA4CPU_WAVE_REDUCE(and_b64, int64_t, fold<int64_t>(value, -1, [](int64_t a, int64_t b) { return a & b; }))
-CUDA4CPU_WAVE_REDUCE(or_b32, int32_t, fold<int32_t>(value, 0, [](int32_t a, int32_t b) { return a | b; }))
-CUDA4CPU_WAVE_REDUCE(or_b64, int64_t, fold<int64_t>(value, 0, [](int64_t a, int64_t b) { return a | b; }))
-CUDA4CPU_WAVE_REDUCE(xor_b32, int32_t, fold<int32_t>(value, 0, [](int32_t a, int32_t b) { return a ^ b; }))
-CUDA4CPU_WAVE_REDUCE(xor_b64, int64_t, fold<int64_t>(value, 0, [](int64_t a, int64_t b) { return a ^ b; }))
-CUDA4CPU_WAVE_REDUCE(fadd_f32, float, fold<float>(value, -0.0f, [](float a, float b) { return a + b; }))
-CUDA4CPU_WAVE_REDUCE(fadd_f64, double, fold<double>(value, -0.0, [](double a, double b) { return a + b; }))
-CUDA4CPU_WAVE_REDUCE(fsub_f32, float, fold<float>(value, 0.0f, [](float a, float b) { return a - b; }))
-CUDA4CPU_WAVE_REDUCE(fsub_f64, double, fold<double>(value, 0.0, [](double a, double b) { return a - b; }))
-CUDA4CPU_WAVE_REDUCE(fmin_f32, float, reduce(value, [](float a, float b) { return std::fmin(a, b); }))
-CUDA4CPU_WAVE_REDUCE(fmin_f64, double, reduce(value, [](double a, double b) { return std::fmin(a, b); }))
-CUDA4CPU_WAVE_REDUCE(fmax_f32, float, reduce(value, [](float a, float b) { return std::fmax(a, b); }))
-CUDA4CPU_WAVE_REDUCE(fmax_f64, double, reduce(value, [](double a, double b) { return std::fmax(a, b); }))
+CUDA4CPU_WAVE_REDUCE(add_u32, uint32_t, fold<uint32_t>(site, value, 0, [](uint32_t a, uint32_t b) { return a + b; }))
+CUDA4CPU_WAVE_REDUCE(add_u64, uint64_t, fold<uint64_t>(site, value, 0, [](uint64_t a, uint64_t b) { return a + b; }))
+CUDA4CPU_WAVE_REDUCE(sub_u32, uint32_t, fold<uint32_t>(site, value, 0, [](uint32_t a, uint32_t b) { return a - b; }))
+CUDA4CPU_WAVE_REDUCE(sub_u64, uint64_t, fold<uint64_t>(site, value, 0, [](uint64_t a, uint64_t b) { return a - b; }))
+CUDA4CPU_WAVE_REDUCE(min_i32, int32_t, reduce(site, value, [](int32_t a, int32_t b) { return std::min(a, b); }))
+CUDA4CPU_WAVE_REDUCE(min_i64, int64_t, reduce(site, value, [](int64_t a, int64_t b) { return std::min(a, b); }))
+CUDA4CPU_WAVE_REDUCE(min_u32, uint32_t, reduce(site, value, [](uint32_t a, uint32_t b) { return std::min(a, b); }))
+CUDA4CPU_WAVE_REDUCE(min_u64, uint64_t, reduce(site, value, [](uint64_t a, uint64_t b) { return std::min(a, b); }))
+CUDA4CPU_WAVE_REDUCE(max_i32, int32_t, reduce(site, value, [](int32_t a, int32_t b) { return std::max(a, b); }))
+CUDA4CPU_WAVE_REDUCE(max_i64, int64_t, reduce(site, value, [](int64_t a, int64_t b) { return std::max(a, b); }))
+CUDA4CPU_WAVE_REDUCE(max_u32, uint32_t, reduce(site, value, [](uint32_t a, uint32_t b) { return std::max(a, b); }))
+CUDA4CPU_WAVE_REDUCE(max_u64, uint64_t, reduce(site, value, [](uint64_t a, uint64_t b) { return std::max(a, b); }))
+CUDA4CPU_WAVE_REDUCE(and_b32, int32_t, fold<int32_t>(site, value, -1, [](int32_t a, int32_t b) { return a & b; }))
+CUDA4CPU_WAVE_REDUCE(and_b64, int64_t, fold<int64_t>(site, value, -1, [](int64_t a, int64_t b) { return a & b; }))
+CUDA4CPU_WAVE_REDUCE(or_b32, int32_t, fold<int32_t>(site, value, 0, [](int32_t a, int32_t b) { return a | b; }))
+CUDA4CPU_WAVE_REDUCE(or_b64, int64_t, fold<int64_t>(site, value, 0, [](int64_t a, int64_t b) { return a | b; }))
+CUDA4CPU_WAVE_REDUCE(xor_b32, int32_t, fold<int32_t>(site, value, 0, [](int32_t a, int32_t b) { return a ^ b; }))
+CUDA4CPU_WAVE_REDUCE(xor_b64, int64_t, fold<int64_t>(site, value, 0, [](int64_t a, int64_t b) { return a ^ b; }))
+CUDA4CPU_WAVE_REDUCE(fadd_f32, float, fold<float>(site, value, -0.0f, [](float a, float b) { return a + b; }))
+CUDA4CPU_WAVE_REDUCE(fadd_f64, double, fold<double>(site, value, -0.0, [](double a, double b) { return a + b; }))
+CUDA4CPU_WAVE_REDUCE(fsub_f32, float, fold<float>(site, value, 0.0f, [](float a, float b) { return a - b; }))
+CUDA4CPU_WAVE_REDUCE(fsub_f64, double, fold<double>(site, value, 0.0, [](double a, double b) { return a - b; }))
+CUDA4CPU_WAVE_REDUCE(fmin_f32, float, reduce(site, value, [](float a, float b) { return std::fmin(a, b); }))
+CUDA4CPU_WAVE_REDUCE(fmin_f64, double, reduce(site, value, [](double a, double b) { return std::fmin(a, b); }))
+CUDA4CPU_WAVE_REDUCE(fmax_f32, float, reduce(site, value, [](float a, float b) { return std::fmax(a, b); }))
+CUDA4CPU_WAVE_REDUCE(fmax_f64, double, reduce(site, value, [](double a, double b) { return std::fmax(a, b); }))
 #undef CUDA4CPU_WAVE_REDUCE
+
+// The builtins' names as functions, for calls that bypass the macros
+// ((__builtin_amdgcn_readlane)(...)), which share one place
+template <typename T>
+inline T __builtin_amdgcn_readfirstlane(T value) { return cuda4cpu_amdgcn_readfirstlane(0, value); }
+template <typename T>
+inline T __builtin_amdgcn_readlane(T value, int lane) { return cuda4cpu_amdgcn_readlane(0, value, lane); }
+template <typename T>
+inline T __builtin_amdgcn_writelane(T src, int lane, T old) { return cuda4cpu_amdgcn_writelane(0, src, lane, old); }
+inline uint64_t __builtin_amdgcn_read_exec() { return cuda4cpu_amdgcn_read_exec(0); }
+inline uint32_t __builtin_amdgcn_read_exec_lo() { return cuda4cpu_amdgcn_read_exec_lo(0); }
+inline uint32_t __builtin_amdgcn_ballot_w32(bool predicate) { return cuda4cpu_amdgcn_ballot_w32(0, predicate); }
+inline uint64_t __builtin_amdgcn_ballot_w64(bool predicate) { return cuda4cpu_amdgcn_ballot_w64(0, predicate); }
+inline int __builtin_amdgcn_ds_bpermute(int addr, int src) { return cuda4cpu_amdgcn_ds_bpermute(0, addr, src); }
+inline int __builtin_amdgcn_ds_permute(int addr, int src) { return cuda4cpu_amdgcn_ds_permute(0, addr, src); }
+inline int __builtin_amdgcn_ds_swizzle(int src, int offset) { return cuda4cpu_amdgcn_ds_swizzle(0, src, offset); }
+template <typename T>
+inline T __builtin_amdgcn_update_dpp(T old, T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
+{
+    return cuda4cpu_amdgcn_update_dpp(0, old, src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
+}
+template <typename T>
+inline T __builtin_amdgcn_mov_dpp(T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
+{
+    return cuda4cpu_amdgcn_mov_dpp(0, src, dpp_ctrl, row_mask, bank_mask, bound_ctrl);
+}
+template <typename T>
+inline T __builtin_amdgcn_mov_dpp8(T src, unsigned int sel) { return cuda4cpu_amdgcn_mov_dpp8(0, src, sel); }
+template <typename T>
+inline T __builtin_amdgcn_permlane16(T old, T src, unsigned int src1, unsigned int src2, bool fi, bool bound_ctrl)
+{
+    return cuda4cpu_amdgcn_permlane16(0, old, src, src1, src2, fi, bound_ctrl);
+}
+template <typename T>
+inline T __builtin_amdgcn_permlanex16(T old, T src, unsigned int src1, unsigned int src2, bool fi, bool bound_ctrl)
+{
+    return cuda4cpu_amdgcn_permlanex16(0, old, src, src1, src2, fi, bound_ctrl);
+}
+inline int __builtin_amdgcn_wave_shuffle(int src, int idx) { return cuda4cpu_amdgcn_wave_shuffle(0, src, idx); }
 
 //
 // Synchronization, clocks, and hints to the compiler and the hardware,
@@ -798,9 +868,9 @@ inline _Float16 __builtin_amdgcn_rsqh(_Float16 x) { return _Float16(1.0f / std::
 inline double __builtin_amdgcn_sqrt(double x) { return std::sqrt(x); }
 inline float __builtin_amdgcn_sqrtf(float x) { return std::sqrt(x); }
 inline _Float16 __builtin_amdgcn_sqrth(_Float16 x) { return _Float16(std::sqrt(float(x))); }
-inline float __builtin_amdgcn_sinf(float x) { return float(std::sin(cuda4cpu::detail::amdgcn::turns(x))); }
+inline float __builtin_amdgcn_sinf(float x) { return x == 0 ? x : float(std::sin(cuda4cpu::detail::amdgcn::turns(x))); }
 inline float __builtin_amdgcn_cosf(float x) { return float(std::cos(cuda4cpu::detail::amdgcn::turns(x))); }
-inline _Float16 __builtin_amdgcn_sinh(_Float16 x) { return _Float16(std::sin(cuda4cpu::detail::amdgcn::turns(float(x)))); }
+inline _Float16 __builtin_amdgcn_sinh(_Float16 x) { return x == 0 ? x : _Float16(std::sin(cuda4cpu::detail::amdgcn::turns(float(x)))); }
 inline _Float16 __builtin_amdgcn_cosh(_Float16 x) { return _Float16(std::cos(cuda4cpu::detail::amdgcn::turns(float(x)))); }
 inline float __builtin_amdgcn_exp2f(float x) { return std::exp2(x); }
 inline float __builtin_amdgcn_logf(float x) { return std::log2(x); }
@@ -917,3 +987,48 @@ inline float __builtin_amdgcn_ds_fmaxf(float *p, float value, int, int, bool)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(p, [&](float old) { return std::fmax(old, value); });
 }
+
+// The lane operations' macros, which pass the call's place: defined last,
+// so that they don't rename the functions above
+#define __builtin_amdgcn_read_exec() cuda4cpu_amdgcn_read_exec(CUDA4CPU_AMDGCN_SITE)
+#define __builtin_amdgcn_read_exec_lo() cuda4cpu_amdgcn_read_exec_lo(CUDA4CPU_AMDGCN_SITE)
+#define __builtin_amdgcn_readfirstlane(...) cuda4cpu_amdgcn_readfirstlane(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_readlane(...) cuda4cpu_amdgcn_readlane(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_writelane(...) cuda4cpu_amdgcn_writelane(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_ballot_w32(...) cuda4cpu_amdgcn_ballot_w32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_ballot_w64(...) cuda4cpu_amdgcn_ballot_w64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_ds_bpermute(...) cuda4cpu_amdgcn_ds_bpermute(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_ds_permute(...) cuda4cpu_amdgcn_ds_permute(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_ds_swizzle(...) cuda4cpu_amdgcn_ds_swizzle(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_update_dpp(...) cuda4cpu_amdgcn_update_dpp(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_mov_dpp(...) cuda4cpu_amdgcn_mov_dpp(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_mov_dpp8(...) cuda4cpu_amdgcn_mov_dpp8(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_permlane16(...) cuda4cpu_amdgcn_permlane16(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_permlanex16(...) cuda4cpu_amdgcn_permlanex16(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_shuffle(...) cuda4cpu_amdgcn_wave_shuffle(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_add_u32(...) cuda4cpu_amdgcn_wave_reduce_add_u32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_add_u64(...) cuda4cpu_amdgcn_wave_reduce_add_u64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_sub_u32(...) cuda4cpu_amdgcn_wave_reduce_sub_u32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_sub_u64(...) cuda4cpu_amdgcn_wave_reduce_sub_u64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_min_i32(...) cuda4cpu_amdgcn_wave_reduce_min_i32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_min_i64(...) cuda4cpu_amdgcn_wave_reduce_min_i64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_min_u32(...) cuda4cpu_amdgcn_wave_reduce_min_u32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_min_u64(...) cuda4cpu_amdgcn_wave_reduce_min_u64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_max_i32(...) cuda4cpu_amdgcn_wave_reduce_max_i32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_max_i64(...) cuda4cpu_amdgcn_wave_reduce_max_i64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_max_u32(...) cuda4cpu_amdgcn_wave_reduce_max_u32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_max_u64(...) cuda4cpu_amdgcn_wave_reduce_max_u64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_and_b32(...) cuda4cpu_amdgcn_wave_reduce_and_b32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_and_b64(...) cuda4cpu_amdgcn_wave_reduce_and_b64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_or_b32(...) cuda4cpu_amdgcn_wave_reduce_or_b32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_or_b64(...) cuda4cpu_amdgcn_wave_reduce_or_b64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_xor_b32(...) cuda4cpu_amdgcn_wave_reduce_xor_b32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_xor_b64(...) cuda4cpu_amdgcn_wave_reduce_xor_b64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fadd_f32(...) cuda4cpu_amdgcn_wave_reduce_fadd_f32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fadd_f64(...) cuda4cpu_amdgcn_wave_reduce_fadd_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fsub_f32(...) cuda4cpu_amdgcn_wave_reduce_fsub_f32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fsub_f64(...) cuda4cpu_amdgcn_wave_reduce_fsub_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fmin_f32(...) cuda4cpu_amdgcn_wave_reduce_fmin_f32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fmin_f64(...) cuda4cpu_amdgcn_wave_reduce_fmin_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fmax_f32(...) cuda4cpu_amdgcn_wave_reduce_fmax_f32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+#define __builtin_amdgcn_wave_reduce_fmax_f64(...) cuda4cpu_amdgcn_wave_reduce_fmax_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)

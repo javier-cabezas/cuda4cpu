@@ -164,8 +164,27 @@ class AmdPlatform(unittest.TestCase):
         self.assertEqual(self.build_and_run('--cuda4cpu-platform=amd', '--offload-arch=gfx1102:xnack-'),
                          'amd gfx1102 11.0 992')
         self.assertEqual(self.build_and_run(env={'CUDA4CPU_HIP_PLATFORM': 'amd'}), 'amd gfx1100 11.0 992')
-        self.assertEqual(self.build_and_run('--offload-arch=gfx1151', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
+        self.assertEqual(self.build_and_run('--offload-arch', 'gfx1151', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
                          'amd gfx1151 11.5 992')
+
+    def test_cuda_sources_keep_cuda(self):
+        """The AMD platform's macros are for HIP sources: a CUDA file that
+        cuda4cpu-c++ compiles with them doesn't get them"""
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'plain.cu'), 'w') as f:
+                f.write('#ifdef __HIP_PLATFORM_AMD__\n#error AMD macros in a CUDA file\n#endif\nint main() {}\n')
+            result = tool('cuda4cpu-c++', '-c', 'plain.cu', cwd=work, env={'CUDA4CPU_HIP_PLATFORM': 'amd'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_program_defining_amd_stays_nvidia(self):
+        """A program that defines __HIP_PLATFORM_AMD__ itself compiles on the
+        NVIDIA platform, as before"""
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'self.hip'), 'w') as f:
+                f.write('#define __HIP_PLATFORM_AMD__ 1\n#include <hip/hip_runtime.h>\n'
+                        '#ifndef __HIP_PLATFORM_NVIDIA__\n#error not NVIDIA\n#endif\nint main() {}\n')
+            result = tool('hipcc', '-c', 'self.hip', cwd=work)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_nvidia_by_default(self):
         # --offload-arch alone doesn't choose AMD's platform

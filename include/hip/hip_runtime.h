@@ -268,6 +268,6 @@ inline void hipLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &dimB
 #define HIP_DYNAMIC_SHARED_ATTRIBUTE
 
 // AMD's GPU builtins, on HIP's AMD platform
-#if defined(__HIP_PLATFORM_AMD__)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
 #include "amdgcn.h"
 #endif

@@ -158,12 +158,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `amdgcn.h` (included by `hip_runtime.h` on the AMD platform): AMD's
     `__builtin_amdgcn_*`, phase 1 of the roadmap's plan, as inline functions
     at global scope (code calls them as `::__builtin_amdgcn_...`; both GCC
-    and Clang accept the names). Lane operations go through
-    `detail::amdgcn::exchange`: each lane writes its value to a
-    thread-local slot of its warp, a `__ballot_sync` waits for the others
-    and gives EXEC (the lanes that took part), every lane copies all the
-    slots, and a `__syncwarp(exec)` keeps them from being overwritten too
-    early. DPP (`dpp_source`), `ds_swizzle` and `permlane` compute each
+    and Clang accept the names). Lane operations are macros, like
+    `__activemask()`, for `cuda4cpu_amdgcn_<name>` functions that take the
+    call's place first, and go through `detail::amdgcn::exchange`: EXEC is
+    the lanes that reach that call together (`warp_active_mask`, so lanes
+    in two branches don't merge), each lane writes its value to a
+    thread-local slot of its warp, a `__syncwarp(exec)` waits for the
+    others, every lane copies all the slots, and a second one keeps them
+    from being overwritten too early. The builtins' names are functions too,
+    for calls around the macros, which share one place. DPP (`dpp_source`), `ds_swizzle` and `permlane` compute each
     lane's source from LLVM's encodings (`SIDefines.h`). `s_barrier` is a
     `__syncthreads()` named `s_barrier_name` for the divergent barrier
     check, and `s_sleep` calls `thread_block::interleave()`, so that
@@ -653,7 +656,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `__activemask()` (and `coalesced_threads()`) is the `op_converge` warp
   operation, keyed by its call site. It is released once every live lane that
   isn't at a barrier is in `warp_wait`, whatever it waits for, and returns the
-  lanes waiting at the same call site. This can't deadlock with other warp
+  lanes waiting at the same call site. Every pending call of the warp is
+  released then (`release_converge`), each with its own lanes: releasing
+  one and rechecking the others after its lanes ran on split lanes that
+  left a branch together by when they had arrived, where a GPU reconverges
+  them (`hip_amdgcn`'s `branches`). This can't deadlock with other warp
   operations, which wait for converging lanes: those only need everyone to be
   blocked. The rare operations (matches, converge) are `[[gnu::noinline]]`
   methods of `fibers`, out of `try_release_warp`'s hot path.

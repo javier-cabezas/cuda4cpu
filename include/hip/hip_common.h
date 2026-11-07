@@ -32,11 +32,9 @@
 
 #pragma once
 
-#if defined(__HIP_PLATFORM_AMD__)
-
-#if defined(__HIP_PLATFORM_NVIDIA__)
-#error "__HIP_PLATFORM_AMD__ and __HIP_PLATFORM_NVIDIA__ are both defined"
-#endif
+// A program that defines __HIP_PLATFORM_AMD__ itself, after the rewriter
+// defined __HIP_PLATFORM_NVIDIA__, stays on the NVIDIA platform
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
 
 //! The deprecated name of __HIP_PLATFORM_AMD__
 #ifndef __HIP_PLATFORM_HCC__

@@ -688,23 +688,30 @@ struct thread_block::fibers {
         }
     }
 
-    //! Completes the __activemask() call that thread tid waits at, once every
-    //! lane that can run is waiting: the lanes waiting at the same call are the
-    //! ones executing it together
+    //! Completes the __activemask() calls of thread tid's warp, once every
+    //! lane that can run is waiting: the lanes waiting at the same call are
+    //! the ones executing it together. Every call is completed at once, so
+    //! that lanes that left a branch together reach the next calls together,
+    //! as a GPU's would: completing one, then rechecking the others after its
+    //! lanes ran on, split them by when they had arrived.
     [[gnu::noinline]] void release_converge(size_t tid)
     {
         const size_t base = tid / warp_size * warp_size;
         auto &warp = warps[tid / warp_size];
-        uint32_t group = 0;
-        for (uint32_t m = warp.converge_wait; m != 0; m &= m - 1) {
-            unsigned l = unsigned(std::countr_zero(m));
-            if (warp_value[base + l] == warp_value[tid])
-                group |= 1u << l;
+        for (uint32_t pending = warp.converge_wait; pending != 0; ) {
+            const uint64_t site = warp_value[base + unsigned(std::countr_zero(pending))];
+            uint32_t group = 0;
+            for (uint32_t m = pending; m != 0; m &= m - 1) {
+                unsigned l = unsigned(std::countr_zero(m));
+                if (warp_value[base + l] == site)
+                    group |= 1u << l;
+            }
+            for (uint32_t m = group; m != 0; m &= m - 1)
+                warp_result[base + unsigned(std::countr_zero(m))] = group;
+            pending &= ~group;
         }
-        for (uint32_t m = group; m != 0; m &= m - 1)
-            warp_result[base + unsigned(std::countr_zero(m))] = group;
-        warp.warp_wait     &= ~group;
-        warp.converge_wait &= ~group;
+        warp.warp_wait &= ~warp.converge_wait;
+        warp.converge_wait = 0;
     }
 
     uint32_t runnable(size_t w) const
