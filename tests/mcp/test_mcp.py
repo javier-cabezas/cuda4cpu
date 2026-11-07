@@ -216,16 +216,19 @@ class Run(unittest.TestCase):
         self.assertTrue(any(f['kind'] == 'timeout' for f in content['findings']))
 
 
-# Prints the process ID (which varies) unless the memory holds a fill of
-# 0xff or 0x5a bytes, and then __STEADY__: what it holds, or a constant
+# Prints the process ID (which varies) unless new memory is filled, and then
+# __STEADY__: what the memory holds, or a constant. Memory that holds
+# something else on every run would do it, but nothing makes the allocator
+# return that, and zeros can't be told from a fill of zeros.
 FILL_DEPENDENT = """#include <cstdio>
+#include <cstdlib>
 #include <unistd.h>
 int main()
 {
     int *memory;
     cudaMallocManaged(&memory, sizeof(int));
     const int value = *memory;
-    std::printf("%d\\n", value == -1 || value == 0x5a5a5a5a ? __STEADY__ : int(getpid()));
+    std::printf("%d\\n", std::getenv("CUDA4CPU_INIT_MEMORY") ? __STEADY__ : int(getpid()));
     cudaFree(memory);
     return 0;
 }
@@ -350,15 +353,38 @@ int main()
         self.assertEqual(finding['first_difference']['filled'], '255 threads')
 
     def test_uninitialized_memory_that_varies(self):
-        """Memory that holds something else on every run makes the output vary, but not when filled"""
-        content = self.check(files={'varies.cu': FILL_DEPENDENT.replace('__STEADY__', 'value')},
+        """Memory that holds something else on every run makes the output vary, but not when filled.
+        This program checks that the memory started at zero, which 0xff bytes and garbage fail alike."""
+        content = self.check(files={'varies.cu': FILL_DEPENDENT.replace('__STEADY__', 'int(value == 0)')},
                              sanitizers=False)
         self.assertFalse(content['deterministic_output'])
         self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
         finding = content['findings'][0]
         self.assertIn('depends on what new memory holds', finding['message'])
-        self.assertEqual(finding['first_difference'], {'line': 1, 'filled_0x5a': '1515870810', 'filled': '-1'})
+        self.assertEqual(finding['first_difference'], {'line': 1, 'zeros': '1', 'filled': '0'})
         self.assertIn('depends on memory never written', content['note'])
+
+    def test_uninitialized_memory_that_changes_the_exit_code(self):
+        """Output that varies with a fill too, and an exit code that depends on the fill"""
+        source = """#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+int main()
+{
+    int *memory;
+    cudaMallocManaged(&memory, sizeof(int));
+    const bool zero = *memory == 0;
+    std::printf("process %d\\n", int(getpid()));
+    cudaFree(memory);
+    return std::getenv("CUDA4CPU_INIT_MEMORY") && zero ? 1 : 0;
+}
+"""
+        content = self.check(files={'exit.cu': source}, sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
+        finding = content['findings'][0]
+        self.assertIn('ends with exit code 0 on every run, and with zeros with exit code 1', finding['message'])
+        self.assertNotIn('first_difference', finding)
 
     def test_output_that_any_fill_steadies(self):
         """Output that varies, but not with a fill whatever its byte, as timings once filling faults pages in"""
@@ -366,8 +392,8 @@ int main()
         self.assertFalse(content['deterministic_output'])
         self.assertEqual(content['verdict'], 'no problems found', content['findings'])
         self.assertEqual([r['order'] for r in content['runs'] if r['order'].startswith('init_memory')],
-                         ['init_memory:0xff', 'init_memory:0xff again', 'init_memory:0x5a',
-                          'init_memory:0x5a again'])
+                         ['init_memory:0xff', 'init_memory:0xff again', 'init_memory:0x00',
+                          'init_memory:0x00 again'])
 
     def test_undefined_behavior(self):
         kernel = '''

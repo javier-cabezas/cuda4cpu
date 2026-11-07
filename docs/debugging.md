@@ -215,9 +215,10 @@ short summary first.
      code only, unless `ignore_patterns` removes the lines that vary. Then
      once more with `CUDA4CPU_INIT_MEMORY=0xff`: a result that changes reads
      memory that was never written. When the output varies, the program runs
-     twice with 0xff bytes and twice with 0x5a bytes: output that is the same
-     with each fill, but differs between the two, depends on such memory,
-     which held whatever earlier allocations left.
+     twice with 0xff bytes and twice with zeros: a result that is the same
+     with each fill, but differs between the two (the output, or how the
+     runs end when the output varies anyway), depends on such memory, which
+     held whatever earlier allocations left.
   3. The other orders (`reverse`, `warp_reverse`, and `random` and
      `warp_random` with each of `seeds`, 1 to 3 by default). A result that
      changes with the order is reported once, with the orders that changed

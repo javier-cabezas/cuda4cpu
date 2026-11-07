@@ -449,9 +449,9 @@ TOOLS = [
                     'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
                     "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
                     'direction, allocations never freed), runs with new allocations filled with 0xff bytes '
-                    '(a changed result means reads of memory never written; when the output varies, also with 0x5a '
-                    'bytes, and output that each fill makes steady but the two make different means the same), '
-                    'and runs a build with '
+                    '(a changed result means reads of memory never written; when the output varies, it runs with 0xff '
+                    'bytes and with zeros twice each, and a result that each fill makes steady but the two make '
+                    'different means the same), and runs a build with '
                     'AddressSanitizer and UBSan (out-of-bounds and use-after-free accesses, undefined behavior), '
                     'with source lines. The program should check '
                     'its own results or print them; output that varies between identical runs (timings) is '
@@ -660,28 +660,38 @@ def check_program(program, arguments):
     filled = filled_run('0xff', 'init_memory:0xff', '')
     # Output that varies may come from the memory itself, when the allocator
     # returns what earlier allocations left (it does with Clang 18's libomp).
-    # Then it's the same on every run with one fill, and differs between two
-    # fills. Comparing with the unfilled runs instead would take timings that
-    # filling steadies (it faults the pages in first) for such reads, and miss
-    # a result that garbage and 0xff bytes change the same way.
-    other_fill = None                   # the 0x5a run, when the output depends on the fill
+    # Then each fill gives the same result on every run, and 0xff bytes and
+    # zeros different ones. Comparing with the unfilled runs instead would take
+    # timings that filling steadies (it faults the pages in first) for such
+    # reads, and miss results that garbage and 0xff bytes change the same way
+    # (a check that the memory started at zero). The fills are compared by
+    # output, or when that varies too (timings), by how the runs end.
+    zeros = None                        # a run with zeros, when the result depends on the fill
+    by_output = False                   # whether the fills' outputs are what differs
     if not deterministic and ends(filled) in (ends(base), ends(again)):
-        note = ', once more, since the output varies without a fill'
-        filled_again = filled_run('0xff', 'init_memory:0xff again', note)
-        other = [filled_run('0x5a', 'init_memory:0x5a', note),
-                 filled_run('0x5a', 'init_memory:0x5a again', note)]
-        output = comparable(filled, patterns)
-        if (comparable(filled_again, patterns) == output and
-                comparable(other[0], patterns) == comparable(other[1], patterns) != output):
-            other_fill = other[0]
+        extra = []                      # stopped by a time-out, which is a finding already
+        for byte, name, more in (('0xff', 'init_memory:0xff again', ', once more'), ('0x00', 'init_memory:0x00', ''),
+                                 ('0x00', 'init_memory:0x00 again', ', once more')):
+            if extra and extra[-1]['timed_out']:
+                break
+            extra.append(filled_run(byte, name, f'{more}, since the output varies without a fill'))
+        if len(extra) == 3:
+            filled_again, *zeroed = extra
+            for key in (lambda run: comparable(run, patterns), ends):
+                if key(filled) == key(filled_again) and key(zeroed[0]) == key(zeroed[1]) != key(filled):
+                    zeros, by_output = zeroed[0], key is not ends
+                    break
     if deterministic:
         reads = comparable(filled, patterns) != comparable(base, patterns)
     else:
-        reads = other_fill is not None or ends(filled) not in (ends(base), ends(again))
+        reads = zeros is not None or ends(filled) not in (ends(base), ends(again))
     if reads:
-        if other_fill is not None:
-            how = ('gives the same output on every run, and 0x5a bytes another: the output, which varies '
-                   'between runs without a fill, depends on what new memory holds')
+        if zeros is not None:
+            if ends(zeros) != ends(filled):
+                what = f'ends with {how_it_ends(filled)} on every run, and with zeros with {how_it_ends(zeros)}'
+            else:
+                what = 'gives the same output on every run, and zeros another'
+            how = f'{what}: the result, which varies between runs without a fill, depends on what new memory holds'
         elif ends(filled) != ends(base):
             how = f'ends with {how_it_ends(filled)} instead of {how_it_ends(base)}'
         else:
@@ -691,11 +701,11 @@ def check_program(program, arguments):
                    'meaning': 'the program reads memory from cudaMalloc, cudaMallocManaged or the like before '
                               'writing it. CUDA leaves new memory undefined; on the CPU it is often zeros, '
                               'and on a GPU anything.'}
-        if deterministic or other_fill is not None:
+        if deterministic or by_output:
             difference = (first_difference(comparable(base, patterns)[2], comparable(filled, patterns)[2],
                                            ('default', 'filled')) if deterministic else
-                          first_difference(comparable(other_fill, patterns)[2], comparable(filled, patterns)[2],
-                                           ('filled_0x5a', 'filled')))
+                          first_difference(comparable(zeros, patterns)[2], comparable(filled, patterns)[2],
+                                           ('zeros', 'filled')))
             if difference:
                 finding['first_difference'] = difference
         findings.append(finding)
@@ -731,7 +741,7 @@ def check_program(program, arguments):
                 finding['first_difference'] = difference
         findings.append(finding)
     note = None
-    if other_fill is not None:
+    if zeros is not None:
         # Ignoring the lines that vary would hide that finding
         note = ('the output differs between two runs in the default order because it depends on memory never '
                 'written (see the finding), so the orders were compared by exit code only; check again once '
