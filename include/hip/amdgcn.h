@@ -671,10 +671,16 @@ inline void __builtin_amdgcn_s_barrier()
 }
 
 //! On a GPU, it only keeps the compiler from moving code across it, since
-//! a wavefront's lanes run together; here they don't, so it syncs the warp
+//! a wavefront's lanes run together; here they don't, so it waits for the
+//! lanes that reach it together (EXEC), as a call in a branch must
+inline void cuda4cpu_amdgcn_wave_barrier(uint64_t site)
+{
+    (void)cuda4cpu::detail::amdgcn::exec(site);
+}
+
 inline void __builtin_amdgcn_wave_barrier()
 {
-    __syncwarp(0xffffffffu);
+    cuda4cpu_amdgcn_wave_barrier(0);
 }
 
 //! A fence with an order (__ATOMIC_*) for a scope ("workgroup", "agent",
@@ -991,6 +997,7 @@ inline float __builtin_amdgcn_ds_fmaxf(float *p, float value, int, int, bool)
 // The lane operations' macros, which pass the call's place: defined last,
 // so that they don't rename the functions above
 #define __builtin_amdgcn_read_exec() cuda4cpu_amdgcn_read_exec(CUDA4CPU_AMDGCN_SITE)
+#define __builtin_amdgcn_wave_barrier() cuda4cpu_amdgcn_wave_barrier(CUDA4CPU_AMDGCN_SITE)
 #define __builtin_amdgcn_read_exec_lo() cuda4cpu_amdgcn_read_exec_lo(CUDA4CPU_AMDGCN_SITE)
 #define __builtin_amdgcn_readfirstlane(...) cuda4cpu_amdgcn_readfirstlane(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
 #define __builtin_amdgcn_readlane(...) cuda4cpu_amdgcn_readlane(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)

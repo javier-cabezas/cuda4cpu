@@ -151,7 +151,12 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
 
   Lane operations exchange the values of the lanes that take part (EXEC):
   those that reach the call together, as `__activemask()` groups them, so
-  lanes in two branches that each call one don't mix. Like
+  lanes in two branches that each call one don't mix, and lanes after a
+  branch wait there for the branch's lanes, as a GPU reconverges them.
+  cuda4cpu orders the calls by their lines in the source, so a lane
+  operation in a helper function, called from two branches, groups the
+  lanes of both, as `__activemask()` does. One compile command defines the
+  AMD platform's macros for every source it compiles, CUDA ones included. Like
   `__activemask()`, they are macros that pass the call's place, and break
   members of the program's classes with those names. Reading
   a lane outside EXEC gives zero, or keeps the old value where the

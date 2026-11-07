@@ -196,10 +196,12 @@ class AmdPlatform(unittest.TestCase):
         cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 GPUs'),
                  (['--cuda4cpu-platform=amd', '--offload-arch=gfx1100', '--offload-arch=gfx1101'], 'one AMD GPU'),
                  (['--cuda4cpu-platform=amd', '-mwavefrontsize64'], '32-lane wavefronts'),
+                 (['--cuda4cpu-platform=amd', '--offload-arch'], 'needs a GPU'),
                  (['--cuda4cpu-platform=intel'], 'unknown HIP platform')]
         for options, message in cases:
             with self.subTest(options=options), tempfile.TemporaryDirectory() as work:
-                result = tool('hipcc', *options, '-c', PROGRAM, cwd=work)
+                # The options last, so that a trailing --offload-arch has no value
+                result = tool('hipcc', '-c', PROGRAM, *options, cwd=work)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
 

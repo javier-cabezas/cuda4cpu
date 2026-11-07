@@ -656,11 +656,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `__activemask()` (and `coalesced_threads()`) is the `op_converge` warp
   operation, keyed by its call site. It is released once every live lane that
   isn't at a barrier is in `warp_wait`, whatever it waits for, and returns the
-  lanes waiting at the same call site. Every pending call of the warp is
-  released then (`release_converge`), each with its own lanes: releasing
-  one and rechecking the others after its lanes ran on split lanes that
-  left a branch together by when they had arrived, where a GPU reconverges
-  them (`hip_amdgcn`'s `branches`). This can't deadlock with other warp
+  lanes waiting at the same call site. Of the pending calls, the one
+  completed (`release_converge`) is the one a GPU would run first
+  (`runs_first`): in the same file, the earlier line, since a branch's or
+  a loop's body comes before the code after it; else the call a lane began
+  waiting at first. Lanes after a branch then wait for the branch's lanes,
+  and lanes that left two branches meet at the calls after them, in every
+  thread order (`hip_amdgcn`'s `branches` and `reconverge`): completing the
+  call of the lane that arrived last, as before, split them by when they
+  had arrived. The line comes back from the site's bits 47 and up
+  (`detail::call_site`). This can't deadlock with other warp
   operations, which wait for converging lanes: those only need everyone to be
   blocked. The rare operations (matches, converge) are `[[gnu::noinline]]`
   methods of `fibers`, out of `try_release_warp`'s hot path.

@@ -285,6 +285,22 @@ __global__ void branches(int *out)
     }
 }
 
+//! Lanes that skip a branch wait at the next call for the branch's lanes, as
+//! on a GPU, where the branch runs first and the lanes reconverge; and a
+//! wave_barrier in one branch waits for that branch's lanes only
+__global__ void reconverge(unsigned *out)
+{
+    const unsigned lane = __lane_id();
+    if (lane < 16)
+        out[lane] = __builtin_amdgcn_read_exec_lo();
+    out[32 + lane] = __builtin_amdgcn_read_exec_lo();
+    out[64 + lane] = __activemask();
+    if (lane % 2 == 0)
+        __builtin_amdgcn_wave_barrier();
+    else
+        out[96 + lane] = __builtin_amdgcn_read_exec_lo();
+}
+
 //! Thread 0 waits for a flag that thread 40 sets, sleeping: on one OS
 //! thread, the wait must let thread 40 run
 __global__ void sleep_wait(int *out)
@@ -368,6 +384,16 @@ int main()
         for (int l = 0; l < warp; ++l)
             wrong += out[l] != (l < 16 ? 100 : 216) || out[32 + l] != 1;
         EXPECT(wrong == 0 && out[64] == 11);
+    }
+
+    {
+        std::vector<unsigned> out(128);
+        reconverge<<<1, warp>>>(out.data());
+        unsigned wrong = 0;
+        for (int l = 0; l < warp; ++l)
+            wrong += (l < 16 && out[l] != 0xffffu) || out[32 + l] != ~0u || out[64 + l] != ~0u ||
+                     (l % 2 == 1 && out[96 + l] != 0xaaaaaaaau);
+        EXPECT(wrong == 0);
     }
 
     {

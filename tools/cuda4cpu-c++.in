@@ -386,7 +386,9 @@ def hip_platform(argv):
         value = None
         if arg.startswith(('--offload-arch=', '--amdgpu-target=')):
             value = arg.split('=', 1)[1]
-        elif arg in ('--offload-arch', '--amdgpu-target') and i < len(argv):
+        elif arg in ('--offload-arch', '--amdgpu-target'):
+            if i >= len(argv):
+                return argv, [], f'{arg} needs a GPU'
             value = argv[i]
             i += 1
         if value is not None:

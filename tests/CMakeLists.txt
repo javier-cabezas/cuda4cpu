@@ -240,6 +240,8 @@ set_target_properties(hip_amdgcn PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_hip_sources(hip_amdgcn hip/amdgcn.hip)
 target_compile_definitions(hip_amdgcn PRIVATE __HIP_PLATFORM_AMD__=1 __gfx1101__=1)
 add_test(NAME hip_amdgcn COMMAND hip_amdgcn)
+# Lanes in branches must never meet at different warp operations
+set_tests_properties(hip_amdgcn PROPERTIES ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=error")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit
