@@ -446,7 +446,8 @@ struct thread_block::fibers {
         warp_kind(n),
         warp_src(n),
         warp_value(n),
-        warp_result(n)
+        warp_result(n),
+        converge_order(n)
     {
         void *map = mmap(nullptr, map_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
@@ -688,17 +689,43 @@ struct thread_block::fibers {
         }
     }
 
-    //! Completes the __activemask() call that thread tid waits at, once every
-    //! lane that can run is waiting: the lanes waiting at the same call are the
-    //! ones executing it together
+    //! Whether the __activemask() call that lane a waits at runs before lane
+    //! b's on a GPU, which runs a branch's body, and a loop's, before the
+    //! code after them: the earlier line, in the same file (a call's site is
+    //! its __FILE__ address with the line in bits 47 and up, as
+    //! detail::call_site makes it), else the call a lane began waiting at
+    //! first
+    bool runs_first(size_t a, size_t b) const
+    {
+        constexpr uint64_t file_bits = (uint64_t(1) << 47) - 1;
+        const uint64_t site_a = warp_value[a], site_b = warp_value[b];
+        if ((site_a & file_bits) == (site_b & file_bits) && site_a != site_b)
+            return (site_a >> 47) < (site_b >> 47);
+        return converge_order[a] < converge_order[b];
+    }
+
+    //! Completes an __activemask() call of thread tid's warp, once every
+    //! lane that can run is waiting: the lanes waiting at the same call are
+    //! the ones executing it together. The call completed is the one that a
+    //! GPU would run first (runs_first): lanes waiting after a branch then
+    //! wait for the branch's lanes to come, and lanes that left two branches
+    //! meet at the calls after them. Completing the call of the lane that
+    //! arrived last split them by when they had arrived, which depends on the
+    //! order threads run in.
     [[gnu::noinline]] void release_converge(size_t tid)
     {
         const size_t base = tid / warp_size * warp_size;
         auto &warp = warps[tid / warp_size];
+        unsigned first = unsigned(std::countr_zero(warp.converge_wait));
+        for (uint32_t m = warp.converge_wait; m != 0; m &= m - 1) {
+            const unsigned l = unsigned(std::countr_zero(m));
+            if (runs_first(base + l, base + first))
+                first = l;
+        }
         uint32_t group = 0;
         for (uint32_t m = warp.converge_wait; m != 0; m &= m - 1) {
-            unsigned l = unsigned(std::countr_zero(m));
-            if (warp_value[base + l] == warp_value[tid])
+            const unsigned l = unsigned(std::countr_zero(m));
+            if (warp_value[base + l] == warp_value[base + first])
                 group |= 1u << l;
         }
         for (uint32_t m = group; m != 0; m &= m - 1)
@@ -762,6 +789,9 @@ struct thread_block::fibers {
     std::vector<unsigned>      warp_src;
     std::vector<uint64_t>      warp_value;
     std::vector<uint64_t>      warp_result;
+    //! When each thread began waiting in __activemask(), from converge_clock
+    std::vector<uint64_t>      converge_order;
+    uint64_t                   converge_clock = 0;
 
     std::unique_ptr<void, free_deleter> shared;   //!< Dynamic shared memory
     size_t shared_capacity = 0;
@@ -1648,8 +1678,10 @@ uint64_t thread_block::warp_op(unsigned char kind, unsigned mask, uint64_t value
     f.warp_src[self]   = src_lane % warp_size;
     f.warp_value[self] = value;
     f.warps[self / warp_size].warp_wait |= lane_bit(self);
-    if (kind == fibers::op_converge)
+    if (kind == fibers::op_converge) {
         f.warps[self / warp_size].converge_wait |= lane_bit(self);
+        f.converge_order[self] = f.converge_clock++;
+    }
     try_release_warp(self);
     if (f.warps[self / warp_size].converge_wait != 0)
         try_release_converge(self / warp_size);   // they may have waited for this lane
