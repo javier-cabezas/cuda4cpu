@@ -334,6 +334,42 @@ class Errors(unittest.TestCase):
 
 
 class Headers(unittest.TestCase):
+    def test_include_directories(self):
+        """Headers that -I finds are rewritten if they, or headers they
+        include, have something to rewrite; the others stay where they are"""
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = os.path.join(tmp, 'lib', 'mylib')
+            os.makedirs(lib)
+            with open(os.path.join(lib, 'launch.hpp'), 'w') as f:
+                f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            with open(os.path.join(lib, 'top.hpp'), 'w') as f:
+                f.write('#include <mylib/launch.hpp>\n#include "plain.hpp"\n')
+            with open(os.path.join(lib, 'plain.hpp'), 'w') as f:
+                f.write('#pragma once\nint plain();\n')
+            src = os.path.join(tmp, 'main.cu')
+            with open(src, 'w') as f:
+                f.write('#include <mylib/top.hpp>\n#include <mylib/plain.hpp>\n#include <vector>\n')
+            shadow = os.path.join(tmp, 'shadow')
+            r = rw.Rewriter(shadow, [os.path.join(tmp, 'lib')])
+            main = r.rewrite_file(src)
+            top_shadow = os.path.join(shadow, lib.lstrip(os.sep), 'top.hpp')
+            launch_shadow = os.path.join(shadow, lib.lstrip(os.sep), 'launch.hpp')
+            self.assertIn(rw.quote(top_shadow), main)
+            # A header that isn't rewritten, included through -I, stays
+            # as it was, unless it was found next to a rewritten one first
+            self.assertIn(rw.quote(os.path.join(lib, 'plain.hpp')), main)
+            self.assertIn('#include <vector>', main)
+            with open(top_shadow) as f:
+                top = f.read()
+            self.assertIn(rw.quote(launch_shadow), top)
+            # Found next to top.hpp, which moved: by its path
+            self.assertIn(rw.quote(os.path.join(lib, 'plain.hpp')), top)
+            self.assertFalse(os.path.exists(os.path.join(shadow, lib.lstrip(os.sep), 'plain.hpp')))
+            with open(launch_shadow) as f:
+                self.assertIn('cuda4cpu::launch', f.read())
+            # Without the directory, nothing is found
+            self.assertIn('#include <mylib/top.hpp>', rw.Rewriter(os.path.join(tmp, 's2')).rewrite_file(src))
+
     def test_local_headers_and_depfile(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, 'src')

@@ -422,6 +422,21 @@ inline cudaError_t hipDeviceGet(hipDevice_t *device, int ordinal)
     return cudaSuccess;
 }
 
+//! The device of a stream: the CPU's, device 0
+inline cudaError_t hipStreamGetDevice(cudaStream_t, hipDevice_t *device)
+{
+    if (device == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
+    *device = 0;
+    return cudaSuccess;
+}
+
+//! The same, as AMD's extension returns it
+inline int hipGetStreamDeviceId(cudaStream_t)
+{
+    return 0;
+}
+
 inline cudaError_t hipDeviceGetName(char *name, int len, hipDevice_t device)
 {
     if (name == nullptr || len <= 0)

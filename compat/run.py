@@ -38,6 +38,13 @@ A program's "timeout" in the manifest replaces --timeout; programs with longer
 timeouts start first. "env" gives environment variables to run it with, such
 as the compute capability that programs check before using tensor cores.
 
+A suite's "dependencies" are other repositories that some of its programs
+need ("requires"), fetched at a pinned revision, with files that their build
+would configure ("configure": @VARIABLE@ replaced in "input" to write
+"output"). {name} in a program's include directories and flags is the
+dependency's checkout. A program whose "compiler" is "clang" is skipped when
+the drivers' C++ compiler is another, and that doesn't count as a regression.
+
 The report lists every program with its status and the first error. With
 --baseline, programs that passed in the baseline and don't pass now are
 regressions, and make the script exit with status 1.
@@ -76,6 +83,24 @@ def fetch(suite, url, revision, directory):
     run_git('checkout', '-q', 'FETCH_HEAD')
 
 
+def configure(directory, files):
+    """Writes each configured file of a dependency, as its build would"""
+    for spec in files:
+        with open(os.path.join(directory, spec['input'])) as f:
+            text = f.read()
+        for name, value in spec['values'].items():
+            text = text.replace(f'@{name}@', value)
+        with open(os.path.join(directory, spec['output']), 'w') as f:
+            f.write(text)
+
+
+def expand(value, dependencies):
+    """value with {name} replaced by the checkout of each dependency"""
+    for name, directory in dependencies.items():
+        value = value.replace('{' + name + '}', directory)
+    return value
+
+
 def first_error(text):
     """The most useful line of compiler or program output."""
     for pattern in (r'error:.*', r'fatal error:.*', r'undefined reference to .*', r'.*Error.*', r'.*FAIL.*'):
@@ -87,7 +112,7 @@ def first_error(text):
     return lines[-1][:200] if lines else ''
 
 
-def build(program, source_dir, work_dir, drivers, cc):
+def build(program, source_dir, work_dir, drivers, cc, dependencies):
     """Compiles and links program; returns (ok, log)."""
     driver = drivers[program.get('driver', 'c++')]
     directory = os.path.join(source_dir, program['dir'])
@@ -103,9 +128,9 @@ def build(program, source_dir, work_dir, drivers, cc):
     if not sources:
         return False, f'no sources match {program["sources"]} in {program["dir"]}'
 
-    includes = [f'-I{os.path.join(source_dir, i)}' for i in program.get('include', [])]
+    includes = [f'-I{os.path.join(source_dir, expand(i, dependencies))}' for i in program.get('include', [])]
     includes.append(f'-I{directory}')
-    flags = ['-O2', '-w'] + includes + program.get('flags', [])
+    flags = ['-O2', '-w'] + includes + [expand(f, dependencies) for f in program.get('flags', [])]
 
     objects = []
     log = []
@@ -155,11 +180,15 @@ def run_program(program, source_dir, work_dir, timeout):
     return 'passed', elapsed, output
 
 
-def evaluate(program, source_dir, work_dir, drivers, cc, timeout):
+def evaluate(program, source_dir, work_dir, drivers, cc, timeout, dependencies, compiler):
     if program.get('skip'):
         return {'status': 'skipped', 'detail': program['skip']}
+    if program.get('compiler', compiler) != compiler:
+        # Not a regression: another job runs it with its compiler
+        return {'status': 'skipped', 'detail': f'needs {program["compiler"]} as the C++ compiler',
+                'unavailable': True}
     start = time.monotonic()
-    ok, log = build(program, source_dir, work_dir, drivers, cc)
+    ok, log = build(program, source_dir, work_dir, drivers, cc, dependencies)
     build_time = time.monotonic() - start
     if not ok:
         return {'status': 'build_failed', 'build_time': build_time, 'detail': first_error(log)}
@@ -227,17 +256,28 @@ def main(argv=None):
     programs = [p for p in programs if fnmatch.fnmatch(f'{p["suite"]}/{p["name"]}', args.filter)]
 
     sources = {}
+    dependencies = {}
     for suite, spec in manifest['suites'].items():
         if any(p['suite'] == suite for p in programs):
             sources[suite] = os.path.join(args.work, 'src', suite)
             fetch(suite, spec['url'], spec['revision'], sources[suite])
+        for name, dependency in spec.get('dependencies', {}).items():
+            if any(name in p.get('requires', []) for p in programs):
+                dependencies[name] = os.path.join(args.work, 'src', 'dependencies', name)
+                fetch(name, dependency['url'], dependency['revision'], dependencies[name])
+                configure(dependencies[name], dependency.get('configure', []))
+
+    # The family of the drivers' C++ compiler, for programs that need one
+    version = subprocess.run([driver, '--version'], capture_output=True, text=True).stdout
+    compiler = 'clang' if 'clang' in version.lower() else 'gcc'
 
     # Programs given a longer timeout in the manifest are the long ones: they
     # start first, so that the others run while they do
     order = sorted(programs, key=lambda p: -p.get('timeout', args.timeout))
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(evaluate, p, sources[p['suite']], args.work, drivers, args.cc, args.timeout):
+        futures = {pool.submit(evaluate, p, sources[p['suite']], args.work, drivers, args.cc, args.timeout,
+                               dependencies, compiler):
                    f'{p["suite"]}/{p["name"]}' for p in order}
         for future in concurrent.futures.as_completed(futures):
             key = futures[future]
@@ -250,6 +290,8 @@ def main(argv=None):
             baseline = json.load(f)
         for key, r in results.items():
             before = baseline.get(key)
+            if r.get('unavailable'):
+                continue
             if before == 'passed' and r['status'] not in ('passed', 'waived'):
                 regressions.append(key)
             elif before != 'passed' and r['status'] == 'passed':
@@ -271,7 +313,8 @@ def main(argv=None):
         if os.path.exists(args.baseline):
             with open(args.baseline) as f:
                 statuses = {k: v for k, v in json.load(f).items() if k in known}
-        statuses.update({k: r['status'] for k, r in results.items()})
+        # Those that another job runs keep theirs too
+        statuses.update({k: r['status'] for k, r in results.items() if not r.get('unavailable')})
         with open(args.baseline, 'w') as f:
             json.dump(dict(sorted(statuses.items())), f, indent=2)
             f.write('\n')

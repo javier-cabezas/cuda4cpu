@@ -66,6 +66,11 @@
 #ifndef __GFX11__
 #define __GFX11__ 1
 #endif
+//! The GPU's name, which Clang defines when it compiles for one: rocPRIM
+//! runs a kernel's body only for the GPU the runtime reports
+#ifndef __amdgcn_processor__
+#define __amdgcn_processor__ CUDA4CPU_AMDGPU_TARGET
+#endif
 #ifndef __AMDGCN__
 #define __AMDGCN__ 1
 #endif

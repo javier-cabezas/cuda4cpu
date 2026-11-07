@@ -267,7 +267,97 @@ inline void hipLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &dimB
 #define HIP_DYNAMIC_SHARED(type, var) type *var = ::cuda4cpu::dynamic_shared<type>()
 #define HIP_DYNAMIC_SHARED_ATTRIBUTE
 
-// AMD's GPU builtins, on HIP's AMD platform
+// On HIP's AMD platform: AMD's GPU builtins, and the overloads of the atomic
+// functions for unsigned long, the type of uint64_t and size_t, which HIP's
+// AMD headers add to CUDA's for unsigned long long
 #if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
 #include "amdgcn.h"
+
+#include <cassert>
+
+//! HIP's assert in device code on AMD GPUs, which libraries such as rocPRIM use
+#ifndef __hip_assert
+#define __hip_assert(cond) assert(cond)
+#endif
+
+// AMD's vector types are HIP_vector_type<T, n> (float4 is
+// HIP_vector_type<float, 4>), which code such as rocPRIM names: here, CUDA's
+namespace cuda4cpu::detail {
+template <typename T, unsigned int N>
+struct hip_vector;
+#define CUDA4CPU_HIP_VECTOR(T, name)                                                            \
+    template <> struct hip_vector<T, 1> { using type = name##1; };                              \
+    template <> struct hip_vector<T, 2> { using type = name##2; };                              \
+    template <> struct hip_vector<T, 3> { using type = name##3; };                              \
+    template <> struct hip_vector<T, 4> { using type = name##4; };
+CUDA4CPU_HIP_VECTOR(char, char)
+CUDA4CPU_HIP_VECTOR(signed char, char)
+CUDA4CPU_HIP_VECTOR(unsigned char, uchar)
+CUDA4CPU_HIP_VECTOR(short, short)
+CUDA4CPU_HIP_VECTOR(unsigned short, ushort)
+CUDA4CPU_HIP_VECTOR(int, int)
+CUDA4CPU_HIP_VECTOR(unsigned int, uint)
+CUDA4CPU_HIP_VECTOR(long, long)
+CUDA4CPU_HIP_VECTOR(unsigned long, ulong)
+CUDA4CPU_HIP_VECTOR(long long, longlong)
+CUDA4CPU_HIP_VECTOR(unsigned long long, ulonglong)
+CUDA4CPU_HIP_VECTOR(float, float)
+CUDA4CPU_HIP_VECTOR(double, double)
+#undef CUDA4CPU_HIP_VECTOR
+}
+
+template <typename T, unsigned int N>
+using HIP_vector_type = typename cuda4cpu::detail::hip_vector<T, N>::type;
+
+// In hip_api, which hip_runtime_api.h exports with CUDA's cuda_api: a global
+// overload would hide CUDA's atomics from calls such as ::atomicAdd(...),
+// which find the namespaces of using-directives only if :: has none
+namespace cuda4cpu {
+inline namespace hip_api {
+
+static_assert(sizeof(unsigned long) == sizeof(unsigned long long));
+
+#define CUDA4CPU_UNSIGNED_LONG_ATOMIC(name)                                                       \
+    inline unsigned long name(unsigned long *address, unsigned long val)                          \
+    {                                                                                             \
+        return ::cuda4cpu::cuda_api::name(reinterpret_cast<unsigned long long *>(address),        \
+                                          (unsigned long long)val);                               \
+    }                                                                                             \
+    inline unsigned long name##_system(unsigned long *address, unsigned long val)                 \
+    {                                                                                             \
+        return name(address, val);                                                                \
+    }
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicAdd)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicExch)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicMin)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicMax)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicAnd)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicOr)
+CUDA4CPU_UNSIGNED_LONG_ATOMIC(atomicXor)
+#undef CUDA4CPU_UNSIGNED_LONG_ATOMIC
+
+//! CUDA has no atomicSub for 64 bits: an addition of the negated value
+inline unsigned long atomicSub(unsigned long *address, unsigned long val)
+{
+    return atomicAdd(address, 0ul - val);
+}
+
+inline unsigned long atomicSub_system(unsigned long *address, unsigned long val)
+{
+    return atomicSub(address, val);
+}
+
+inline unsigned long atomicCAS(unsigned long *address, unsigned long compare, unsigned long val)
+{
+    return ::cuda4cpu::cuda_api::atomicCAS(reinterpret_cast<unsigned long long *>(address),
+                                           (unsigned long long)compare, (unsigned long long)val);
+}
+
+inline unsigned long atomicCAS_system(unsigned long *address, unsigned long compare, unsigned long val)
+{
+    return atomicCAS(address, compare, val);
+}
+
+}
+}
 #endif

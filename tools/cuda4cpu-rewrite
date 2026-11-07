@@ -73,7 +73,10 @@ arguments and default arguments apply. Line numbers are preserved and a #line
 directive maps diagnostics and __FILE__ to the original file.
 
 Local headers included with #include "..." are rewritten too, into a shadow
-directory, and the #include directives point to the rewritten copies.
+directory, and the #include directives point to the rewritten copies. So are
+headers that -I names a directory of (#include <...>, or "..." not found
+next to the including file), such as a library's with launches in them, but
+only those that change or include one that does.
 
 The rewritten .cu file defines __CUDACC__ first, as nvcc does, so that code
 that tells CUDA compilation apart from host compilation (for instance the
@@ -814,38 +817,82 @@ def line_of(token):
 
 
 class Rewriter:
-    def __init__(self, shadow_dir):
+    def __init__(self, shadow_dir, include_dirs=()):
         self.shadow_dir = shadow_dir
+        self.include_dirs = [os.path.abspath(d) for d in include_dirs]
         self.read_files = []                        # every file read, for depfiles
-        self.done = {}                              # original path -> shadow path
+        self.done = {}                              # original path -> shadow path, or None
         self.kernels = set()                        # __global__ functions seen so far
+        self.in_progress = set()                    # headers being rewritten
+        self.cycled = set()                         # ... that their own includes point to
+        self.library = set()                        # headers of include directories, and theirs
 
     def shadow_path(self, path):
         return os.path.join(self.shadow_dir, path.lstrip(os.sep))
 
     def rewrite_file(self, path):
-        """Rewrites path and the local headers it includes; returns the text."""
+        """Rewrites path and the headers it includes; returns the text."""
+        return self.rewrite(path)[0]
+
+    def rewrite(self, path):
+        """The rewritten text of path, and whether it differs from the file
+        (other than the #line directive that starts it)"""
         path = os.path.abspath(path)
         self.read_files.append(path)
         with open(path, encoding='utf-8', errors='surrogateescape') as f:
             text = f.read()
         try:
-            return rewrite_text(text, path, self.include_hook(path), self.kernels)
+            result = rewrite_text(text, path, self.include_hook(path), self.kernels)
         except RewriteError as e:
             line, message = e.args
             raise RewriteError(line, f'{path}:{line}: error: {message}') from None
+        return result, result.split('\n', 1)[1] != text
+
+    def find_header(self, directory, name, angled):
+        """The header that #include names, and whether it is local: next to
+        the including file, for a quote include, else in an include
+        directory. None if it is neither, as system headers are."""
+        if not angled:
+            local = os.path.normpath(os.path.join(directory, name))
+            if os.path.isfile(local):
+                return local, True
+        for include_dir in self.include_dirs:
+            header = os.path.normpath(os.path.join(include_dir, name))
+            if os.path.isfile(header):
+                return header, False
+        return None, False
 
     def include_hook(self, path):
         directory = os.path.dirname(path)
+        from_library = path in self.library
 
-        def hook(name):
-            header = os.path.normpath(os.path.join(directory, name))
-            if not os.path.isfile(header):
-                return None                         # found through -I, or a system header
-            if header not in self.done:
-                shadow = self.shadow_path(header)
-                self.done[header] = shadow
-                write_if_changed(shadow, self.rewrite_file(header))
+        def hook(name, angled=False):
+            header, local = self.find_header(directory, name, angled)
+            if header is None:
+                return None
+            # A library's own headers, found next to its others, are its too
+            relative = local
+            local = local and not from_library
+            if not local and header not in self.done:
+                self.library.add(header)
+            if header in self.done:
+                if header in self.in_progress:
+                    self.cycled.add(header)
+                return self.done[header]
+            shadow = self.shadow_path(header)
+            self.done[header] = shadow
+            self.in_progress.add(header)
+            text, changed = self.rewrite(header)
+            self.in_progress.discard(header)
+            # A header from an include directory is rewritten only if it, or
+            # a header it includes, changes: libraries stay where they are,
+            # and so do headers with #pragma once that others include too
+            if local or changed or header in self.cycled:
+                write_if_changed(shadow, text)
+                return shadow
+            # One found next to a library header that is rewritten wouldn't
+            # be found next to the rewritten copy: its path then
+            self.done[header] = header if relative else None
             return self.done[header]
         return hook
 
@@ -866,12 +913,21 @@ def rewrite_text(text, path, include_hook=None, kernels=None):
 
     if include_hook is not None:
         for i, t in enumerate(tokens):
-            if t.text == '#' and t.line_start and i + 2 < len(tokens) and \
-                    tokens[i + 1].text == 'include' and tokens[i + 2].kind == 'string' and \
-                    tokens[i + 2].text.startswith('"'):
-                target = include_hook(tokens[i + 2].text[1:-1])
+            if not (t.text == '#' and t.line_start and i + 2 < len(tokens) and tokens[i + 1].text == 'include'):
+                continue
+            name_token = tokens[i + 2]
+            if name_token.kind == 'string' and name_token.text.startswith('"'):
+                target = include_hook(name_token.text[1:-1])
                 if target is not None:
-                    replacements.append((tokens[i + 2].start, tokens[i + 2].end, quote(target)))
+                    replacements.append((name_token.start, name_token.end, quote(target)))
+            elif name_token.text == '<':
+                # <name>, up to the > on the same line
+                line_end = text.find('\n', name_token.end)
+                end = text.find('>', name_token.end, line_end if line_end >= 0 else len(text))
+                if end > name_token.end:
+                    target = include_hook(text[name_token.end:end], angled=True)
+                    if target is not None:
+                        replacements.append((name_token.start, end + 1, quote(target)))
 
     for first, semi, type_tokens, name, namespace_scope, dimensions in find_extern_shared(tokens):
         type_text = ' '.join(source(text, type_tokens[0], type_tokens[-1]).split())
@@ -985,6 +1041,9 @@ def main(argv=None):
     parser.add_argument('--shadow-dir',
                         help='directory for the rewritten local headers (default: OUTPUT.headers)')
     parser.add_argument('--depfile', help='write a Makefile-style dependency file')
+    parser.add_argument('-I', '--include-dir', action='append', default=[], dest='include_dirs',
+                        help='a directory to look for included headers in, as the compiler does: '
+                             'those that need rewriting are rewritten into the shadow directory')
     parser.add_argument('--language', choices=sorted(PROLOGUES),
                         help='language of the input: hip for .hip files, cuda otherwise (default)')
     args = parser.parse_args(argv)
@@ -997,7 +1056,7 @@ def main(argv=None):
             parser.error('--shadow-dir is required when writing to standard output')
         args.shadow_dir = args.output + '.headers'
 
-    rewriter = Rewriter(os.path.abspath(args.shadow_dir))
+    rewriter = Rewriter(os.path.abspath(args.shadow_dir), args.include_dirs)
     try:
         result = rewriter.rewrite_file(args.input)
     except RewriteError as e:

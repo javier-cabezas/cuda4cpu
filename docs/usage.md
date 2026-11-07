@@ -187,7 +187,9 @@ are HIP sources, and `-x cu` or `-x hip` set the language of the files after
 them, as with clang. The dependencies that `-MD`, `-MMD`, `-M` and `-MM`
 write name the original `.cu` file and its local headers, not the rewritten
 copies the driver compiles, so Make and Ninja rebuild an object only when
-one of them changes.
+one of them changes. The drivers also rewrite launches in headers that the
+include directories (`-I`, `-iquote`, `-isystem`) lead to, as libraries such
+as rocPRIM have; headers without launches are compiled from where they are.
 
 `cuda4cpu-hipcc` is the same driver for HIP projects. Like hipcc, it compiles
 every C++ source file (`.cpp`, `.cc`, `.cu`, `.hip`, ...) as HIP. It drops
