@@ -18,13 +18,71 @@
  * limitations under the License.
  */
 
-// HIP's platform macros. cuda4cpu compiles HIP code as HIP's NVIDIA platform
-// does: on top of the CUDA runtime API, with 32-lane warps. Code that
-// distinguishes the platforms takes its NVIDIA branch, which uses the CUDA
-// features cuda4cpu implements, rather than the AMD one, which may use
-// wavefronts of 64 lanes or AMD GPU builtins.
+// HIP's platform macros. By default cuda4cpu compiles HIP code as HIP's
+// NVIDIA platform does: on top of the CUDA runtime API, with 32-lane warps.
+// Code that distinguishes the platforms takes its NVIDIA branch, which uses
+// the CUDA features cuda4cpu implements, rather than the AMD one, which may
+// use wavefronts of 64 lanes or AMD GPU builtins.
+//
+// With __HIP_PLATFORM_AMD__ defined (cuda4cpu-hipcc --cuda4cpu-platform=amd,
+// which defines all of these), it emulates an RDNA3 GPU instead: gfx1100,
+// unless one of the other __gfx11xx__ macros names the GPU, with 32-lane
+// wavefronts and AMD's builtins (amdgcn.h). __HIP_DEVICE_COMPILE__ stays
+// undefined, as __CUDA_ARCH__ does: host and device code compile together.
 
 #pragma once
+
+#if defined(__HIP_PLATFORM_AMD__)
+
+#if defined(__HIP_PLATFORM_NVIDIA__)
+#error "__HIP_PLATFORM_AMD__ and __HIP_PLATFORM_NVIDIA__ are both defined"
+#endif
+
+//! The deprecated name of __HIP_PLATFORM_AMD__
+#ifndef __HIP_PLATFORM_HCC__
+#define __HIP_PLATFORM_HCC__ 1
+#endif
+
+// The GPU: its name, gfx version (major, minor) and family
+#if defined(__gfx1101__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1101"
+#elif defined(__gfx1102__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1102"
+#elif defined(__gfx1103__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1103"
+#elif defined(__gfx1150__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1150"
+#elif defined(__gfx1151__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1151"
+#elif defined(__gfx1152__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1152"
+#elif defined(__gfx1153__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1153"
+#else
+#ifndef __gfx1100__
+#define __gfx1100__ 1
+#endif
+#define CUDA4CPU_AMDGPU_TARGET "gfx1100"
+#endif
+
+#ifndef __GFX11__
+#define __GFX11__ 1
+#endif
+#ifndef __AMDGCN__
+#define __AMDGCN__ 1
+#endif
+#ifndef __AMDGPU__
+#define __AMDGPU__ 1
+#endif
+#ifndef __AMDGCN_WAVEFRONT_SIZE__
+#define __AMDGCN_WAVEFRONT_SIZE__ 32
+#endif
+//! The deprecated name of __AMDGCN_WAVEFRONT_SIZE__
+#ifndef __AMDGCN_WAVEFRONT_SIZE
+#define __AMDGCN_WAVEFRONT_SIZE 32
+#endif
+
+#else
 
 #ifndef __HIP_PLATFORM_NVIDIA__
 #define __HIP_PLATFORM_NVIDIA__ 1
@@ -33,6 +91,8 @@
 //! The deprecated name of __HIP_PLATFORM_NVIDIA__
 #ifndef __HIP_PLATFORM_NVCC__
 #define __HIP_PLATFORM_NVCC__ 1
+#endif
+
 #endif
 
 // As with nvcc on that platform, __HIPCC__ goes with __CUDACC__, which

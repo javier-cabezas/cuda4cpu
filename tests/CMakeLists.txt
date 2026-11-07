@@ -234,6 +234,13 @@ foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/templ
 endforeach()
 set_tests_properties(hip_memory PROPERTIES ENVIRONMENT "CUDA4CPU_MEMCPY_DIRECTION=error")
 
+# HIP's AMD platform, emulating gfx1101, and AMD's builtins
+add_executable(hip_amdgcn)
+set_target_properties(hip_amdgcn PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_hip_sources(hip_amdgcn hip/amdgcn.hip)
+target_compile_definitions(hip_amdgcn PRIVATE __HIP_PLATFORM_AMD__=1 __gfx1101__=1)
+add_test(NAME hip_amdgcn COMMAND hip_amdgcn)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/test_rewrite.py

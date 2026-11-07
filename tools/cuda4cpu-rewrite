@@ -81,7 +81,8 @@ host fallbacks in the CUDA samples' helper_math.h) takes the CUDA branch.
 
 HIP sources (.hip files, or any file with --language hip) are rewritten the
 same way. They also define __HIPCC__ and __HIP_PLATFORM_NVIDIA__, as hipcc
-does on HIP's NVIDIA platform, which is how cuda4cpu compiles HIP code.
+does on HIP's NVIDIA platform, which is how cuda4cpu compiles HIP code,
+unless __HIP_PLATFORM_AMD__ is defined (the drivers' AMD platform).
 """
 
 import argparse
@@ -94,7 +95,8 @@ PROLOGUES = {
     'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n',
     'hip': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
            '#ifndef __HIPCC__\n#define __HIPCC__ 1\n#endif\n'
-           '#ifndef __HIP_PLATFORM_NVIDIA__\n#define __HIP_PLATFORM_NVIDIA__ 1\n#endif\n',
+           '#if !defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)\n'
+           '#define __HIP_PLATFORM_NVIDIA__ 1\n#endif\n',
 }
 
 # Extensions of the files that are HIP sources by default

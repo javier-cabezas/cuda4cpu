@@ -73,8 +73,11 @@
   stream being captured.
 - **HIP runs as on HIP's NVIDIA platform.** Warps have 32 lanes, and
   `__ballot` returns 64-bit masks whose high half is zero. Code that only
-  supports AMD GPUs doesn't compile: AMD builtins (`__builtin_amdgcn_*`),
-  `__HIP_PLATFORM_AMD__` branches, and code that assumes 64-lane wavefronts.
+  supports AMD GPUs compiles on HIP's AMD platform
+  (`--cuda4cpu-platform=amd`), which emulates an RDNA3 GPU with 32-lane
+  wavefronts and has part of AMD's builtins (`__builtin_amdgcn_*`): not the
+  matrix operations, nor 64-lane wavefronts (CDNA). See
+  [HIP](hip.md#hips-amd-platform).
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
   `__reduce_*_sync`, 16-bit integer atomics, pipelines that a group shares
   (`cuda::pipeline<cuda::thread_scope_block>`), inline PTX, and the driver
