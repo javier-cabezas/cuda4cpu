@@ -841,12 +841,19 @@ class Rewriter:
         self.read_files.append(path)
         with open(path, encoding='utf-8', errors='surrogateescape') as f:
             text = f.read()
+        redirects = {}                              # relative include -> its original path
         try:
-            result = rewrite_text(text, path, self.include_hook(path), self.kernels)
+            result = rewrite_text(text, path, self.include_hook(path, redirects), self.kernels)
         except RewriteError as e:
             line, message = e.args
             raise RewriteError(line, f'{path}:{line}: error: {message}') from None
-        return result, result.split('\n', 1)[1] != text
+        # A header found next to this one isn't next to a rewritten copy, but
+        # pointing to it isn't a change: an unchanged copy isn't written
+        changed = result.split('\n', 1)[1] != text
+        for name, header in redirects.items():
+            result = re.sub(r'^([ \t]*#[ \t]*include[ \t]*)"' + re.escape(name) + '"',
+                            lambda m: m.group(1) + quote(header), result, flags=re.M)
+        return result, changed
 
     def find_header(self, directory, name, angled):
         """The header that #include names, and whether it is local: next to
@@ -862,7 +869,7 @@ class Rewriter:
                 return header, False
         return None, False
 
-    def include_hook(self, path):
+    def include_hook(self, path, redirects):
         directory = os.path.dirname(path)
         from_library = path in self.library
 
@@ -878,23 +885,27 @@ class Rewriter:
             if header in self.done:
                 if header in self.in_progress:
                     self.cycled.add(header)
-                return self.done[header]
-            shadow = self.shadow_path(header)
-            self.done[header] = shadow
-            self.in_progress.add(header)
-            text, changed = self.rewrite(header)
-            self.in_progress.discard(header)
-            # A header from an include directory is rewritten only if it, or
-            # a header it includes, changes: libraries stay where they are,
-            # and so do headers with #pragma once that others include too
-            if local or changed or header in self.cycled:
-                write_if_changed(shadow, text)
-                return shadow
-            # One found next to a library header that is rewritten wouldn't
-            # be found next to the rewritten copy: its path then
-            self.done[header] = header if relative else None
+            else:
+                self.done[header] = self.rewrite_header(header, local)
+            if self.done[header] is None and relative:
+                redirects[name] = header
             return self.done[header]
         return hook
+
+    def rewrite_header(self, header, local):
+        """The path of header's rewritten copy, or None if it isn't needed"""
+        shadow = self.shadow_path(header)
+        self.done[header] = shadow
+        self.in_progress.add(header)
+        text, changed = self.rewrite(header)
+        self.in_progress.discard(header)
+        # A header from an include directory is rewritten only if it, or
+        # a header it includes, changes: libraries stay where they are,
+        # and so do headers with #pragma once that others include too
+        if local or changed or header in self.cycled:
+            write_if_changed(shadow, text)
+            return shadow
+        return None
 
 
 def rewrite_text(text, path, include_hook=None, kernels=None):

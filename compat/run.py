@@ -122,7 +122,7 @@ def build(program, source_dir, work_dir, drivers, cc, dependencies):
 
     sources = []
     for pattern in program['sources']:
-        matches = sorted(glob.glob(os.path.join(directory, pattern)))
+        matches = sorted(glob.glob(os.path.join(directory, expand(pattern, dependencies))))
         sources += [m for m in matches if not any(fnmatch.fnmatch(os.path.basename(m), x)
                                                   for x in program.get('exclude', []))]
     if not sources:
@@ -147,7 +147,7 @@ def build(program, source_dir, work_dir, drivers, cc, dependencies):
         objects.append(obj)
 
     exe = os.path.join(out, program['name'])
-    p = subprocess.run([driver, '-o', exe] + objects + program.get('libs', []) + ['-lm'],
+    p = subprocess.run([driver, '-o', exe] + objects + [expand(lib, dependencies) for lib in program.get('libs', [])] + ['-lm'],
                        capture_output=True, text=True)
     log.append(p.stdout + p.stderr)
     return p.returncode == 0, '\n'.join(log)
@@ -248,6 +248,7 @@ def main(argv=None):
     parser.add_argument('--jobs', type=int, default=2, help='programs built and run at the same time')
     parser.add_argument('--timeout', type=float, default=300, help='seconds each program may run')
     args = parser.parse_args(argv)
+    args.work = os.path.abspath(args.work)
 
     driver = os.path.abspath(args.driver)
     drivers = {'c++': driver,

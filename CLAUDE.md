@@ -237,9 +237,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `-I`, `-iquote`, `-isystem`, without cuda4cpu's and `/usr/include`), and
   it follows `#include <...>` (and quote includes not found next to the
   file) into them: such a library header is shadowed only if it or a header
-  it includes changes (`rewrite` returns whether it did), else its include
-  stays as written, or points to the original path when it's relative to a
-  shadowed header. rocPRIM's device algorithms launch kernels in headers.
+  it includes changes (`rewrite` returns whether it did; `done` holds the
+  copy, or None). Else its include stays as written, except a quote include
+  next to the including header, which a shadowed copy points to the original
+  path (`redirects`, applied after `changed` is computed, or every header
+  above it would be shadowed too). rocPRIM's device algorithms launch kernels
+  in headers.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template

@@ -347,18 +347,25 @@ class Headers(unittest.TestCase):
             with open(os.path.join(lib, 'plain.hpp'), 'w') as f:
                 f.write('#pragma once\nint plain();\n')
             src = os.path.join(tmp, 'main.cu')
+            with open(os.path.join(lib, 'util.hpp'), 'w') as f:
+                f.write('#include "constants.hpp"\n')
+            with open(os.path.join(lib, 'constants.hpp'), 'w') as f:
+                f.write('#include "plain.hpp"\n')
             with open(src, 'w') as f:
-                f.write('#include <mylib/top.hpp>\n#include <mylib/plain.hpp>\n#include <vector>\n')
+                # plain.hpp first through -I, then next to top.hpp
+                f.write('#include <mylib/plain.hpp>\n#include <mylib/util.hpp>\n#include <mylib/top.hpp>\n'
+                        '#include <vector>\n')
             shadow = os.path.join(tmp, 'shadow')
             r = rw.Rewriter(shadow, [os.path.join(tmp, 'lib')])
             main = r.rewrite_file(src)
             top_shadow = os.path.join(shadow, lib.lstrip(os.sep), 'top.hpp')
             launch_shadow = os.path.join(shadow, lib.lstrip(os.sep), 'launch.hpp')
             self.assertIn(rw.quote(top_shadow), main)
-            # A header that isn't rewritten, included through -I, stays
-            # as it was, unless it was found next to a rewritten one first
-            self.assertIn(rw.quote(os.path.join(lib, 'plain.hpp')), main)
+            # Headers that aren't rewritten stay as they were, and so do
+            # headers whose includes, next to them, aren't
+            self.assertIn('#include <mylib/plain.hpp>\n#include <mylib/util.hpp>\n', main)
             self.assertIn('#include <vector>', main)
+            self.assertFalse(os.path.exists(os.path.join(shadow, lib.lstrip(os.sep), 'util.hpp')))
             with open(top_shadow) as f:
                 top = f.read()
             self.assertIn(rw.quote(launch_shadow), top)
