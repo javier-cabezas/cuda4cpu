@@ -216,6 +216,22 @@ class Run(unittest.TestCase):
         self.assertTrue(any(f['kind'] == 'timeout' for f in content['findings']))
 
 
+# Prints the process ID (which varies) unless the memory holds a fill of
+# 0xff or 0x5a bytes, and then __STEADY__: what it holds, or a constant
+FILL_DEPENDENT = """#include <cstdio>
+#include <unistd.h>
+int main()
+{
+    int *memory;
+    cudaMallocManaged(&memory, sizeof(int));
+    const int value = *memory;
+    std::printf("%d\\n", value == -1 || value == 0x5a5a5a5a ? __STEADY__ : int(getpid()));
+    cudaFree(memory);
+    return 0;
+}
+"""
+
+
 class Check(unittest.TestCase):
 
     def check(self, **arguments):
@@ -335,25 +351,23 @@ int main()
 
     def test_uninitialized_memory_that_varies(self):
         """Memory that holds something else on every run makes the output vary, but not when filled"""
-        source = """#include <cstdio>
-#include <unistd.h>
-int main()
-{
-    int *value;
-    cudaMallocManaged(&value, 1 << 20);
-    // Zeros stand for what an earlier allocation left
-    std::printf("%d\\n", *value == 0 ? int(getpid()) : *value);
-    cudaFree(value);
-    return 0;
-}
-"""
-        content = self.check(files={'varies.cu': source}, sanitizers=False)
+        content = self.check(files={'varies.cu': FILL_DEPENDENT.replace('__STEADY__', 'value')},
+                             sanitizers=False)
         self.assertFalse(content['deterministic_output'])
         self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
         finding = content['findings'][0]
-        self.assertIn('the same on every run', finding['message'])
-        self.assertEqual(finding['first_difference']['filled'], '-1')
-        self.assertIn('init_memory:0xff again', [r['order'] for r in content['runs']])
+        self.assertIn('depends on what new memory holds', finding['message'])
+        self.assertEqual(finding['first_difference'], {'line': 1, 'filled_0x5a': '1515870810', 'filled': '-1'})
+        self.assertIn('depends on memory never written', content['note'])
+
+    def test_output_that_any_fill_steadies(self):
+        """Output that varies, but not with a fill whatever its byte, as timings once filling faults pages in"""
+        content = self.check(files={'steady.cu': FILL_DEPENDENT.replace('__STEADY__', '1')}, sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(content['verdict'], 'no problems found', content['findings'])
+        self.assertEqual([r['order'] for r in content['runs'] if r['order'].startswith('init_memory')],
+                         ['init_memory:0xff', 'init_memory:0xff again', 'init_memory:0x5a',
+                          'init_memory:0x5a again'])
 
     def test_undefined_behavior(self):
         kernel = '''
