@@ -667,8 +667,8 @@ def check_program(program, arguments):
     # (a check that the memory started at zero). The fills are compared by
     # output, or when that varies too (timings), by how the runs end.
     zeros = None                        # a run with zeros, when the result depends on the fill
-    by_output = False                   # whether the fills' outputs are what differs
-    if not deterministic and ends(filled) in (ends(base), ends(again)):
+    by_output = False                   # whether the fills' outputs differ, not only how they end
+    if not deterministic and not filled['timed_out'] and ends(filled) in (ends(base), ends(again)):
         extra = []                      # stopped by a time-out, which is a finding already
         for byte, name, more in (('0xff', 'init_memory:0xff again', ', once more'), ('0x00', 'init_memory:0x00', ''),
                                  ('0x00', 'init_memory:0x00 again', ', once more')):
@@ -679,7 +679,8 @@ def check_program(program, arguments):
             filled_again, *zeroed = extra
             for key in (lambda run: comparable(run, patterns), ends):
                 if key(filled) == key(filled_again) and key(zeroed[0]) == key(zeroed[1]) != key(filled):
-                    zeros, by_output = zeroed[0], key is not ends
+                    zeros = zeroed[0]
+                    by_output = key is not ends and comparable(zeros, patterns)[2] != comparable(filled, patterns)[2]
                     break
     if deterministic:
         reads = comparable(filled, patterns) != comparable(base, patterns)
@@ -741,7 +742,7 @@ def check_program(program, arguments):
                 finding['first_difference'] = difference
         findings.append(finding)
     note = None
-    if zeros is not None:
+    if by_output:
         # Ignoring the lines that vary would hide that finding
         note = ('the output differs between two runs in the default order because it depends on memory never '
                 'written (see the finding), so the orders were compared by exit code only; check again once '

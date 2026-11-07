@@ -385,6 +385,7 @@ int main()
         finding = content['findings'][0]
         self.assertIn('ends with exit code 0 on every run, and with zeros with exit code 1', finding['message'])
         self.assertNotIn('first_difference', finding)
+        self.assertNotIn('depends on memory never written', content['note'])
 
     def test_output_that_any_fill_steadies(self):
         """Output that varies, but not with a fill whatever its byte, as timings once filling faults pages in"""
