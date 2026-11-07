@@ -5,7 +5,8 @@ CUDA runtime API, with 32-lane warps. HIP sources define
 `__HIP_PLATFORM_NVIDIA__` and `__HIPCC__`, so code that tells the platforms
 apart takes its NVIDIA branch. That branch uses CUDA features cuda4cpu
 implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
-builtins.
+builtins. Code written only for AMD GPUs can compile on
+[HIP's AMD platform](#hips-amd-platform) instead, emulating an RDNA3 GPU.
 
 HIP projects build with `cuda4cpu-hipcc` in place of hipcc, and the toolkit
 directory (`<prefix>/lib/cuda4cpu/toolkit`) is laid out like a ROCm
@@ -95,3 +96,80 @@ before the `#include`. `hipLaunchKernelGGL` is a macro, as in HIP. Like a
 `<<<...>>>` launch, it deduces template arguments and applies default
 arguments. A kernel name whose template arguments contain commas goes in
 `HIP_KERNEL_NAME(...)`.
+
+## HIP's AMD platform
+
+Code written only for AMD GPUs takes branches under `__HIP_PLATFORM_AMD__`
+and the GPU's macros (`__gfx1100__`, `__GFX11__`), and calls AMD's GPU
+builtins (`__builtin_amdgcn_*`). `cuda4cpu-hipcc --cuda4cpu-platform=amd`
+(or `CUDA4CPU_HIP_PLATFORM=amd`, for any driver and HIP source) compiles it
+as for an RDNA3 GPU, whose wavefronts have 32 lanes, like cuda4cpu's warps:
+
+```sh
+cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
+```
+
+- **The GPU:** `--offload-arch` names it among RDNA3's: `gfx1100` (the
+  default), `gfx1101`, `gfx1102`, `gfx1103`, `gfx1150`, `gfx1151`,
+  `gfx1152` and `gfx1153`. Without the switch, `--offload-arch` is ignored,
+  as before. Wave64 (`-mwavefrontsize64`) and other GPUs are rejected.
+- **Macros:** `__HIP_PLATFORM_AMD__`, `__AMDGCN__`, `__AMDGPU__`, the
+  GPU's (`__gfx1101__`, `__GFX11__`) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
+  instead of `__HIP_PLATFORM_NVIDIA__`. Builds that don't go through the
+  drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` macro, and
+  `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
+  since host and device code compile together: define it
+  (`-D__HIP_DEVICE_COMPILE__=1`) to compile code under it, such as
+  rocPRIM's DPP paths, but code under `#ifndef __HIP_DEVICE_COMPILE__` then
+  drops out.
+- **Device properties:** `gcnArchName` is the GPU's name, and `major` and
+  `minor` its gfx version (11 and 0 for `gfx1101`).
+- **Builtins** (`hip/amdgcn.h`, which `hip/hip_runtime.h` includes):
+  - dispatch IDs and sizes: `workitem_id_*`, `workgroup_id_*`,
+    `workgroup_size_*`, `grid_size_*`, `wavefrontsize`, and
+    `dispatch_ptr`, HSA's dispatch packet;
+  - lane operations: `readfirstlane`, `readlane`, `writelane`,
+    `read_exec*`, `ballot_w32`/`w64`, `inverse_ballot_*`, `mbcnt_lo`/`hi`,
+    `ds_bpermute`, `ds_permute`, `ds_swizzle` (bit masks and quad
+    permutations), `mov_dpp`, `update_dpp` (every DPP control, with row
+    and bank masks and `bound_ctrl`), `mov_dpp8`, `permlane16`,
+    `permlanex16`, `permlane64`, `wave_shuffle` and `wave_reduce_*`;
+  - synchronization and timing: `s_barrier`, `wave_barrier`, `fence`,
+    `s_sleep` (which lets the block's other threads run, so spin-waits
+    work), `s_memtime`, `s_memrealtime`, and hints that do nothing
+    (`s_waitcnt`, `sched_barrier`, `sched_group_barrier`, `iglp_opt`,
+    `s_setprio`, cache flushes);
+  - integers and bits: `perm`, `alignbit`, `alignbyte`, `ubfe`, `sbfe`,
+    `lerp`, `sad_u8`, `sad_hi_u8`, `sad_u16`, `sdot4`, `sdot8`, `udot4`,
+    `udot8`, `sudot4`, `sudot8`, `s_bitreplicate`, `cvt_pk_u8_f32`;
+  - floating point: `rcp`, `rsq`, `sqrt`, `sin` and `cos` of turns,
+    `exp2`, `log` (base 2), `ldexp`, `frexp_mant`, `frexp_exp`, `fract`,
+    `class`, `fmed3`, in their double, float and half forms where AMD has
+    them;
+  - atomics: `atomic_inc`, `atomic_dec`, and the floating-point adds,
+    minimums and maximums on global, flat and LDS memory.
+
+  Lane operations exchange the values of the lanes that take part (EXEC):
+  those that reach the call together, as `__activemask()` groups them, so
+  lanes in two branches that each call one don't mix, and lanes after a
+  branch wait there for the branch's lanes, as a GPU reconverges them.
+  cuda4cpu orders the calls by their lines in the source, so a lane
+  operation in a helper function, called from two branches, groups the
+  lanes of both, as `__activemask()` does. One compile command defines the
+  AMD platform's macros for every source it compiles, CUDA ones included. Like
+  `__activemask()`, they are macros that pass the call's place, and break
+  members of the program's classes with those names. Reading
+  a lane outside EXEC gives zero, or keeps the old value where the
+  instruction does, where a GPU may give a stale one. The semantics come from
+  AMD's ISA manuals and LLVM's AMDGPU backend, without a GPU to compare
+  with: rocPRIM's DPP scan and reduction give the right results. They are
+  inline functions, so `__has_builtin(__builtin_amdgcn_...)` is false, and
+  code that checks it takes its other path. Builtins of other AMD GPUs
+  compile too, unchecked.
+- **Not yet:** builtins with Clang's vector types (WMMA, packed
+  conversions, `fdot2`), fp8/fp4/fp6 conversions, buffer resources,
+  `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4,
+  and CDNA's 64-lane wavefronts and MFMA: see the
+  [roadmap](../ROADMAP.md#amd-gpu-builtins). AMD runs a wavefront's lanes
+  in lockstep, and cuda4cpu doesn't: code that relies on it without
+  `__syncwarp()` or `wave_barrier()` races, as it may under CUDA.

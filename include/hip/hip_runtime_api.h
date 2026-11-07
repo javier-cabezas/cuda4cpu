@@ -116,7 +116,8 @@ struct hipDeviceArch_t {
 };
 
 struct hipDeviceProp_t : cudaDeviceProp {
-    //! The CPU's architecture, where an AMD GPU has its gfx name
+    //! The CPU's architecture, where an AMD GPU has its gfx name, or the
+    //! emulated GPU's on HIP's AMD platform
     char gcnArchName[256];
     size_t maxSharedMemoryPerMultiProcessor;
     int clockInstructionRate;
@@ -139,7 +140,12 @@ inline cudaError_t hipGetDeviceProperties(hipDeviceProp_t *prop, int device)
     if (cudaError_t err = cudaGetDeviceProperties(&p, device))
         return err;
 
-#if defined(__x86_64__)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
+    // The emulated GPU, whose gfx version is its major.minor, as on AMD's
+    std::snprintf(p.gcnArchName, sizeof(p.gcnArchName), "%s", CUDA4CPU_AMDGPU_TARGET);
+    p.major = (CUDA4CPU_AMDGPU_TARGET[3] - '0') * 10 + (CUDA4CPU_AMDGPU_TARGET[4] - '0');
+    p.minor = CUDA4CPU_AMDGPU_TARGET[5] - '0';
+#elif defined(__x86_64__)
     std::snprintf(p.gcnArchName, sizeof(p.gcnArchName), "x86_64");
 #elif defined(__aarch64__)
     std::snprintf(p.gcnArchName, sizeof(p.gcnArchName), "aarch64");

@@ -38,6 +38,11 @@ into a static library, as hipcc does. As hipcc, it answers --version, adds
 HIPCC_COMPILE_FLAGS_APPEND (and HIPCC_LINK_FLAGS_APPEND when it links), and
 shows its commands with HIPCC_VERBOSE=1.
 
+HIP code compiles as on HIP's NVIDIA platform, unless --cuda4cpu-platform=amd
+(or CUDA4CPU_HIP_PLATFORM=amd) chooses AMD's: then the driver defines the
+macros of an RDNA3 GPU, with 32-lane wavefronts, which --offload-arch names
+(gfx1100 by default), and AMD's builtins are available.
+
 Installed as cuda4cpu-nvcc, it takes nvcc's command line, so that build
 scripts written for nvcc work unchanged: options for the GPU and for nvcc's
 own steps are dropped, nvcc's names of the host compiler's options are
@@ -106,6 +111,11 @@ HIPCC_DROPPED_PREFIXES = ('--offload-arch=', '--amdgpu-target=', '--cuda-gpu-arc
                           '--hip-path=', '--hip-device-lib', '--rocm-device-lib-path=', '-fgpu-', '-fno-gpu-',
                           '-mcode-object-version=', '-munsafe-fp-atomics', '-mno-unsafe-fp-atomics',
                           '-mwavefrontsize64', '-mno-wavefrontsize64', '-mcumode', '-mno-cumode')
+# The AMD GPUs that the AMD platform emulates: RDNA3's, whose wavefronts have
+# 32 lanes, as cuda4cpu's warps
+AMD_TARGETS = ('gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153')
+AMD_DEFAULT_TARGET = 'gfx1100'
+
 HIPCC_DROPPED = {'--hip-link', '--offload-device-only', '--offload-host-only', '-fhip-new-launch-api',
                  '-D__HIP_PLATFORM_AMD__', '-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__',
                  '-D__HIP_PLATFORM_HCC__=1'}
@@ -350,6 +360,54 @@ def work_directory(argv):
         except OSError:
             pass
     return tempfile.mkdtemp(prefix='cuda4cpu-')
+
+
+def hip_platform(argv):
+    """HIP's platform (--cuda4cpu-platform=, or CUDA4CPU_HIP_PLATFORM), and on
+    AMD's, the macros of the GPU that --offload-arch names. Returns the
+    arguments without the options it took, the macros to define, and an
+    error message or None."""
+    platform = os.environ.get('CUDA4CPU_HIP_PLATFORM') or 'nvidia'
+    rest, targets = [], []
+    for arg in argv:
+        if arg.startswith('--cuda4cpu-platform='):
+            platform = arg.split('=', 1)[1]
+        else:
+            rest.append(arg)
+    if platform not in ('nvidia', 'amd'):
+        return argv, [], f'unknown HIP platform {platform!r}: expected nvidia or amd'
+    if platform == 'nvidia':
+        return rest, [], None
+    argv, rest = rest, []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
+        value = None
+        if arg.startswith(('--offload-arch=', '--amdgpu-target=')):
+            value = arg.split('=', 1)[1]
+        elif arg in ('--offload-arch', '--amdgpu-target'):
+            if i >= len(argv):
+                return argv, [], f'{arg} needs a GPU'
+            value = argv[i]
+            i += 1
+        if value is not None:
+            # gfx1100:xnack-, or several separated by commas
+            targets += [t.split(':')[0] for t in value.split(',') if t]
+        elif arg == '-mwavefrontsize64':
+            return argv, [], ('cuda4cpu emulates AMD GPUs with 32-lane wavefronts; '
+                              '-mwavefrontsize64 is not supported')
+        else:
+            rest.append(arg)
+    targets = list(dict.fromkeys(targets)) or [AMD_DEFAULT_TARGET]
+    if len(targets) > 1:
+        return argv, [], 'cuda4cpu emulates one AMD GPU at a time: give one --offload-arch'
+    target = targets[0]
+    if target not in AMD_TARGETS:
+        return argv, [], (f'cuda4cpu emulates RDNA3 GPUs ({", ".join(AMD_TARGETS)}), not {target}')
+    defines = ['-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__=1', f'-D__{target}__=1', '-D__GFX11__=1',
+               '-D__AMDGCN__=1', '-D__AMDGPU__=1', '-D__AMDGCN_WAVEFRONT_SIZE__=32', '-D__AMDGCN_WAVEFRONT_SIZE=32']
+    return rest, defines, None
 
 
 def is_driver(command):
@@ -603,6 +661,10 @@ def main(argv):
         argv = argv + shlex.split(os.environ.get('HIPCC_COMPILE_FLAGS_APPEND', ''))
         if not NO_LINK.intersection(argv):
             argv = argv + shlex.split(os.environ.get('HIPCC_LINK_FLAGS_APPEND', ''))
+    argv, platform_defines, error = hip_platform(argv)
+    if error is not None:
+        sys.stderr.write(f'{os.path.basename(sys.argv[0])}: {error}\n')
+        return 1
     compiler = find_compiler(request.host_compiler if request else None)
     if request is not None and request.step == 'dlink':
         return nvcc_device_link(compiler, argv, request)
@@ -624,12 +686,16 @@ def main(argv):
     try:
         args = []
         renamed = []                        # (rewritten, original, shadow directory) of each source
+        renamed_languages = []              # the same, with each one's language
         x_language = None                   # set by -x: a language, 'other', or None (by extension)
         i = 0
         while i < len(argv):
             arg = argv[i]
             if MODE == 'hip' and (arg in HIPCC_DROPPED or arg.startswith(HIPCC_DROPPED_PREFIXES)):
                 i += 1
+                continue
+            if MODE == 'hip' and arg in ('--offload-arch', '--amdgpu-target'):
+                i += 2
                 continue
             if arg.startswith('-std='):
                 arg = raise_standard(arg)
@@ -663,11 +729,14 @@ def main(argv):
                     return status
                 args += ['-x', 'c++', out, '-x', 'none']
                 renamed.append((out, arg, shadow_dir))
+                renamed_languages.append((out, arg, shadow_dir, language))
             else:
                 args.append(arg)
             i += 1
 
-        front = ['-I' + INCLUDE_DIR]
+        # The AMD platform's macros are for HIP sources, not CUDA ones
+        hip_sources = any(language == 'hip' for *_, language in renamed_languages)
+        front = ['-I' + INCLUDE_DIR] + (platform_defines if hip_sources else [])
         if not any(a.startswith('-std=') for a in args):
             front.append('-std=c++23')
         if '-fopenmp' not in args:
