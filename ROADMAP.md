@@ -6,19 +6,17 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 132 of 159 pass today; most of the rest need
+shows what blocks real programs. 133 of 159 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
   `surf2Dwrite`, CUDA arrays): 10 programs.
-- **`memcpy_async` and `cuda::pipeline`**, and a way to compile code under
-  `#if __CUDA_ARCH__ >= 800`: the tensor-core samples for bfloat16, tf32
-  and double. 3 programs.
 - **Dynamic parallelism**: kernels that launch kernels. 2 programs.
-- **Smaller API gaps**, one program each: libcu++ headers (`<cuda/...>`),
-  device-side `assert` reported as a launch error, green contexts.
-- **Kernel language:** `__reduce_*_sync`, 16-bit integer atomics, and the
-  sub-byte types of `wmma::experimental`.
+- **Smaller API gaps**, one program each: device-side `assert` reported as
+  a launch error, green contexts.
+- **Kernel language:** `__reduce_*_sync`, 16-bit integer atomics, the
+  sub-byte types of `wmma::experimental`, and pipelines that a group shares
+  (`cuda::pipeline<cuda::thread_scope_block>`).
 - **Platforms:** CI on AArch64, where the portable context switch
   (`_setjmp`/`_longjmp`) is used but hasn't been tested yet, and an assembly
   context switch for it. macOS and Windows would need their own fiber stacks
@@ -49,4 +47,6 @@ of it: about half of its time goes to barriers, because it waits at
    once before the next one reuses the buffer, and those syncs take about
    half its time. A warp operation whose releasing lane computes D for every
    lane would need one. A 4096×4096×4096 GEMM (`cudaTensorCoreGemm`) takes
-   about 14 s on 16 OS threads.
+   about 14 s on 16 OS threads, and the 8192³ tensor-core samples, which
+   the compatibility suite skips, from 45 s (bfloat16, tf32) to 5 minutes
+   (double, whose 8×8×4 tiles need sixteen times as many `mma_sync` calls).

@@ -182,6 +182,11 @@ set_target_properties(complex PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(complex complex.cu)
 add_test(NAME complex COMMAND complex)
 
+add_executable(async_copy)
+set_target_properties(async_copy PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(async_copy async_copy.cu)
+add_test(NAME async_copy COMMAND async_copy)
+
 add_executable(wmma)
 set_target_properties(wmma PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(wmma wmma.cu)

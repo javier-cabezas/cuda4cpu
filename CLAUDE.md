@@ -110,6 +110,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   double: without `-mfma` it's a libm call, and float products of these
   types are exact). Syncs are about half of its time; a warp operation that
   the releasing lane computes would need one.
+- `include/cuda/async_copy.hpp` (`cuda/pipeline`, `cuda/barrier`) and
+  `include/cooperative_groups/memcpy_async.h`: libcu++'s asynchronous
+  copies and cooperative groups'. A copy is done when `memcpy_async`
+  returns (a group's: its first thread copies it all, `detail::group_copy`,
+  since a tile of a partial warp has fewer threads than its size),
+  so pipelines of a thread do nothing, and `cg::wait` syncs the group.
+  `cuda::barrier` counts arrivals in atomics and waits with
+  `thread_block::interleave()`, so the block's other threads run. Only
+  thread-scope pipelines. `cuda/cmath` (`ceil_div`, `round_up`,
+  `round_down`) and `cuda/std/type_traits` (`cuda::std`, a using-directive
+  of `::std`) are libcu++'s too; code in namespace `cuda` writes `::std::`.
 - `include/hip/`: HIP, on top of the CUDA API.
   - `hip_runtime_api.h`: HIP's runtime API. Every HIP name that is a CUDA
     name with another prefix is a `#define` for it (`hipMalloc` →
@@ -291,8 +302,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   Run it locally with
   `compat/run.py --driver build/release/tools/cuda4cpu-c++ --work /tmp/compat --filter 'rodinia/*'`.
   `compat/upstream-bugs/` holds fixes, not reported upstream, for bugs that
-  cuda4cpu-mcp's `check` found in the suite's programs, against the pinned
-  revisions. The suite runs the programs unpatched.
+  cuda4cpu-mcp's `check` (or a comparison with the host's results) found in
+  the suite's programs, against the pinned revisions. The suite runs the
+  programs unpatched.
 - `docs/`: the user documentation that the README links to: `usage.md`
   (building, using it in a project, what the rewriter does), `features.md`,
   `hip.md`, `compatibility.md`, `how-it-works.md`, `debugging.md` and
@@ -400,6 +412,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `complex` (`complex.cu`): cuComplex.h against `long double` arithmetic
     on random operands, the overflow and underflow its formulas avoid, and a
     DFT in a kernel
+  - `async_copy` (`async_copy.cu`): copies into shared memory through a
+    thread's pipeline, a block and its tiles (`cg::memcpy_async`), and a
+    block's `cuda::barrier`, read by other threads after the wait; a barrier
+    of half the block's threads with a completion function, over several
+    phases, with a thread that drops out; `<cuda/cmath>` and `cuda::std`.
   - `wmma` (`wmma.cu`): every type, shape and layout of A, B, C and D of
     `mma.h` against an exact host reference (small integers, and tf32
     inputs with low bits that must be ignored), fragments changed element by

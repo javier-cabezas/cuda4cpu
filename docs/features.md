@@ -76,6 +76,16 @@
   bfloat16, tf32 and double). A 16×16×16 `mma_sync` takes a few
   microseconds of a core. The sub-byte types of `wmma::experimental` aren't
   implemented.
+- Asynchronous copies: libcu++'s `cuda::memcpy_async` with a thread's
+  `cuda::pipeline` (`cuda::make_pipeline()`, `producer_acquire`,
+  `producer_commit`, `consumer_wait`, `pipeline_consumer_wait_prior`) or a
+  `cuda::barrier` (`<cuda/pipeline>`, `<cuda/barrier>`), with
+  `cuda::aligned_size_t`, and cooperative groups' `memcpy_async`, `wait` and
+  `wait_prior` (`cooperative_groups/memcpy_async.h`). A copy is done when
+  `memcpy_async` returns. `cuda::barrier` works for any number of the
+  block's threads, with a completion function and `arrive_and_drop`.
+- libcu++'s `cuda::ceil_div`, `cuda::round_up` and `cuda::round_down`
+  (`<cuda/cmath>`), and `<cuda/std/type_traits>` as `cuda::std`.
 - Math: the C++ standard library, plus `rsqrtf`, `rsqrt` and the fast
   intrinsics `__expf`, `__exp10f`, `__logf`, `__log2f`, `__log10f`, `__sinf`,
   `__cosf`, `__tanf`, `__sincosf`, `__powf`, `__fdividef` and `__saturatef`.
@@ -108,7 +118,7 @@
 | More memory | Stream-ordered allocation (`cudaMallocAsync`, `cudaFreeAsync`, `cudaMallocFromPoolAsync`, the default memory pool, `cudaMemPoolCreate`, `cudaMemPoolDestroy`), mapped and registered host memory (`cudaHostGetDevicePointer`, `cudaHostRegister`, `cudaHostUnregister`, `cudaHostGetFlags`), and unified memory hints (`cudaMemPrefetchAsync`, `cudaMemAdvise`, `cudaStreamAttachMemAsync`, and `cudaMemRangeGetAttribute`/`cudaMemRangeGetAttributes`, which return them). All memory is host memory, so the hints and pool settings have no effect, but the hints are recorded per page. |
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc`, and the default streams `cudaStreamLegacy` and `cudaStreamPerThread` (one per OS thread) |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
-| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cuda_fp16.h`, `cuda_bf16.h`, `cuda_fp8.h`, `cuComplex.h`, `mma.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
+| Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cooperative_groups/memcpy_async.h`, `cuda/pipeline`, `cuda/barrier`, `cuda/cmath`, `cuda/std/type_traits`, `cuda_fp16.h`, `cuda_bf16.h`, `cuda_fp8.h`, `cuComplex.h`, `mma.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
 | Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
 | Stream capture | `cudaStreamBeginCapture`, `cudaStreamBeginCaptureToGraph`, `cudaStreamEndCapture`, `cudaStreamIsCapturing`, `cudaStreamGetCaptureInfo`, `cudaStreamUpdateCaptureDependencies`, and fork and join through events. Kernel launches, async copies and memsets, `cudaLaunchHostFunc`, `cudaMallocAsync` and `cudaFreeAsync` are captured. |
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |

@@ -127,6 +127,10 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/bf16TensorCoreGemm",
+          "skip": "an 8192x8192x8192 GEMM on emulated tensor cores: it passes, but takes about 50 s on 16 cores and more than 10 minutes on CI's 4",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
@@ -155,6 +159,10 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/dmmaTensorCoreGemm",
+          "skip": "an 8192x8192x8192 GEMM of doubles in 8x8x4 tiles on emulated tensor cores: it passes, but takes about 5 minutes on 16 cores",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
@@ -190,6 +198,10 @@
         },
         {
           "dir": "cpp/3_CUDA_Features/tf32TensorCoreGemm",
+          "skip": "an 8192x8192x8192 GEMM on emulated tensor cores: it passes, but takes about 45 s on 16 cores and more than 10 minutes on CI's 4",
+          "flags": [
+            "-D__CUDA_ARCH__=800"
+          ],
           "env": {
             "CUDA4CPU_COMPUTE_CAPABILITY": "8.0"
           },
