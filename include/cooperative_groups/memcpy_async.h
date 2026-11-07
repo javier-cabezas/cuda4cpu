@@ -19,8 +19,8 @@
  */
 
 // Cooperative groups' memcpy_async: a copy that the threads of a group share,
-// and wait, which waits for the group's copies and syncs it. On the CPU each
-// thread copies its share when it calls memcpy_async.
+// and wait, which waits for the group's copies and syncs it. On the CPU the
+// group's first thread makes the copy when it calls memcpy_async.
 #pragma once
 
 #include "../cooperative_groups.h"
@@ -32,15 +32,20 @@ namespace cooperative_groups {
 template <typename Group, typename T, typename Shape>
 inline void memcpy_async(const Group &group, T *dst, const T *src, const Shape &size)
 {
-    cuda4cpu::detail::copy_share(dst, src, ::std::size_t(size), group.thread_rank(), group.num_threads());
+    cuda4cpu::detail::group_copy(dst, src, ::std::size_t(size), group.thread_rank());
+}
+
+template <typename Group, typename Shape>
+inline void memcpy_async(const Group &group, void *dst, const void *src, const Shape &size)
+{
+    cuda4cpu::detail::group_copy(dst, src, ::std::size_t(size), group.thread_rank());
 }
 
 //! Copies src_count elements from src to dst, which holds dst_count
 template <typename Group, typename T>
 inline void memcpy_async(const Group &group, T *dst, ::std::size_t dst_count, const T *src, ::std::size_t src_count)
 {
-    cuda4cpu::detail::copy_share(dst, src, ::std::min(dst_count, src_count) * sizeof(T), group.thread_rank(),
-                                 group.num_threads());
+    cuda4cpu::detail::group_copy(dst, src, ::std::min(dst_count, src_count) * sizeof(T), group.thread_rank());
 }
 
 template <typename Group>

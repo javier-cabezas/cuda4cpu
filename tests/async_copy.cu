@@ -110,6 +110,36 @@ struct count_phases {
     void operator()() noexcept { ++*phases; }
 };
 
+//! A tile of a partial warp (48 threads in tiles of 32) copies all its bytes,
+//! to a destination given as void *
+__global__ void partial_tile(const float *in, float *out)
+{
+    __shared__ float tiles[2][64];
+    auto tile = cg::tiled_partition<32>(cg::this_thread_block());
+    const unsigned t = threadIdx.x / 32;
+    cg::memcpy_async(tile, static_cast<void *>(tiles[t]), in + t * 64, sizeof(float) * 64);
+    cg::wait(tile);
+    for (int i = 0; i < 4; ++i)
+        out[threadIdx.x * 4 + i] = tiles[t][(threadIdx.x % 32 * 4 + i) % 64];
+}
+
+//! cuda::init called qualified, and an arrival that counts for two
+__global__ void arrive_for_two(int *phases)
+{
+    __shared__ cuda::barrier<cuda::thread_scope_block, count_phases> bar;
+    __shared__ int counter;
+    if (threadIdx.x == 0) {
+        counter = 0;
+        cuda::init(&bar, blockDim.x + 1, count_phases{&counter});
+    }
+    __syncthreads();
+    for (int round = 0; round < 2; ++round)
+        bar.wait(bar.arrive(threadIdx.x == 0 ? 2 : 1));
+    __syncthreads();
+    if (threadIdx.x == 0)
+        *phases = counter;
+}
+
 //! The even threads meet at a barrier of their own, with a completion
 //! function, three times; thread 2 drops out after the first
 __global__ void even_threads(int *phases, int *seen)
@@ -167,6 +197,18 @@ int main()
     for (int t = 0; t < threads; ++t)
         wrong += out[t] != in[(t + 1) % threads];
     EXPECT(wrong == 0);
+
+    std::fill(out.begin(), out.end(), -1.0f);
+    partial_tile<<<1, 48>>>(in.data(), out.data());
+    wrong = 0;
+    for (int t = 0; t < 48; ++t)
+        for (int i = 0; i < 4; ++i)
+            wrong += out[t * 4 + i] != in[t / 32 * 64 + (t % 32 * 4 + i) % 64];
+    EXPECT(wrong == 0);
+
+    int two_phases = 0;
+    arrive_for_two<<<1, 32>>>(&two_phases);
+    EXPECT(two_phases == 2);
 
     // Phases: 2 per round, the first round with 64 threads and the next two
     // with 63, plus the arrival of thread 2 in round 1 (which completes no

@@ -72,15 +72,13 @@ inline void yield_to_block()
     thread_block::interleave();
 }
 
-//! The bytes of [0, size) that the thread of rank rank copies, when count
-//! threads share a copy
-inline void copy_share(void *dst, const void *src, ::std::size_t size, unsigned long long rank,
-                       unsigned long long count)
+//! A copy that a group's threads share: its first thread makes all of it.
+//! The block's threads run on one OS thread, so splitting it would gain
+//! nothing, and a tile of a partial warp has fewer threads than its size.
+inline void group_copy(void *dst, const void *src, ::std::size_t size, unsigned long long rank)
 {
-    const ::std::size_t chunk = (size + count - 1) / count, first = ::std::size_t(rank) * chunk;
-    if (first < size)
-        ::std::memcpy(static_cast<char *>(dst) + first, static_cast<const char *>(src) + first,
-                      ::std::min(chunk, size - first));
+    if (rank == 0)
+        ::std::memcpy(dst, src, size);
 }
 
 }
@@ -104,15 +102,12 @@ public:
     barrier(const barrier &) = delete;
     barrier &operator=(const barrier &) = delete;
 
-    friend void init(barrier *bar, ::std::ptrdiff_t expected, CompletionFunction completion = CompletionFunction())
-    {
-        ::new (bar) barrier(expected, completion);
-    }
-
     [[nodiscard]] arrival_token arrive(::std::ptrdiff_t update = 1)
     {
+        // Arrivals beyond the expected ones are undefined; they complete the
+        // phase rather than hang
         const arrival_token phase = phase_.load();
-        if (pending_.fetch_sub(update) == update) {
+        if (pending_.fetch_sub(update) <= update) {
             completion_();
             pending_.store(expected_.load());
             phase_.store(phase + 1);
@@ -148,6 +143,19 @@ private:
     ::std::atomic<arrival_token> phase_;
     CompletionFunction completion_;
 };
+
+//! Initializes a barrier declared without arguments, as __shared__ ones are
+template <thread_scope Scope, typename CompletionFunction>
+inline void init(barrier<Scope, CompletionFunction> *bar, ::std::ptrdiff_t expected)
+{
+    ::new (bar) barrier<Scope, CompletionFunction>(expected);
+}
+
+template <thread_scope Scope, typename CompletionFunction>
+inline void init(barrier<Scope, CompletionFunction> *bar, ::std::ptrdiff_t expected, CompletionFunction completion)
+{
+    ::new (bar) barrier<Scope, CompletionFunction>(expected, completion);
+}
 
 template <thread_scope Scope>
 class pipeline;
@@ -210,7 +218,7 @@ template <typename Group, typename Shape, thread_scope Scope, typename Completio
 inline void memcpy_async(const Group &group, void *destination, const void *source, Shape size,
                          barrier<Scope, CompletionFunction> &)
 {
-    cuda4cpu::detail::copy_share(destination, source, ::std::size_t(size), group.thread_rank(), group.num_threads());
+    cuda4cpu::detail::group_copy(destination, source, ::std::size_t(size), group.thread_rank());
 }
 
 }

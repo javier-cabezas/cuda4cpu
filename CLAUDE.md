@@ -113,7 +113,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `include/cuda/async_copy.hpp` (`cuda/pipeline`, `cuda/barrier`) and
   `include/cooperative_groups/memcpy_async.h`: libcu++'s asynchronous
   copies and cooperative groups'. A copy is done when `memcpy_async`
-  returns (a group's: each thread copies its share, `detail::copy_share`),
+  returns (a group's: its first thread copies it all, `detail::group_copy`,
+  since a tile of a partial warp has fewer threads than its size),
   so pipelines of a thread do nothing, and `cg::wait` syncs the group.
   `cuda::barrier` counts arrivals in atomics and waits with
   `thread_block::interleave()`, so the block's other threads run. Only

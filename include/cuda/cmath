@@ -26,7 +26,7 @@
 
 namespace cuda {
 
-//! a / b rounded up, for a >= 0 and b > 0
+//! a / b rounded up, for a >= 0 and b > 0, as libcu++ requires
 template <typename T, typename U>
     requires(::std::is_integral_v<T> && ::std::is_integral_v<U>)
 constexpr ::std::common_type_t<T, U> ceil_div(const T a, const U b)
@@ -35,7 +35,8 @@ constexpr ::std::common_type_t<T, U> ceil_div(const T a, const U b)
     return R(R(a) / R(b) + R(R(a) % R(b) != 0));
 }
 
-//! The smallest multiple of b not below a
+//! The smallest multiple of b not below a, for a >= 0 and b > 0, as libcu++
+//! requires
 template <typename T, typename U>
     requires(::std::is_integral_v<T> && ::std::is_integral_v<U>)
 constexpr ::std::common_type_t<T, U> round_up(const T a, const U b)
@@ -44,7 +45,7 @@ constexpr ::std::common_type_t<T, U> round_up(const T a, const U b)
     return R(ceil_div(a, b) * R(b));
 }
 
-//! The largest multiple of b not above a
+//! The largest multiple of b not above a, for a >= 0 and b > 0
 template <typename T, typename U>
     requires(::std::is_integral_v<T> && ::std::is_integral_v<U>)
 constexpr ::std::common_type_t<T, U> round_down(const T a, const U b)
