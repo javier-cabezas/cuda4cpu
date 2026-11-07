@@ -216,6 +216,25 @@ class Run(unittest.TestCase):
         self.assertTrue(any(f['kind'] == 'timeout' for f in content['findings']))
 
 
+# Prints the process ID (which varies) unless new memory is filled, and then
+# __STEADY__: what the memory holds, or a constant. Memory that holds
+# something else on every run would do it, but nothing makes the allocator
+# return that, and zeros can't be told from a fill of zeros.
+FILL_DEPENDENT = """#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+int main()
+{
+    int *memory;
+    cudaMallocManaged(&memory, sizeof(int));
+    const int value = *memory;
+    std::printf("%d\\n", std::getenv("CUDA4CPU_INIT_MEMORY") ? __STEADY__ : int(getpid()));
+    cudaFree(memory);
+    return 0;
+}
+"""
+
+
 class Check(unittest.TestCase):
 
     def check(self, **arguments):
@@ -311,12 +330,14 @@ __global__ void kernel(int *d)
         self.assertEqual(finding['locations'], [{'file': 'leak.cu', 'line': line}])
 
     def test_uninitialized_memory(self):
+        # A megabyte comes from mmap, as zeros: a few bytes may hold what the
+        # heap held before, which varies from run to run with Clang 18's libomp
         source = """#include <cstdio>
 __global__ void count(int *total) { atomicAdd(total, 1); }
 int main()
 {
     int *total;
-    cudaMallocManaged(&total, sizeof(int));
+    cudaMallocManaged(&total, 1 << 20);
     count<<<4, 64>>>(total);
     cudaDeviceSynchronize();
     std::printf("%d threads\\n", *total);
@@ -330,6 +351,50 @@ int main()
         self.assertIn('CUDA4CPU_INIT_MEMORY=0xff', finding['message'])
         # The default run's memory is usually zeros (256 threads), but malloc may fill it
         self.assertEqual(finding['first_difference']['filled'], '255 threads')
+
+    def test_uninitialized_memory_that_varies(self):
+        """Memory that holds something else on every run makes the output vary, but not when filled.
+        This program checks that the memory started at zero, which 0xff bytes and garbage fail alike."""
+        content = self.check(files={'varies.cu': FILL_DEPENDENT.replace('__STEADY__', 'int(value == 0)')},
+                             sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
+        finding = content['findings'][0]
+        self.assertIn('depends on what new memory holds', finding['message'])
+        self.assertEqual(finding['first_difference'], {'line': 1, 'zeros': '1', 'filled': '0'})
+        self.assertIn('depends on memory never written', content['note'])
+
+    def test_uninitialized_memory_that_changes_the_exit_code(self):
+        """Output that varies with a fill too, and an exit code that depends on the fill"""
+        source = """#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+int main()
+{
+    int *memory;
+    cudaMallocManaged(&memory, sizeof(int));
+    const bool zero = *memory == 0;
+    std::printf("process %d\\n", int(getpid()));
+    cudaFree(memory);
+    return std::getenv("CUDA4CPU_INIT_MEMORY") && zero ? 1 : 0;
+}
+"""
+        content = self.check(files={'exit.cu': source}, sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
+        finding = content['findings'][0]
+        self.assertIn('ends with exit code 0 on every run, and with zeros with exit code 1', finding['message'])
+        self.assertNotIn('first_difference', finding)
+        self.assertNotIn('depends on memory never written', content['note'])
+
+    def test_output_that_any_fill_steadies(self):
+        """Output that varies, but not with a fill whatever its byte, as timings once filling faults pages in"""
+        content = self.check(files={'steady.cu': FILL_DEPENDENT.replace('__STEADY__', '1')}, sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(content['verdict'], 'no problems found', content['findings'])
+        self.assertEqual([r['order'] for r in content['runs'] if r['order'].startswith('init_memory')],
+                         ['init_memory:0xff', 'init_memory:0xff again', 'init_memory:0x00',
+                          'init_memory:0x00 again'])
 
     def test_undefined_behavior(self):
         kernel = '''

@@ -448,8 +448,10 @@ TOOLS = [
                     'in several orders (forward, reverse, random with several seeds, warp orders): a result that '
                     'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
                     "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
-                    'direction, allocations never freed), runs once with new allocations filled with 0xff bytes '
-                    '(a changed result means reads of memory never written), and runs a build with '
+                    'direction, allocations never freed), runs with new allocations filled with 0xff bytes '
+                    '(a changed result means reads of memory never written; when the output varies, it runs with 0xff '
+                    'bytes and with zeros twice each, and a result that each fill makes steady but the two make '
+                    'different means the same), and runs a build with '
                     'AddressSanitizer and UBSan (out-of-bounds and use-after-free accesses, undefined behavior), '
                     'with source lines. The program should check '
                     'its own results or print them; output that varies between identical runs (timings) is '
@@ -647,11 +649,51 @@ def check_program(program, arguments):
     result['deterministic_output'] = deterministic
 
     # New memory is mostly zeros, which hides reads of memory never written
-    filled = execute(binary, program, arguments, dict(environment, CUDA4CPU_INIT_MEMORY='0xff'))
-    record('init_memory:0xff', filled, 'the default order, with new allocations filled with 0xff bytes')
-    if (comparable(filled, patterns) != comparable(base, patterns) if deterministic else
-            (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal'])):
-        if (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal']):
+    def filled_run(byte, name, note):
+        run = execute(binary, program, arguments, dict(environment, CUDA4CPU_INIT_MEMORY=byte))
+        record(name, run, f'the default order, with new allocations filled with {byte} bytes{note}')
+        return run
+
+    def ends(run):
+        return run['exit_code'], run['signal']
+
+    filled = filled_run('0xff', 'init_memory:0xff', '')
+    # Output that varies may come from the memory itself, when the allocator
+    # returns what earlier allocations left (it does with Clang 18's libomp).
+    # Then each fill gives the same result on every run, and 0xff bytes and
+    # zeros different ones. Comparing with the unfilled runs instead would take
+    # timings that filling steadies (it faults the pages in first) for such
+    # reads, and miss results that garbage and 0xff bytes change the same way
+    # (a check that the memory started at zero). The fills are compared by
+    # output, or when that varies too (timings), by how the runs end.
+    zeros = None                        # a run with zeros, when the result depends on the fill
+    by_output = False                   # whether the fills' outputs differ, not only how they end
+    if not deterministic and not filled['timed_out'] and ends(filled) in (ends(base), ends(again)):
+        extra = []                      # stopped by a time-out, which is a finding already
+        for byte, name, more in (('0xff', 'init_memory:0xff again', ', once more'), ('0x00', 'init_memory:0x00', ''),
+                                 ('0x00', 'init_memory:0x00 again', ', once more')):
+            if extra and extra[-1]['timed_out']:
+                break
+            extra.append(filled_run(byte, name, f'{more}, since the output varies without a fill'))
+        if len(extra) == 3:
+            filled_again, *zeroed = extra
+            for key in (lambda run: comparable(run, patterns), ends):
+                if key(filled) == key(filled_again) and key(zeroed[0]) == key(zeroed[1]) != key(filled):
+                    zeros = zeroed[0]
+                    by_output = key is not ends and comparable(zeros, patterns)[2] != comparable(filled, patterns)[2]
+                    break
+    if deterministic:
+        reads = comparable(filled, patterns) != comparable(base, patterns)
+    else:
+        reads = zeros is not None or ends(filled) not in (ends(base), ends(again))
+    if reads:
+        if zeros is not None:
+            if ends(zeros) != ends(filled):
+                what = f'ends with {how_it_ends(filled)} on every run, and with zeros with {how_it_ends(zeros)}'
+            else:
+                what = 'gives the same output on every run, and zeros another'
+            how = f'{what}: the result, which varies between runs without a fill, depends on what new memory holds'
+        elif ends(filled) != ends(base):
             how = f'ends with {how_it_ends(filled)} instead of {how_it_ends(base)}'
         else:
             how = 'changes the output'
@@ -660,9 +702,11 @@ def check_program(program, arguments):
                    'meaning': 'the program reads memory from cudaMalloc, cudaMallocManaged or the like before '
                               'writing it. CUDA leaves new memory undefined; on the CPU it is often zeros, '
                               'and on a GPU anything.'}
-        if deterministic:
-            difference = first_difference(comparable(base, patterns)[2], comparable(filled, patterns)[2],
-                                          ('default', 'filled'))
+        if deterministic or by_output:
+            difference = (first_difference(comparable(base, patterns)[2], comparable(filled, patterns)[2],
+                                           ('default', 'filled')) if deterministic else
+                          first_difference(comparable(zeros, patterns)[2], comparable(filled, patterns)[2],
+                                           ('zeros', 'filled')))
             if difference:
                 finding['first_difference'] = difference
         findings.append(finding)
@@ -698,7 +742,12 @@ def check_program(program, arguments):
                 finding['first_difference'] = difference
         findings.append(finding)
     note = None
-    if not deterministic:
+    if by_output:
+        # Ignoring the lines that vary would hide that finding
+        note = ('the output differs between two runs in the default order because it depends on memory never '
+                'written (see the finding), so the orders were compared by exit code only; check again once '
+                'the program writes that memory first')
+    elif not deterministic:
         note = ('the output differs between two runs in the default order (timings, addresses, unordered '
                 'output), so the orders were compared by exit code only; give ignore_patterns for the lines '
                 'that vary to compare the rest')
