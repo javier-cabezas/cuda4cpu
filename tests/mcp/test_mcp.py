@@ -311,12 +311,14 @@ __global__ void kernel(int *d)
         self.assertEqual(finding['locations'], [{'file': 'leak.cu', 'line': line}])
 
     def test_uninitialized_memory(self):
+        # A megabyte comes from mmap, as zeros: a few bytes may hold what the
+        # heap held before, which varies from run to run with Clang 18's libomp
         source = """#include <cstdio>
 __global__ void count(int *total) { atomicAdd(total, 1); }
 int main()
 {
     int *total;
-    cudaMallocManaged(&total, sizeof(int));
+    cudaMallocManaged(&total, 1 << 20);
     count<<<4, 64>>>(total);
     cudaDeviceSynchronize();
     std::printf("%d threads\\n", *total);
@@ -330,6 +332,28 @@ int main()
         self.assertIn('CUDA4CPU_INIT_MEMORY=0xff', finding['message'])
         # The default run's memory is usually zeros (256 threads), but malloc may fill it
         self.assertEqual(finding['first_difference']['filled'], '255 threads')
+
+    def test_uninitialized_memory_that_varies(self):
+        """Memory that holds something else on every run makes the output vary, but not when filled"""
+        source = """#include <cstdio>
+#include <unistd.h>
+int main()
+{
+    int *value;
+    cudaMallocManaged(&value, 1 << 20);
+    // Zeros stand for what an earlier allocation left
+    std::printf("%d\\n", *value == 0 ? int(getpid()) : *value);
+    cudaFree(value);
+    return 0;
+}
+"""
+        content = self.check(files={'varies.cu': source}, sanitizers=False)
+        self.assertFalse(content['deterministic_output'])
+        self.assertEqual(self.kinds(content), ['reads uninitialized memory'])
+        finding = content['findings'][0]
+        self.assertIn('the same on every run', finding['message'])
+        self.assertEqual(finding['first_difference']['filled'], '-1')
+        self.assertIn('init_memory:0xff again', [r['order'] for r in content['runs']])
 
     def test_undefined_behavior(self):
         kernel = '''

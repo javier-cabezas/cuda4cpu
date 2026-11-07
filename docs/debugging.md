@@ -214,7 +214,9 @@ short summary first.
      output that differs between the two runs (timings) is compared by exit
      code only, unless `ignore_patterns` removes the lines that vary. Then
      once more with `CUDA4CPU_INIT_MEMORY=0xff`: a result that changes reads
-     memory that was never written.
+     memory that was never written. When the output varies, the filled run is
+     repeated: output that varies only without the fill comes from such
+     memory, which held whatever earlier allocations left.
   3. The other orders (`reverse`, `warp_reverse`, and `random` and
      `warp_random` with each of `seeds`, 1 to 3 by default). A result that
      changes with the order is reported once, with the orders that changed

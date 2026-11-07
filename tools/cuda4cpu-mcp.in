@@ -448,8 +448,9 @@ TOOLS = [
                     'in several orders (forward, reverse, random with several seeds, warp orders): a result that '
                     'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
                     "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
-                    'direction, allocations never freed), runs once with new allocations filled with 0xff bytes '
-                    '(a changed result means reads of memory never written), and runs a build with '
+                    'direction, allocations never freed), runs with new allocations filled with 0xff bytes '
+                    '(a changed result, or output that varies only without the fill, means reads of memory never '
+                    'written), and runs a build with '
                     'AddressSanitizer and UBSan (out-of-bounds and use-after-free accesses, undefined behavior), '
                     'with source lines. The program should check '
                     'its own results or print them; output that varies between identical runs (timings) is '
@@ -649,10 +650,23 @@ def check_program(program, arguments):
     # New memory is mostly zeros, which hides reads of memory never written
     filled = execute(binary, program, arguments, dict(environment, CUDA4CPU_INIT_MEMORY='0xff'))
     record('init_memory:0xff', filled, 'the default order, with new allocations filled with 0xff bytes')
-    if (comparable(filled, patterns) != comparable(base, patterns) if deterministic else
+    # Output that varies may come from the memory itself, when the allocator
+    # returns what earlier allocations left (it does with Clang 18's libomp):
+    # then the filled runs agree with each other, and with neither unfilled run
+    steady_when_filled = False
+    if not deterministic:
+        filled_again = execute(binary, program, arguments, dict(environment, CUDA4CPU_INIT_MEMORY='0xff'))
+        record('init_memory:0xff again', filled_again, 'the default order, with new allocations filled with '
+                                                       '0xff bytes, once more, since the output varies without it')
+        filled_output = comparable(filled, patterns)
+        steady_when_filled = (comparable(filled_again, patterns) == filled_output and
+                              filled_output not in (comparable(base, patterns), comparable(again, patterns)))
+    if (comparable(filled, patterns) != comparable(base, patterns) if deterministic or steady_when_filled else
             (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal'])):
         if (filled['exit_code'], filled['signal']) != (base['exit_code'], base['signal']):
             how = f'ends with {how_it_ends(filled)} instead of {how_it_ends(base)}'
+        elif steady_when_filled:
+            how = 'makes the output the same on every run, while it varies without it'
         else:
             how = 'changes the output'
         finding = {'kind': 'reads uninitialized memory',
@@ -660,7 +674,7 @@ def check_program(program, arguments):
                    'meaning': 'the program reads memory from cudaMalloc, cudaMallocManaged or the like before '
                               'writing it. CUDA leaves new memory undefined; on the CPU it is often zeros, '
                               'and on a GPU anything.'}
-        if deterministic:
+        if deterministic or steady_when_filled:
             difference = first_difference(comparable(base, patterns)[2], comparable(filled, patterns)[2],
                                           ('default', 'filled'))
             if difference:
