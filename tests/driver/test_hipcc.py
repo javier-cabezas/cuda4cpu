@@ -20,8 +20,9 @@
 
 """The toolkit as a HIP installation: hipconfig's answers, hipcc's
 --version, HIPCC_COMPILE_FLAGS_APPEND, HIPCC_LINK_FLAGS_APPEND and
-HIPCC_VERBOSE, and a HIP program that the host compiler links from the
-toolkit's lib (-lamdhip64).
+HIPCC_VERBOSE, a HIP program that the host compiler links from the
+toolkit's lib (-lamdhip64), and HIP's AMD platform, which
+--cuda4cpu-platform=amd or CUDA4CPU_HIP_PLATFORM=amd choose.
 
 Usage: test_hipcc.py <toolkit> <a .hip program that returns 0> <C++ compiler>
 """
@@ -114,6 +115,95 @@ class Hipcc(unittest.TestCase):
             run = subprocess.run([os.path.join(work, 'program')], capture_output=True, text=True,
                                  env=dict(os.environ, LD_LIBRARY_PATH=os.path.join(TOOLKIT, 'lib')))
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+
+# A program that prints its platform, its GPU and a builtin's lane IDs
+AMD_PROGRAM = r"""
+#include <hip/hip_runtime.h>
+#include <cstdio>
+__global__ void lanes(unsigned *out)
+{
+#if defined(__HIP_PLATFORM_AMD__)
+    out[threadIdx.x] = __builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u));
+#else
+    out[threadIdx.x] = __lane_id();
+#endif
+}
+int main()
+{
+    hipDeviceProp_t prop;
+    hipGetDeviceProperties(&prop, 0);
+    unsigned out[64];
+    lanes<<<1, 64>>>(out);
+    unsigned sum = 0;
+    for (unsigned v : out)
+        sum += v;
+#if defined(__HIP_PLATFORM_AMD__) && defined(__AMDGCN__) && __AMDGCN_WAVEFRONT_SIZE__ == 32
+    std::printf("amd %s %d.%d %u\n", prop.gcnArchName, prop.major, prop.minor, sum);
+#elif defined(__HIP_PLATFORM_NVIDIA__)
+    std::printf("nvidia %u\n", sum);
+#endif
+}
+"""
+
+
+class AmdPlatform(unittest.TestCase):
+
+    def build_and_run(self, *options, env=None):
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'amd.hip'), 'w') as f:
+                f.write(AMD_PROGRAM)
+            result = tool('hipcc', *options, '-o', 'amd', 'amd.hip', cwd=work, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run = subprocess.run([os.path.join(work, 'amd')], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            return run.stdout.strip()
+
+    def test_switch_and_target(self):
+        # Two warps of lanes 0 to 31: 2 * 496
+        self.assertEqual(self.build_and_run('--cuda4cpu-platform=amd', '--offload-arch=gfx1102:xnack-'),
+                         'amd gfx1102 11.0 992')
+        self.assertEqual(self.build_and_run(env={'CUDA4CPU_HIP_PLATFORM': 'amd'}), 'amd gfx1100 11.0 992')
+        self.assertEqual(self.build_and_run('--offload-arch', 'gfx1151', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
+                         'amd gfx1151 11.5 992')
+
+    def test_cuda_sources_keep_cuda(self):
+        """The AMD platform's macros are for HIP sources: a CUDA file that
+        cuda4cpu-c++ compiles with them doesn't get them"""
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'plain.cu'), 'w') as f:
+                f.write('#ifdef __HIP_PLATFORM_AMD__\n#error AMD macros in a CUDA file\n#endif\nint main() {}\n')
+            result = tool('cuda4cpu-c++', '-c', 'plain.cu', cwd=work, env={'CUDA4CPU_HIP_PLATFORM': 'amd'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_program_defining_amd_stays_nvidia(self):
+        """A program that defines __HIP_PLATFORM_AMD__ itself compiles on the
+        NVIDIA platform, as before"""
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'self.hip'), 'w') as f:
+                f.write('#define __HIP_PLATFORM_AMD__ 1\n#include <hip/hip_runtime.h>\n'
+                        '#ifndef __HIP_PLATFORM_NVIDIA__\n#error not NVIDIA\n#endif\nint main() {}\n')
+            result = tool('hipcc', '-c', 'self.hip', cwd=work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nvidia_by_default(self):
+        # --offload-arch alone doesn't choose AMD's platform
+        self.assertEqual(self.build_and_run('--offload-arch=gfx1100'), 'nvidia 992')
+        self.assertEqual(self.build_and_run('--cuda4cpu-platform=nvidia', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
+                         'nvidia 992')
+
+    def test_errors(self):
+        cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 GPUs'),
+                 (['--cuda4cpu-platform=amd', '--offload-arch=gfx1100', '--offload-arch=gfx1101'], 'one AMD GPU'),
+                 (['--cuda4cpu-platform=amd', '-mwavefrontsize64'], '32-lane wavefronts'),
+                 (['--cuda4cpu-platform=amd', '--offload-arch'], 'needs a GPU'),
+                 (['--cuda4cpu-platform=intel'], 'unknown HIP platform')]
+        for options, message in cases:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as work:
+                # The options last, so that a trailing --offload-arch has no value
+                result = tool('hipcc', '-c', PROGRAM, *options, cwd=work)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
 
 
 if __name__ == '__main__':

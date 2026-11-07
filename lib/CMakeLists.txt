@@ -28,6 +28,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/vector_functions.h
             ${CUDA4CPU_INCLUDE_DIR}/vector_types.h
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/hip/amdgcn.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_common.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_cooperative_groups.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_ext.h

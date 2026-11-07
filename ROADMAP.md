@@ -24,6 +24,46 @@ one of these:
 
 Out of scope: inline PTX, the driver API, and graphics interop.
 
+## AMD GPU builtins
+
+HIP code that only runs on AMD GPUs reaches `__builtin_amdgcn_*` through
+`__HIP_PLATFORM_AMD__` and `__gfx1100__`-style branches, while cuda4cpu runs
+HIP as HIP's NVIDIA platform does. Clang lists 870 of these builtins, but real
+code uses few: rocPRIM 15, llama.cpp's HIP backend 23, rocWMMA 52 (most of
+them matrix operations), composable_kernel 362. Both GCC and Clang accept
+inline functions with those names. Without an AMD GPU, the semantics come from
+AMD's ISA manuals and LLVM's lowering.
+
+1. **An AMD platform emulating RDNA3 (`gfx1100`), with 32-lane wavefronts,
+   and the core builtins.** An explicit switch (`--cuda4cpu-platform=amd`, or
+   `CUDA4CPU_HIP_PLATFORM=amd`) defines `__HIP_PLATFORM_AMD__`, `__AMDGCN__`,
+   `__gfx1100__`, `__GFX11__` and a wavefront size of 32, and
+   `--offload-arch` picks the GPU. The builtins: dispatch IDs and sizes,
+   lane operations (`readfirstlane`, `readlane`, `writelane`, `ballot`,
+   `mbcnt`, `ds_bpermute`/`ds_permute`, `ds_swizzle`, `mov_dpp`/`update_dpp`,
+   `mov_dpp8`, `permlane*`, `wave_reduce_*`), synchronization (`s_barrier`,
+   `wave_barrier`, `fence`, `s_sleep`, clocks, and the scheduling hints, which
+   do nothing), integer and bit operations (`perm`, `alignbit`, `ubfe`/`sbfe`,
+   `lerp`, `sad`, the dot products), floating-point ones (`rcp`, `rsq`,
+   `sin`/`cos` in turns, `exp2`, `log`, `ldexp`, `frexp`, `fract`, `class`,
+   `fmed3`), and atomics. Then rocPRIM, built for `gfx1100`, in the
+   compatibility suite.
+2. **Conversions and buffer resources:** fp8/bf8 in AMD's FNUZ and the OCP
+   formats, stochastic rounding, scaled FP4/FP6/FP8 (OCP MX), and buffer
+   loads and stores with AMD's out-of-range rules.
+3. **WMMA on 32-lane wavefronts**, RDNA3's and RDNA4's (`_gfx12`), and
+   SWMMAC, with the hardware's lane layouts. They take `ext_vector_type`
+   vectors, so they need Clang as the host compiler. Then RDNA4 (`gfx1200`,
+   `gfx1201`) as a target, and rocWMMA's samples.
+4. **64-lane wavefronts and CDNA's MFMA** (`gfx90a`, `gfx942`, `gfx950`),
+   which need warps of 64 lanes in the scheduler: decided after step 3.
+
+Out of scope: graphics (`image_*`, ray tracing, interpolation), GFX12.5's
+cluster and tensor DMA builtins, and AMD's lockstep execution of a
+wavefront's lanes, which code that skips `__syncwarp()` relies on.
+`__has_builtin(__builtin_amdgcn_*)` stays false, since they aren't the
+compiler's builtins.
+
 ## Performance
 
 Measured on the compatibility suite (124.5 s in total for the programs that

@@ -94,7 +94,9 @@ shuffle(unsigned mask, T var, unsigned src_lane)
 
 //! Identifies a call site, from __FILE__ and __LINE__: user-space addresses
 //! fit in 47 bits. A literal has one address in a source file, and so in
-//! every copy of its code that the compiler inlines.
+//! every copy of its code that the compiler inlines. The scheduler reads the
+//! line back (fibers::runs_first), to complete __activemask() calls in the
+//! order a GPU runs them.
 inline uint64_t
 call_site(const char *file, unsigned line)
 {
