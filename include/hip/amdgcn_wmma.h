@@ -74,9 +74,10 @@ constexpr unsigned bits_of(kind k)
     return k == kind::f16 || k == kind::bf16 ? 16 : k == kind::int4 ? 4 : 8;
 }
 
-//! A lane's operands, in each warp's slots
+//! A lane's operands that other lanes read, in each warp's slots (a lane
+//! reads only its own C)
 struct operands {
-    unsigned char a[32], b[32], c[32];
+    unsigned char a[32], b[32];
     uint32_t index;
 };
 
@@ -147,16 +148,15 @@ inline int64_t saturate(int64_t acc)
 
 //! Gives the lane's operands to the warp's lanes that reach site with it,
 //! and returns compute's D from all of theirs
-template <typename D, typename A, typename B, typename C, typename F>
-inline D run(uint64_t site, const A &a, const B &b, const C &c, uint32_t index, F compute)
+template <typename D, typename A, typename B, typename F>
+inline D run(uint64_t site, const A &a, const B &b, uint32_t index, F compute)
 {
-    static_assert(sizeof(A) <= 32 && sizeof(B) <= 32 && sizeof(C) <= 32);
+    static_assert(sizeof(A) <= 32 && sizeof(B) <= 32);
     const uint32_t ex = exec(site);
     operands *const all = warp_operands();
     operands &mine = all[lane()];
     std::memcpy(mine.a, &a, sizeof a);
     std::memcpy(mine.b, &b, sizeof b);
-    std::memcpy(mine.c, &c, sizeof c);
     mine.index = index;
     __syncwarp(ex);
     const D d = compute(warp_call{all, ex}, lane());
@@ -434,7 +434,7 @@ inline v8i32 sparse_int(const warp_call &w, unsigned l, const v8i32 &c, unsigned
 //
 
 #define CUDA4CPU_MM_RUN(D, compute) \
-    cuda4cpu::detail::amdgcn::mm::run<D>(site, a, b, c, index, [&](const auto &w, unsigned l) { return compute; })
+    cuda4cpu::detail::amdgcn::mm::run<D>(site, a, b, index, [&](const auto &w, unsigned l) { return compute; })
 
 // RDNA3
 

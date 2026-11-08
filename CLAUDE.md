@@ -199,7 +199,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     gfx1201): no ISA manual could be fetched.
   - `amdgcn_wmma.h` (included by `amdgcn.h` with Clang): the WMMA and
     SWMMAC builtins of 32-lane wavefronts, phase 3. They're lane
-    operations: `mm::run` writes each lane's A, B, C and index to a
+    operations: `mm::run` writes each lane's A, B and index to a
     per-warp thread-local slot (`mm::operands`), `__syncwarp(exec)`, and
     each lane computes its 8 elements of D from every lane's (`warp_call`),
     then syncs again. The layouts are AMD's Matrix Instruction Calculator's
