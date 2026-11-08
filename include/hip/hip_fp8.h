@@ -67,30 +67,6 @@ typedef unsigned int __hip_fp8x4_storage_t;
 
 namespace detail {
 
-//! AMD's conversion to F: rounded to nearest even, but magnitudes above the
-//! largest finite value overflow first: to it with saturation, or else to
-//! infinity (E5M2) or NaN. Infinity is infinity in E5M2 and NaN in the other
-//! formats, even with saturation. NaN is 0x7f with x's sign, or 0x80 in
-//! FNUZ.
-template <float_format F>
-constexpr uint8_t amd_fp8_bits(double x, bool saturate)
-{
-    const uint64_t bits = std::bit_cast<uint64_t>(x);
-    const uint8_t sign = uint8_t((bits >> 56) & 0x80);
-    const uint8_t nan = F.specials == float_specials::fnuz ? uint8_t(0x80) : uint8_t(sign | 0x7f);
-    if (x != x)
-        return nan;
-    const double magnitude = std::bit_cast<double>(bits & 0x7fffffffffffffff);
-    if (magnitude == std::bit_cast<double>(uint64_t(0x7ff0000000000000)))
-        return F.specials == float_specials::ieee ? uint8_t(sign | F.infinity()) : nan;
-    if (magnitude > from_bits<F>(F.max_finite())) {
-        if (saturate)
-            return uint8_t(sign | F.max_finite());
-        return F.specials == float_specials::ieee ? uint8_t(sign | F.infinity()) : nan;
-    }
-    return uint8_t(to_bits<F>(x));
-}
-
 constexpr uint8_t amd_fp8_bits(double x, __hip_saturation_t saturate, __hip_fp8_interpretation_t interpretation)
 {
     const bool clip = saturate == __HIP_SATFINITE;

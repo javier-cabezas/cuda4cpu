@@ -6,7 +6,8 @@ CUDA runtime API, with 32-lane warps. HIP sources define
 apart takes its NVIDIA branch. That branch uses CUDA features cuda4cpu
 implements, where the AMD branch may assume 64-lane wavefronts or call AMD GPU
 builtins. Code written only for AMD GPUs can compile on
-[HIP's AMD platform](#hips-amd-platform) instead, emulating an RDNA3 GPU.
+[HIP's AMD platform](#hips-amd-platform) instead, emulating an RDNA3 or
+RDNA4 GPU.
 
 HIP projects build with `cuda4cpu-hipcc` in place of hipcc, and the toolkit
 directory (`<prefix>/lib/cuda4cpu/toolkit`) is laid out like a ROCm
@@ -103,19 +104,20 @@ Code written only for AMD GPUs takes branches under `__HIP_PLATFORM_AMD__`
 and the GPU's macros (`__gfx1100__`, `__GFX11__`), and calls AMD's GPU
 builtins (`__builtin_amdgcn_*`). `cuda4cpu-hipcc --cuda4cpu-platform=amd`
 (or `CUDA4CPU_HIP_PLATFORM=amd`, for any driver and HIP source) compiles it
-as for an RDNA3 GPU, whose wavefronts have 32 lanes, like cuda4cpu's warps:
+as for an RDNA3 or RDNA4 GPU, whose wavefronts have 32 lanes, like
+cuda4cpu's warps:
 
 ```sh
 cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
 ```
 
-- **The GPU:** `--offload-arch` names it among RDNA3's: `gfx1100` (the
+- **The GPU:** `--offload-arch` names it among RDNA3's, `gfx1100` (the
   default), `gfx1101`, `gfx1102`, `gfx1103`, `gfx1150`, `gfx1151`,
-  `gfx1152` and `gfx1153`. Without the switch, `--offload-arch` is ignored,
+  `gfx1152` and `gfx1153`, and RDNA4's, `gfx1200` and `gfx1201`. Without the switch, `--offload-arch` is ignored,
   as before. Wave64 (`-mwavefrontsize64`) and other GPUs are rejected.
 - **Macros:** `__HIP_PLATFORM_AMD__`, `__AMDGCN__`, `__AMDGPU__`, the
-  GPU's (`__gfx1101__`, `__GFX11__`, and `__amdgcn_processor__`, its name as
-  a string) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
+  GPU's (`__gfx1101__` and `__GFX11__`, or `__gfx1201__` and `__GFX12__`, and
+  `__amdgcn_processor__`, its name as a string) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
   instead of `__HIP_PLATFORM_NVIDIA__`. Builds that don't go through the
   drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` macro, and
   `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
@@ -148,7 +150,24 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
     `class`, `fmed3`, in their double, float and half forms where AMD has
     them;
   - atomics: `atomic_inc`, `atomic_dec`, and the floating-point adds,
-    minimums and maximums on global, flat and LDS memory.
+    minimums and maximums on global, flat and LDS memory;
+  - RDNA4's: the split barrier (`s_barrier_signal`, `s_barrier_wait`),
+    `s_sleep_var`, and the conversions between float and the OCP 8-bit
+    formats (FP8 is E4M3, BF8 E5M2): `cvt_f32_fp8`, `cvt_f32_bf8`,
+    `cvt_pk_fp8_f32`, `cvt_pk_bf8_f32`, the stochastic `cvt_sr_fp8_f32` and
+    `cvt_sr_bf8_f32`, and with Clang, `cvt_pk_f32_fp8` and `cvt_pk_f32_bf8`.
+    As AMD's software conversions in `hip_fp8.h`: to nearest even, but a
+    magnitude above the largest finite value overflows (to NaN, or BF8's
+    infinity), without saturation, and stochastic rounding adds the random
+    value's low bits to the significand before cutting it;
+  - buffer resources: `make_buffer_rsrc`, the raw buffer loads and stores
+    (`raw_buffer_load_b8` to `b32`, and with Clang `b64`, `b96` and `b128`)
+    and atomics (`raw_ptr_buffer_atomic_add_i32`, and the floating-point
+    adds, minimums and maximums). Out of range, a load reads zero and a
+    store or an atomic does nothing, with RDNA3's and RDNA4's rules for
+    each `OOB_SELECT` of the flags (bits 29:28), the scalar offset, and
+    wider accesses checked dword by dword, as AMD's rocjitsu simulator
+    has them. `ADD_TID_ENABLE` adds the lane as the index.
 
   Lane operations exchange the values of the lanes that take part (EXEC):
   those that reach the call together, as `__activemask()` groups them, so
@@ -178,10 +197,12 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   specializations in class scope), and so a cuda4cpu built with Clang, for
   one OpenMP runtime. The compatibility suite runs two of rocm-examples'
   rocPRIM programs that way.
-- **Not yet:** builtins with Clang's vector types (WMMA, packed
-  conversions, `fdot2`), fp8/fp4/fp6 conversions, buffer resources,
-  `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4,
-  and CDNA's 64-lane wavefronts and MFMA: see the
+- **Not yet:** the matrix builtins (WMMA, SWMMAC) and other builtins with
+  Clang's vector types (`fdot2`, packed 16-bit conversions), CDNA's FNUZ
+  fp8 conversions and the scaled FP4/FP6/FP8 ones (gfx942, gfx950), swizzled,
+  structured and formatted buffer accesses, scalar buffer loads,
+  `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4's
+  other new builtins (`permlane16_var`, ...), and CDNA's 64-lane wavefronts and MFMA: see the
   [roadmap](../ROADMAP.md#amd-gpu-builtins). AMD runs a wavefront's lanes
   in lockstep, and cuda4cpu doesn't: code that relies on it without
   `__syncwarp()` or `wave_barrier()` races, as it may under CUDA.

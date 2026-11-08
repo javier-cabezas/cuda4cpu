@@ -130,6 +130,7 @@
   "rocm-examples/reduction_v9": "passed",
   "rocm-examples/rocprim_block_sum": "passed",
   "rocm-examples/rocprim_device_sum": "passed",
+  "rocm-examples/rocprim_device_sum_rdna4": "passed",
   "rocm-examples/saxpy": "passed",
   "rocm-examples/sequential_kernel_execution": "passed",
   "rocm-examples/set_constant_memory": "passed",

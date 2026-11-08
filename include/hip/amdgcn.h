@@ -20,7 +20,7 @@
 
 // AMD's GPU builtins (__builtin_amdgcn_*), for HIP's AMD platform (see
 // hip_common.h), which hip_runtime.h includes this header on. They emulate an
-// RDNA3 GPU, whose wavefronts have 32 lanes, as cuda4cpu's warps.
+// RDNA3 or RDNA4 GPU, whose wavefronts have 32 lanes, as cuda4cpu's warps.
 //
 // - The lane operations exchange the values of the lanes that take part:
 //   EXEC, the lanes of the warp that reach the call together, as
@@ -36,8 +36,8 @@
 //   __has_builtin(__builtin_amdgcn_...) is false. Those that aren't templates
 //   have C linkage, as builtins do, for code that declares them
 //   (extern "C" void __builtin_amdgcn_s_sleep(int);, in rocPRIM).
-// - Those that take or return Clang's ext_vector_type vectors (the matrix
-//   operations, packed conversions) aren't here yet.
+// - Those that take or return Clang's ext_vector_type vectors are defined
+//   only for Clang (__clang__). The matrix operations aren't here yet.
 #pragma once
 
 #include <algorithm>
@@ -56,6 +56,7 @@
 #include <type_traits>
 
 #include "../cuda_runtime.h"
+#include "../cuda/small_float.hpp"
 
 namespace cuda4cpu::detail::amdgcn {
 
@@ -344,6 +345,7 @@ inline std::memory_order memory_order(unsigned order)
 
 //! The name that the divergent barrier check gives s_barrier
 extern "C" inline constexpr char s_barrier_name[] = "__builtin_amdgcn_s_barrier()";
+extern "C" inline constexpr char s_barrier_wait_name[] = "__builtin_amdgcn_s_barrier_wait()";
 
 //! HSA's kernel dispatch packet, which dispatch_ptr points to
 struct dispatch_packet {
@@ -1092,6 +1094,329 @@ extern "C" inline float __builtin_amdgcn_ds_fmaxf(float *p, float value, int, in
 {
     return cuda4cpu::detail::amdgcn::atomic_update(p, [&](float old) { return std::fmax(old, value); });
 }
+
+//
+// RDNA4's synchronization: a barrier split in two, signaled by a wave and
+// then waited for. Waiting for every thread of the block is as strong.
+//
+
+extern "C" inline void __builtin_amdgcn_s_barrier_signal(int) {}
+
+extern "C" inline void __builtin_amdgcn_s_barrier_wait(short)
+{
+    cuda4cpu::thread_block::syncthreads(cuda4cpu::detail::amdgcn::s_barrier_wait_name, 0);
+}
+
+extern "C" inline void __builtin_amdgcn_s_sleep_var(unsigned int)
+{
+    cuda4cpu::thread_block::interleave();
+}
+
+//
+// Conversions between float and the OCP 8-bit formats, which RDNA4 (and
+// gfx950) converts in hardware: FP8 is E4M3 and BF8 E5M2, four to a 32-bit
+// register. As AMD's software conversions, which hip_fp8.h replaces with
+// these: to nearest even, but a magnitude above the largest finite value
+// overflows, to NaN (FP8) or infinity (BF8), without saturation. NaN is
+// 0x7f with the sign, and FP8 has no infinity either.
+//
+
+namespace cuda4cpu::detail::amdgcn {
+
+//! x rounded stochastically to F, as V_CVT_SR_FP8_F32 and AMD's software
+//! conversion (rocBLAS's) do: x's significand, in units of float's
+//! mantissa (shifted right, losing bits, where F's numbers are subnormal),
+//! plus rng's bits below F's mantissa, cut to F's. NaN, infinity and
+//! overflow as to nearest; a carry past F's largest exponent gives the
+//! same NaN or infinity.
+template <float_format F>
+constexpr uint8_t fp8_stochastic(float x, uint32_t rng)
+{
+    const uint32_t bits = std::bit_cast<uint32_t>(x);
+    const uint8_t sign = uint8_t((bits >> 24) & 0x80);
+    const uint32_t magnitude = bits & 0x7fffffff;
+    if (magnitude >= 0x7f800000 || double(std::bit_cast<float>(magnitude)) > ::cuda4cpu::detail::from_bits<F>(F.max_finite()))
+        return amd_fp8_bits<F>(double(x), false);
+    constexpr int wm = F.mantissa_bits, drop = 23 - wm;
+    constexpr int subnormal_exponent = 1 - F.bias;         // F's subnormals' exponent
+    const int field = int(magnitude >> 23);
+    int exponent = field == 0 ? -126 : field - 127;
+    uint64_t significand = magnitude & 0x7fffff;
+    int shift = 0;
+    if (field == 0)
+        shift = subnormal_exponent + 126;                 // float's subnormals: zero here
+    else {
+        significand |= uint64_t(1) << 23;
+        if (exponent <= subnormal_exponent)
+            shift = subnormal_exponent - exponent;
+    }
+    significand = shift < 64 ? significand >> shift : 0;
+    const bool normal = (significand >> 23) & 1;
+    int f8_exponent = exponent + shift + F.bias - (normal ? 0 : 1);
+    significand += rng & ((uint32_t(1) << drop) - 1);
+    if (f8_exponent == 0) {
+        if ((significand >> 23) & 1)
+            f8_exponent = 1;                              // carried into the normal numbers
+    } else if ((significand >> 24) & 1) {
+        significand >>= 1;
+        ++f8_exponent;
+    }
+    significand >>= drop;
+    if (f8_exponent > (1 << F.exponent_bits) - 1)
+        return F.specials == float_specials::ieee ? uint8_t(sign | F.infinity()) : uint8_t(sign | 0x7f);
+    if (f8_exponent == 0 && significand == 0)
+        return sign;
+    return uint8_t(sign | (f8_exponent << wm) | (significand & ((1u << wm) - 1)));
+}
+
+template <float_format F>
+constexpr uint8_t fp8_nearest(float x)
+{
+    return amd_fp8_bits<F>(double(x), false);
+}
+
+//! old with its byte (or 16-bit word) index replaced by value
+constexpr int replace_bits(int old, uint32_t value, unsigned index, unsigned width)
+{
+    const uint32_t mask = ((uint32_t(1) << width) - 1) << (index * width);
+    return int((uint32_t(old) & ~mask) | ((value << (index * width)) & mask));
+}
+
+}
+
+//! Byte byte_sel of src, as a float
+extern "C" inline float __builtin_amdgcn_cvt_f32_fp8(int src, int byte_sel)
+{
+    return float(cuda4cpu::detail::from_bits<cuda4cpu::detail::e4m3_format>((uint32_t(src) >> (8 * (byte_sel & 3))) & 0xff));
+}
+
+extern "C" inline float __builtin_amdgcn_cvt_f32_bf8(int src, int byte_sel)
+{
+    return float(cuda4cpu::detail::from_bits<cuda4cpu::detail::e5m2_format>((uint32_t(src) >> (8 * (byte_sel & 3))) & 0xff));
+}
+
+//! a and b in the low and high byte of old's low word, or high word with word_sel
+extern "C" inline int __builtin_amdgcn_cvt_pk_fp8_f32(float a, float b, int old, bool word_sel)
+{
+    using namespace cuda4cpu::detail;
+    const uint32_t pair = amdgcn::fp8_nearest<e4m3_format>(a) | uint32_t(amdgcn::fp8_nearest<e4m3_format>(b)) << 8;
+    return amdgcn::replace_bits(old, pair, word_sel ? 1 : 0, 16);
+}
+
+extern "C" inline int __builtin_amdgcn_cvt_pk_bf8_f32(float a, float b, int old, bool word_sel)
+{
+    using namespace cuda4cpu::detail;
+    const uint32_t pair = amdgcn::fp8_nearest<e5m2_format>(a) | uint32_t(amdgcn::fp8_nearest<e5m2_format>(b)) << 8;
+    return amdgcn::replace_bits(old, pair, word_sel ? 1 : 0, 16);
+}
+
+//! a rounded stochastically with rng, in byte byte_sel of old
+extern "C" inline int __builtin_amdgcn_cvt_sr_fp8_f32(float a, int rng, int old, int byte_sel)
+{
+    using namespace cuda4cpu::detail;
+    return amdgcn::replace_bits(old, amdgcn::fp8_stochastic<e4m3_format>(a, uint32_t(rng)), unsigned(byte_sel) & 3, 8);
+}
+
+extern "C" inline int __builtin_amdgcn_cvt_sr_bf8_f32(float a, int rng, int old, int byte_sel)
+{
+    using namespace cuda4cpu::detail;
+    return amdgcn::replace_bits(old, amdgcn::fp8_stochastic<e5m2_format>(a, uint32_t(rng)), unsigned(byte_sel) & 3, 8);
+}
+
+#ifdef __clang__
+//! The two bytes of src's low word (or high word, with word_sel), as floats
+extern "C" inline float __attribute__((ext_vector_type(2))) __builtin_amdgcn_cvt_pk_f32_fp8(int src, bool word_sel)
+{
+    const int shift = word_sel ? 16 : 0;
+    return {__builtin_amdgcn_cvt_f32_fp8(src >> shift, 0), __builtin_amdgcn_cvt_f32_fp8(src >> shift, 1)};
+}
+
+extern "C" inline float __attribute__((ext_vector_type(2))) __builtin_amdgcn_cvt_pk_f32_bf8(int src, bool word_sel)
+{
+    const int shift = word_sel ? 16 : 0;
+    return {__builtin_amdgcn_cvt_f32_bf8(src >> shift, 0), __builtin_amdgcn_cvt_f32_bf8(src >> shift, 1)};
+}
+#endif
+
+//
+// Buffer resources: a base address, a stride, a size (NUM_RECORDS) and
+// flags, which the raw buffer loads, stores and atomics address with an
+// offset and a scalar offset, checking each access against the size. Out of
+// range, a load reads zero, and a store or an atomic does nothing. The rules
+// are RDNA3's and RDNA4's, by OOB_SELECT (flags' bits 29:28), as AMD's
+// rocjitsu simulator has them, checked against those GPUs:
+//
+// - 3: in range if the access ends within NUM_RECORDS minus the scalar offset
+// - 0: if NUM_RECORDS is nonzero and the access ends within the stride
+// - 1: if the index (the lane, with ADD_TID_ENABLE, else 0) is below NUM_RECORDS
+// - 2: if NUM_RECORDS is nonzero
+//
+// The 64-, 96- and 128-bit accesses are checked dword by dword.
+// ADD_TID_ENABLE (bit 23) adds the lane times the stride to the address;
+// swizzled buffers (the stride's top bits) aren't supported. The cache
+// policy argument only matters to the hardware.
+//
+
+//! The 4-dword descriptor, as the hardware holds it
+struct __amdgpu_buffer_rsrc_t {
+    uint32_t word[4];
+};
+
+namespace cuda4cpu::detail::amdgcn {
+
+//! The address of a raw access of count elements of size bytes, and which
+//! of them are in range (bit i for element i)
+struct buffer_access {
+    unsigned char *address;
+    unsigned in_range;
+};
+
+inline buffer_access buffer_address(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, unsigned size, unsigned count)
+{
+    const uint64_t base = rsrc.word[0] | (uint64_t(rsrc.word[1] & 0xffff) << 32);
+    const uint32_t stride = (rsrc.word[1] >> 16) & 0x3fff;
+    uint32_t records = rsrc.word[2];
+    const uint32_t flags = rsrc.word[3];
+    const unsigned mode = (flags >> 28) & 3;
+    const uint32_t index = (flags >> 23) & 1 ? lane() : 0;
+    if (mode == 3)
+        records -= std::min(records, uint32_t(soffset));
+    unsigned in_range = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        const uint64_t end = uint64_t(uint32_t(offset)) + uint64_t(i + 1) * size;
+        bool valid;
+        switch (mode) {
+        case 0:  valid = index < records && end <= stride; break;
+        case 1:  valid = index < records; break;
+        case 2:  valid = records != 0; break;
+        default: valid = end <= records; break;
+        }
+        in_range |= unsigned(valid) << i;
+    }
+    // Pointers are 48 bits, sign-extended
+    const uint64_t address = base + uint64_t(index) * stride + uint32_t(offset) + uint32_t(soffset);
+    return {reinterpret_cast<unsigned char *>(uintptr_t(int64_t(address << 16) >> 16)), in_range};
+}
+
+//! count dwords (or one element of size bytes) at the resource's offset;
+//! zero out of range
+template <typename T>
+inline T buffer_load(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset)
+{
+    constexpr unsigned size = sizeof(T) < 4 ? sizeof(T) : 4, count = sizeof(T) / size;
+    const buffer_access access = buffer_address(rsrc, offset, soffset, size, count);
+    unsigned char bytes[sizeof(T)] = {};
+    for (unsigned i = 0; i < count; ++i)
+        if ((access.in_range >> i) & 1)
+            std::memcpy(bytes + i * size, access.address + i * size, size);
+    T value;
+    std::memcpy(&value, bytes, sizeof(T));
+    return value;
+}
+
+template <typename T>
+inline void buffer_store(T value, __amdgpu_buffer_rsrc_t rsrc, int offset, int soffset)
+{
+    constexpr unsigned size = sizeof(T) < 4 ? sizeof(T) : 4, count = sizeof(T) / size;
+    const buffer_access access = buffer_address(rsrc, offset, soffset, size, count);
+    unsigned char bytes[sizeof(T)];
+    std::memcpy(bytes, &value, sizeof(T));
+    for (unsigned i = 0; i < count; ++i)
+        if ((access.in_range >> i) & 1)
+            std::memcpy(access.address + i * size, bytes + i * size, size);
+}
+
+//! An atomic update of the value at the resource's offset: the old value,
+//! or zero out of range
+template <typename T, typename F>
+inline T buffer_atomic(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, F update)
+{
+    const buffer_access access = buffer_address(rsrc, offset, soffset, sizeof(T), 1);
+    if (!access.in_range)
+        return T();
+    return atomic_update(reinterpret_cast<T *>(access.address), update);
+}
+
+}
+
+//! A resource for the memory at p: its size (num_records, in bytes for raw
+//! accesses), stride and flags (OOB_SELECT and the rest of the descriptor's
+//! last dword), laid out as LLVM builds it for GPUs before gfx1250
+extern "C" inline __amdgpu_buffer_rsrc_t __builtin_amdgcn_make_buffer_rsrc(void *p, short stride, uint64_t num_records,
+                                                                         int flags)
+{
+    const uint64_t address = reinterpret_cast<uintptr_t>(p);
+    return {{uint32_t(address), uint32_t((address >> 32) & 0xffff) | (uint32_t(uint16_t(stride)) << 16),
+             uint32_t(num_records), uint32_t(flags)}};
+}
+
+extern "C" inline unsigned char __builtin_amdgcn_raw_buffer_load_b8(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)
+{
+    return cuda4cpu::detail::amdgcn::buffer_load<unsigned char>(rsrc, offset, soffset);
+}
+
+extern "C" inline unsigned short __builtin_amdgcn_raw_buffer_load_b16(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)
+{
+    return cuda4cpu::detail::amdgcn::buffer_load<unsigned short>(rsrc, offset, soffset);
+}
+
+extern "C" inline unsigned int __builtin_amdgcn_raw_buffer_load_b32(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)
+{
+    return cuda4cpu::detail::amdgcn::buffer_load<unsigned int>(rsrc, offset, soffset);
+}
+
+extern "C" inline void __builtin_amdgcn_raw_buffer_store_b8(unsigned char value, __amdgpu_buffer_rsrc_t rsrc, int offset,
+                                                            int soffset, int)
+{
+    cuda4cpu::detail::amdgcn::buffer_store(value, rsrc, offset, soffset);
+}
+
+extern "C" inline void __builtin_amdgcn_raw_buffer_store_b16(unsigned short value, __amdgpu_buffer_rsrc_t rsrc, int offset,
+                                                             int soffset, int)
+{
+    cuda4cpu::detail::amdgcn::buffer_store(value, rsrc, offset, soffset);
+}
+
+extern "C" inline void __builtin_amdgcn_raw_buffer_store_b32(unsigned int value, __amdgpu_buffer_rsrc_t rsrc, int offset,
+                                                             int soffset, int)
+{
+    cuda4cpu::detail::amdgcn::buffer_store(value, rsrc, offset, soffset);
+}
+
+#ifdef __clang__
+#define CUDA4CPU_BUFFER_VECTOR(bits, n)                                                                              \
+    extern "C" inline unsigned int __attribute__((ext_vector_type(n)))                                              \
+    __builtin_amdgcn_raw_buffer_load_b##bits(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)              \
+    {                                                                                                                \
+        return cuda4cpu::detail::amdgcn::buffer_load<unsigned int __attribute__((ext_vector_type(n)))>(rsrc, offset, \
+                                                                                                        soffset);    \
+    }                                                                                                                \
+    extern "C" inline void __builtin_amdgcn_raw_buffer_store_b##bits(                                                \
+        unsigned int __attribute__((ext_vector_type(n))) value, __amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, \
+        int)                                                                                                         \
+    {                                                                                                                \
+        cuda4cpu::detail::amdgcn::buffer_store(value, rsrc, offset, soffset);                                       \
+    }
+CUDA4CPU_BUFFER_VECTOR(64, 2)
+CUDA4CPU_BUFFER_VECTOR(96, 3)
+CUDA4CPU_BUFFER_VECTOR(128, 4)
+#undef CUDA4CPU_BUFFER_VECTOR
+#endif
+
+#define CUDA4CPU_BUFFER_ATOMIC(name, T, update)                                                                   \
+    extern "C" inline T __builtin_amdgcn_raw_ptr_buffer_atomic_##name(T value, __amdgpu_buffer_rsrc_t rsrc,      \
+                                                                       int offset, int soffset, int)             \
+    {                                                                                                             \
+        return cuda4cpu::detail::amdgcn::buffer_atomic<T>(rsrc, offset, soffset, [&](T old) { return update; }); \
+    }
+CUDA4CPU_BUFFER_ATOMIC(add_i32, int, int(uint32_t(old) + uint32_t(value)))
+CUDA4CPU_BUFFER_ATOMIC(fadd_f32, float, old + value)
+CUDA4CPU_BUFFER_ATOMIC(fadd_f64, double, old + value)
+CUDA4CPU_BUFFER_ATOMIC(fmin_f32, float, std::fmin(old, value))
+CUDA4CPU_BUFFER_ATOMIC(fmax_f32, float, std::fmax(old, value))
+CUDA4CPU_BUFFER_ATOMIC(fmin_f64, double, std::fmin(old, value))
+CUDA4CPU_BUFFER_ATOMIC(fmax_f64, double, std::fmax(old, value))
+#undef CUDA4CPU_BUFFER_ATOMIC
 
 // The lane operations' macros, which pass the call's place: defined last,
 // so that they don't rename the functions above
