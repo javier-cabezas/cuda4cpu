@@ -138,7 +138,9 @@ int main()
     unsigned sum = 0;
     for (unsigned v : out)
         sum += v;
-#if defined(__HIP_PLATFORM_AMD__) && defined(__AMDGCN__) && __AMDGCN_WAVEFRONT_SIZE__ == 32
+#if defined(__HIP_PLATFORM_AMD__) && defined(__AMDGCN__) && __AMDGCN_WAVEFRONT_SIZE__ == 32 && defined(__GFX12__)
+    std::printf("amd %s %d.%d %u rdna4\n", prop.gcnArchName, prop.major, prop.minor, sum);
+#elif defined(__HIP_PLATFORM_AMD__) && defined(__AMDGCN__) && __AMDGCN_WAVEFRONT_SIZE__ == 32 && defined(__GFX11__)
     std::printf("amd %s %d.%d %u\n", prop.gcnArchName, prop.major, prop.minor, sum);
 #elif defined(__HIP_PLATFORM_NVIDIA__)
     std::printf("nvidia %u\n", sum);
@@ -166,6 +168,11 @@ class AmdPlatform(unittest.TestCase):
         self.assertEqual(self.build_and_run(env={'CUDA4CPU_HIP_PLATFORM': 'amd'}), 'amd gfx1100 11.0 992')
         self.assertEqual(self.build_and_run('--offload-arch', 'gfx1151', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
                          'amd gfx1151 11.5 992')
+        # RDNA4
+        self.assertEqual(self.build_and_run('--cuda4cpu-platform=amd', '--offload-arch=gfx1201'),
+                         'amd gfx1201 12.0 992 rdna4')
+        self.assertEqual(self.build_and_run('--cuda4cpu-platform=amd', '--offload-arch=gfx1200'),
+                         'amd gfx1200 12.0 992 rdna4')
 
     def test_cuda_sources_keep_cuda(self):
         """The AMD platform's macros are for HIP sources: a CUDA file that
@@ -209,7 +216,7 @@ class AmdPlatform(unittest.TestCase):
             self.assertEqual(run.stdout.strip(), '14', run.stderr)
 
     def test_errors(self):
-        cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 GPUs'),
+        cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 and RDNA4 GPUs'),
                  (['--cuda4cpu-platform=amd', '--offload-arch=gfx1100', '--offload-arch=gfx1101'], 'one AMD GPU'),
                  (['--cuda4cpu-platform=amd', '-mwavefrontsize64'], '32-lane wavefronts'),
                  (['--cuda4cpu-platform=amd', '--offload-arch'], 'needs a GPU'),

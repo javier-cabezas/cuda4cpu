@@ -243,6 +243,15 @@ add_test(NAME hip_amdgcn COMMAND hip_amdgcn)
 # Lanes in branches must never meet at different warp operations
 set_tests_properties(hip_amdgcn PROPERTIES ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=error")
 
+# The same as an RDNA4 GPU, gfx1201: conversions, buffer resources and the
+# split barrier
+add_executable(hip_amdgcn_rdna4)
+set_target_properties(hip_amdgcn_rdna4 PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_hip_sources(hip_amdgcn_rdna4 hip/amdgcn_rdna4.hip)
+target_compile_definitions(hip_amdgcn_rdna4 PRIVATE __HIP_PLATFORM_AMD__=1 __gfx1201__=1)
+add_test(NAME hip_amdgcn_rdna4 COMMAND hip_amdgcn_rdna4)
+set_tests_properties(hip_amdgcn_rdna4 PROPERTIES ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=error")
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/test_rewrite.py

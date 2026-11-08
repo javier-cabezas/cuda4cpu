@@ -111,9 +111,10 @@ HIPCC_DROPPED_PREFIXES = ('--offload-arch=', '--amdgpu-target=', '--cuda-gpu-arc
                           '--hip-path=', '--hip-device-lib', '--rocm-device-lib-path=', '-fgpu-', '-fno-gpu-',
                           '-mcode-object-version=', '-munsafe-fp-atomics', '-mno-unsafe-fp-atomics',
                           '-mwavefrontsize64', '-mno-wavefrontsize64', '-mcumode', '-mno-cumode')
-# The AMD GPUs that the AMD platform emulates: RDNA3's, whose wavefronts have
-# 32 lanes, as cuda4cpu's warps
-AMD_TARGETS = ('gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153')
+# The AMD GPUs that the AMD platform emulates: RDNA3's and RDNA4's, whose
+# wavefronts have 32 lanes, as cuda4cpu's warps
+AMD_TARGETS = ('gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153',
+               'gfx1200', 'gfx1201')
 AMD_DEFAULT_TARGET = 'gfx1100'
 
 HIPCC_DROPPED = {'--hip-link', '--offload-device-only', '--offload-host-only', '-fhip-new-launch-api',
@@ -404,8 +405,9 @@ def hip_platform(argv):
         return argv, [], 'cuda4cpu emulates one AMD GPU at a time: give one --offload-arch'
     target = targets[0]
     if target not in AMD_TARGETS:
-        return argv, [], (f'cuda4cpu emulates RDNA3 GPUs ({", ".join(AMD_TARGETS)}), not {target}')
-    defines = ['-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__=1', f'-D__{target}__=1', '-D__GFX11__=1',
+        return argv, [], (f'cuda4cpu emulates RDNA3 and RDNA4 GPUs ({", ".join(AMD_TARGETS)}), not {target}')
+    family = '-D__GFX12__=1' if target.startswith('gfx12') else '-D__GFX11__=1'
+    defines = ['-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__=1', f'-D__{target}__=1', family,
                f'-D__amdgcn_processor__="{target}"',
                '-D__AMDGCN__=1', '-D__AMDGPU__=1', '-D__AMDGCN_WAVEFRONT_SIZE__=32', '-D__AMDGCN_WAVEFRONT_SIZE=32']
     return rest, defines, None

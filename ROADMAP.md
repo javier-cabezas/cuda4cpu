@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 135 of 161 pass today; most of the rest need
+shows what blocks real programs. 136 of 162 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -49,15 +49,19 @@ AMD's ISA manuals and LLVM's lowering.
    `fmed3`), and atomics. Then rocPRIM, built for `gfx1100`, in the
    compatibility suite. Done: rocPRIM 7.2.4's block and device sums pass,
    built with Clang.
-2. **Conversions and buffer resources:** fp8/bf8 in AMD's FNUZ and the OCP
-   formats, stochastic rounding, scaled FP4/FP6/FP8 (OCP MX), and buffer
-   loads and stores with AMD's out-of-range rules.
+2. **RDNA4 (`gfx1200`, `gfx1201`) as a target, its conversions and buffer
+   resources:** the conversions between float and the OCP fp8/bf8 formats,
+   with stochastic rounding, which only RDNA4 and CDNA have (AMD's code
+   calls them on no RDNA3 GPU), the split barrier, and buffer loads, stores
+   and atomics with AMD's out-of-range rules. Done: rocPRIM's device sum
+   passes as `gfx1201` too.
 3. **WMMA on 32-lane wavefronts**, RDNA3's and RDNA4's (`_gfx12`), and
    SWMMAC, with the hardware's lane layouts. They take `ext_vector_type`
-   vectors, so they need Clang as the host compiler. Then RDNA4 (`gfx1200`,
-   `gfx1201`) as a target, and rocWMMA's samples.
-4. **64-lane wavefronts and CDNA's MFMA** (`gfx90a`, `gfx942`, `gfx950`),
-   which need warps of 64 lanes in the scheduler: decided after step 3.
+   vectors, so they need Clang as the host compiler. Then rocWMMA's samples.
+4. **64-lane wavefronts and CDNA** (`gfx90a`, `gfx942`, `gfx950`): MFMA,
+   and the conversions only CDNA has, fp8/bf8 in AMD's FNUZ formats
+   (`gfx942`) and the scaled FP4/FP6/FP8 ones (OCP MX, `gfx950`). They need
+   warps of 64 lanes in the scheduler: decided after step 3.
 
 Out of scope: graphics (`image_*`, ray tracing, interpolation), GFX12.5's
 cluster and tensor DMA builtins, and AMD's lockstep execution of a

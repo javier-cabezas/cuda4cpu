@@ -75,7 +75,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   are "compute in double, round once", which is correctly rounded for these
   formats, except fused multiply-adds: `fma_bits` rounds the double sum to
   odd first (two-sum gives its error), or a sum on a tie of F after rounding
-  to double would round the wrong way.
+  to double would round the wrong way. `amd_fp8_bits<F>` is AMD's rounding
+  (overflow beyond the largest finite value before rounding), shared by
+  `hip_fp8.h` and `amdgcn.h`.
 - `include/cuda_fp16.h` and `include/cuda_bf16.h`: `__half`/`__half2` and
   `__nv_bfloat16`/`__nv_bfloat162` and their intrinsics, in `cuda_api`, on
   `small_float.hpp`. Each holds its format's bits. The arithmetic,
@@ -154,8 +156,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `__CUDACC__`. With `__HIP_PLATFORM_AMD__` (the drivers'
     `--cuda4cpu-platform=amd` or `CUDA4CPU_HIP_PLATFORM=amd`, which pass all
     the macros; `hip_platform` in the driver), HIP's AMD platform instead:
-    an RDNA3 GPU, `gfx1100` unless a `__gfx11xx__` macro names another
-    (`--offload-arch`), with `__AMDGCN__`, `__GFX11__`,
+    an RDNA3 or RDNA4 GPU, `gfx1100` unless a `__gfx11xx__` or
+    `__gfx120x__` macro names another (`--offload-arch`), with `__AMDGCN__`,
+    `__GFX11__` or `__GFX12__`,
     `__AMDGCN_WAVEFRONT_SIZE__` 32 and `CUDA4CPU_AMDGPU_TARGET`, which
     `hipGetDeviceProperties` reports as `gcnArchName` (and `major`/`minor`),
     and `__amdgcn_processor__`: rocPRIM 7.2's `trampoline_kernel` runs its
@@ -185,6 +188,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `extern "C" void __builtin_amdgcn_s_sleep(int);`. The `__hip_atomic_*`
     functions (`__HIP_MEMORY_SCOPE_*`) are defined only when
     `!__has_builtin(__hip_atomic_load)`: Clang has them as builtins.
+    Phase 2 added RDNA4's builtins: the split barrier, and the OCP fp8/bf8
+    conversions (`fp8_stochastic` is rocBLAS's algorithm, which AMD's
+    `hip_fp8.h` uses where the GPU has no instruction), and buffer
+    resources: `__amdgpu_buffer_rsrc_t` is a struct of the descriptor's 4
+    dwords, as `make_buffer_rsrc` lays them out in LLVM, and
+    `buffer_address` applies the out-of-range rules of AMD's rocjitsu
+    (`addr_calc_buffer.h` in ROCm/rocm-systems, qualified on gfx1100 and
+    gfx1201): no ISA manual could be fetched.
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -543,7 +554,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     program the host compiler links with `-L<toolkit>/lib -lamdhip64`, and
     HIP's AMD platform: the switch and the environment variable, the GPU
     `--offload-arch` names, NVIDIA's by default, and the errors (another
-    GPU, two, wave64, an unknown platform), and a launch in a header that
+    GPU, two, wave64, an unknown platform), RDNA4's names, and a launch in a header that
     `-I` finds.
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
@@ -574,7 +585,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     floating-point and atomic builtins, and what else rocPRIM uses:
     `hip_bfloat16`, the `unsigned long` atomics (called as `::atomicAdd`),
     `__hip_atomic_*`, `HIP_vector_type`, `hipStreamGetDevice` and
-    `__amdgcn_processor__`.
+    `__amdgcn_processor__`. `hip_amdgcn_rdna4` (`hip/amdgcn_rdna4.hip`,
+    `__gfx1201__`): RDNA4's macros and properties, the split barrier, the
+    fp8/bf8 conversions against references written apart (every code
+    decoded from its widths, nearest by search, stochastic rounding's closed
+    form, on every code, midpoint and neighbor and 20000 random floats), and
+    buffer resources in each out-of-range mode, with the scalar offset,
+    dword by dword (Clang), the lane as index, stores and atomics.
 
 ## How execution works (read before touching `launch.hpp`)
 

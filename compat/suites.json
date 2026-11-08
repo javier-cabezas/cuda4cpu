@@ -498,6 +498,25 @@
           "expect": "Reduced summation result: 42"
         },
         {
+          "dir": "Libraries/rocPRIM/device_sum",
+          "name": "rocprim_device_sum_rdna4",
+          "requires": [
+            "rocPRIM"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "--offload-arch=gfx1201",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "Reduced summation result: 42"
+        },
+        {
           "dir": "HIP-Basic/assembly_to_executable"
         },
         {

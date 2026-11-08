@@ -25,9 +25,9 @@
 // use wavefronts of 64 lanes or AMD GPU builtins.
 //
 // With __HIP_PLATFORM_AMD__ defined (cuda4cpu-hipcc --cuda4cpu-platform=amd,
-// which defines all of these), it emulates an RDNA3 GPU instead: gfx1100,
-// unless one of the other __gfx11xx__ macros names the GPU, with 32-lane
-// wavefronts and AMD's builtins (amdgcn.h). __HIP_DEVICE_COMPILE__ stays
+// which defines all of these), it emulates an RDNA3 or RDNA4 GPU instead:
+// gfx1100, unless a __gfx11xx__ or __gfx120x__ macro names another, with
+// 32-lane wavefronts and AMD's builtins (amdgcn.h). __HIP_DEVICE_COMPILE__ stays
 // undefined, as __CUDA_ARCH__ does: host and device code compile together.
 
 #pragma once
@@ -56,6 +56,10 @@
 #define CUDA4CPU_AMDGPU_TARGET "gfx1152"
 #elif defined(__gfx1153__)
 #define CUDA4CPU_AMDGPU_TARGET "gfx1153"
+#elif defined(__gfx1200__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1200"
+#elif defined(__gfx1201__)
+#define CUDA4CPU_AMDGPU_TARGET "gfx1201"
 #else
 #ifndef __gfx1100__
 #define __gfx1100__ 1
@@ -63,7 +67,12 @@
 #define CUDA4CPU_AMDGPU_TARGET "gfx1100"
 #endif
 
-#ifndef __GFX11__
+// RDNA4's family, or RDNA3's
+#if defined(__gfx1200__) || defined(__gfx1201__)
+#ifndef __GFX12__
+#define __GFX12__ 1
+#endif
+#elif !defined(__GFX11__)
 #define __GFX11__ 1
 #endif
 //! The GPU's name, which Clang defines when it compiles for one: rocPRIM
