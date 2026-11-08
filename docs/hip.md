@@ -119,8 +119,8 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   GPU's (`__gfx1101__` and `__GFX11__`, or `__gfx1201__` and `__GFX12__`, and
   `__amdgcn_processor__`, its name as a string) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
   instead of `__HIP_PLATFORM_NVIDIA__`. Builds that don't go through the
-  drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` macro, and
-  `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
+  drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` or
+  `__gfx120x__` macro, and `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
   since host and device code compile together: define it
   (`-D__HIP_DEVICE_COMPILE__=1`) to compile code under it, such as
   rocPRIM's DPP paths, but code under `#ifndef __HIP_DEVICE_COMPILE__` then
