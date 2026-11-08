@@ -285,6 +285,7 @@ __global__ void buffers(uint32_t *memory, uint32_t *out)
     out[n++] = std::bit_cast<uint32_t>(__builtin_amdgcn_raw_ptr_buffer_atomic_fmax_f32(7.5f, r, 4, 0, 0));
 #ifdef __clang__
     typedef unsigned int u32x2 __attribute__((ext_vector_type(2)));
+    typedef unsigned int u32x3 __attribute__((ext_vector_type(3)));
     typedef unsigned int u32x4 __attribute__((ext_vector_type(4)));
     // Wider accesses, dword by dword
     r = __builtin_amdgcn_make_buffer_rsrc(memory + 20, 0, 20, out_of_range);
@@ -292,6 +293,11 @@ __global__ void buffers(uint32_t *memory, uint32_t *out)
     const u32x2 two = __builtin_amdgcn_raw_buffer_load_b64(r, 16, 0, 0);
     out[n++] = four.x, out[n++] = four.y, out[n++] = four.z, out[n++] = four.w, out[n++] = two.x, out[n++] = two.y;
     __builtin_amdgcn_raw_buffer_store_b128(u32x4{1, 2, 3, 4}, r, 12, 0, 0);    // the last two dropped
+    // Three dwords, though the vector is padded to four
+    r = __builtin_amdgcn_make_buffer_rsrc(memory + 28, 0, 16, out_of_range);
+    __builtin_amdgcn_raw_buffer_store_b96(u32x3{7, 8, 9}, r, 0, 0, 0);
+    const u32x3 three = __builtin_amdgcn_raw_buffer_load_b96(r, 4, 0, 0);    // the last one past the end
+    out[n++] = three.x, out[n++] = three.y, out[n++] = three.z;
 #endif
 }
 
@@ -351,6 +357,8 @@ int main()
         for (unsigned i = 0; i < 6; ++i)
             EXPECT(out[19 + i] == wide[i]);
         EXPECT(memory[23] == 1 && memory[24] == 2 && memory[25] == expected[25] && memory[26] == expected[26]);
+        EXPECT(out[25] == 8 && out[26] == 9 && out[27] == expected[31]);
+        EXPECT(memory[28] == 7 && memory[29] == 8 && memory[30] == 9 && memory[31] == expected[31]);
 #endif
         lanes<<<1, 32>>>(memory, out);
         for (unsigned i = 0; i < 32; ++i)

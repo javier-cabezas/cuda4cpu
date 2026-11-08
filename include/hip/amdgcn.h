@@ -1224,14 +1224,23 @@ extern "C" inline int __builtin_amdgcn_cvt_sr_bf8_f32(float a, int rng, int old,
 }
 
 #ifdef __clang__
+namespace cuda4cpu::detail::amdgcn {
+// Clang's vectors, as the builtins take them (Clang 18 accepts the
+// attribute only on typedefs)
+typedef float v2f32 __attribute__((ext_vector_type(2)));
+typedef unsigned int v2u32 __attribute__((ext_vector_type(2)));
+typedef unsigned int v3u32 __attribute__((ext_vector_type(3)));
+typedef unsigned int v4u32 __attribute__((ext_vector_type(4)));
+}
+
 //! The two bytes of src's low word (or high word, with word_sel), as floats
-extern "C" inline float __attribute__((ext_vector_type(2))) __builtin_amdgcn_cvt_pk_f32_fp8(int src, bool word_sel)
+extern "C" inline cuda4cpu::detail::amdgcn::v2f32 __builtin_amdgcn_cvt_pk_f32_fp8(int src, bool word_sel)
 {
     const int shift = word_sel ? 16 : 0;
     return {__builtin_amdgcn_cvt_f32_fp8(src >> shift, 0), __builtin_amdgcn_cvt_f32_fp8(src >> shift, 1)};
 }
 
-extern "C" inline float __attribute__((ext_vector_type(2))) __builtin_amdgcn_cvt_pk_f32_bf8(int src, bool word_sel)
+extern "C" inline cuda4cpu::detail::amdgcn::v2f32 __builtin_amdgcn_cvt_pk_f32_bf8(int src, bool word_sel)
 {
     const int shift = word_sel ? 16 : 0;
     return {__builtin_amdgcn_cvt_f32_bf8(src >> shift, 0), __builtin_amdgcn_cvt_f32_bf8(src >> shift, 1)};
@@ -1298,12 +1307,13 @@ inline buffer_access buffer_address(__amdgpu_buffer_rsrc_t rsrc, int offset, int
     return {reinterpret_cast<unsigned char *>(uintptr_t(int64_t(address << 16) >> 16)), in_range};
 }
 
-//! count dwords (or one element of size bytes) at the resource's offset;
-//! zero out of range
-template <typename T>
+//! Bytes bytes at the resource's offset, in dwords (or one smaller
+//! element); zero out of range. Bytes isn't sizeof(T) for a 3-element
+//! vector, which is padded to 4.
+template <typename T, unsigned Bytes = sizeof(T)>
 inline T buffer_load(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset)
 {
-    constexpr unsigned size = sizeof(T) < 4 ? sizeof(T) : 4, count = sizeof(T) / size;
+    constexpr unsigned size = Bytes < 4 ? Bytes : 4, count = Bytes / size;
     const buffer_access access = buffer_address(rsrc, offset, soffset, size, count);
     unsigned char bytes[sizeof(T)] = {};
     for (unsigned i = 0; i < count; ++i)
@@ -1314,10 +1324,10 @@ inline T buffer_load(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset)
     return value;
 }
 
-template <typename T>
+template <typename T, unsigned Bytes = sizeof(T)>
 inline void buffer_store(T value, __amdgpu_buffer_rsrc_t rsrc, int offset, int soffset)
 {
-    constexpr unsigned size = sizeof(T) < 4 ? sizeof(T) : 4, count = sizeof(T) / size;
+    constexpr unsigned size = Bytes < 4 ? Bytes : 4, count = Bytes / size;
     const buffer_access access = buffer_address(rsrc, offset, soffset, size, count);
     unsigned char bytes[sizeof(T)];
     std::memcpy(bytes, &value, sizeof(T));
@@ -1384,22 +1394,23 @@ extern "C" inline void __builtin_amdgcn_raw_buffer_store_b32(unsigned int value,
 }
 
 #ifdef __clang__
-#define CUDA4CPU_BUFFER_VECTOR(bits, n)                                                                              \
-    extern "C" inline unsigned int __attribute__((ext_vector_type(n)))                                              \
-    __builtin_amdgcn_raw_buffer_load_b##bits(__amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)              \
-    {                                                                                                                \
-        return cuda4cpu::detail::amdgcn::buffer_load<unsigned int __attribute__((ext_vector_type(n)))>(rsrc, offset, \
-                                                                                                        soffset);    \
-    }                                                                                                                \
-    extern "C" inline void __builtin_amdgcn_raw_buffer_store_b##bits(                                                \
-        unsigned int __attribute__((ext_vector_type(n))) value, __amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, \
-        int)                                                                                                         \
-    {                                                                                                                \
-        cuda4cpu::detail::amdgcn::buffer_store(value, rsrc, offset, soffset);                                       \
+#define CUDA4CPU_BUFFER_VECTOR(bits, V)                                                                          \
+    extern "C" inline cuda4cpu::detail::amdgcn::V __builtin_amdgcn_raw_buffer_load_b##bits(                      \
+        __amdgpu_buffer_rsrc_t rsrc, int offset, int soffset, int)                                               \
+    {                                                                                                            \
+        return cuda4cpu::detail::amdgcn::buffer_load<cuda4cpu::detail::amdgcn::V, bits / 8>(rsrc, offset,       \
+                                                                                             soffset);           \
+    }                                                                                                            \
+    extern "C" inline void __builtin_amdgcn_raw_buffer_store_b##bits(cuda4cpu::detail::amdgcn::V value,          \
+                                                                     __amdgpu_buffer_rsrc_t rsrc, int offset,    \
+                                                                     int soffset, int)                           \
+    {                                                                                                            \
+        cuda4cpu::detail::amdgcn::buffer_store<cuda4cpu::detail::amdgcn::V, bits / 8>(value, rsrc, offset,      \
+                                                                                      soffset);                  \
     }
-CUDA4CPU_BUFFER_VECTOR(64, 2)
-CUDA4CPU_BUFFER_VECTOR(96, 3)
-CUDA4CPU_BUFFER_VECTOR(128, 4)
+CUDA4CPU_BUFFER_VECTOR(64, v2u32)
+CUDA4CPU_BUFFER_VECTOR(96, v3u32)
+CUDA4CPU_BUFFER_VECTOR(128, v4u32)
 #undef CUDA4CPU_BUFFER_VECTOR
 #endif
 
