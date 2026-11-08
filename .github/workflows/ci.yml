@@ -258,3 +258,40 @@ jobs:
         uses: ./.github/actions/save-ccache
         with:
           key: ${{ steps.setup.outputs.ccache-key }}
+
+  # The programs of the suite that need Clang as the C++ compiler (rocPRIM's,
+  # on HIP's AMD platform), which the GCC job above skips, with a cuda4cpu
+  # built by the same Clang: a program and the library share OpenMP's runtime
+  compatibility-clang:
+    name: clang-18 / programs that need Clang (rocPRIM)
+    runs-on: ubuntu-24.04
+    env:
+      CXX: clang++-18
+      CC: clang-18
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          packages: ninja-build libnuma-dev clang-18 libomp-18-dev
+          ccache-key: compatibility-clang
+
+      - name: Build cuda4cpu
+        run: |
+          cmake --preset release -DCUDA4CPU_BUILD_TESTS=OFF -DCUDA4CPU_BUILD_BENCHMARKS=OFF
+          cmake --build --preset release
+
+      - name: Build and run the programs
+        env:
+          CUDA4CPU_CXX: clang++-18
+        run: |
+          python3 compat/run.py --driver build/release/tools/cuda4cpu-c++ --work "${{ runner.temp }}/compat" \
+                                --baseline compat/baseline.json --filter '*/rocprim_*' --jobs 2 --timeout 600
+
+      - name: Save the compiler cache
+        if: always()
+        uses: ./.github/actions/save-ccache
+        with:
+          key: ${{ steps.setup.outputs.ccache-key }}

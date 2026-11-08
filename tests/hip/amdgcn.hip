@@ -25,9 +25,13 @@
 // and in branches (each call has its own EXEC),
 // rocPRIM's DPP scan and reduction, a spin-wait with s_sleep, and the
 // integer, floating-point and atomic builtins against references written
-// apart from amdgcn.h.
+// apart from amdgcn.h; and the rest of what rocPRIM uses: hip_bfloat16,
+// the unsigned long atomics, Clang's __hip_atomic_* (ours under GCC),
+// HIP_vector_type, hipStreamGetDevice and __amdgcn_processor__.
 //
 
+#include <hip/device_functions.h>
+#include <hip/hip_bfloat16.h>
 #include <hip/hip_runtime.h>
 
 #include <bit>
@@ -36,6 +40,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #if !defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_NVIDIA__) || !defined(__AMDGCN__) || \
@@ -54,6 +59,9 @@ static unsigned errors = 0;
     } while (0)
 
 static_assert(__builtin_amdgcn_wavefrontsize() == 32);
+static_assert(std::is_same_v<HIP_vector_type<float, 4>, float4> && std::is_same_v<HIP_vector_type<signed char, 2>, char2> &&
+              std::is_same_v<HIP_vector_type<unsigned long, 1>, ulong1>);
+static_assert(__builtin_strcmp(__amdgcn_processor__, "gfx1101") == 0);
 
 constexpr int warp = 32;
 
@@ -343,6 +351,24 @@ __global__ void ids(unsigned *out)
     o[11] = 1;
 }
 
+//! AMD's overloads for unsigned long, called as rocPRIM calls them, and
+//! Clang's atomics for HIP
+__global__ void long_atomics(unsigned long *sum, unsigned long *mx, unsigned long *bits, int *loaded)
+{
+    const unsigned long v = threadIdx.x + 1;
+    ::atomicAdd(sum, v);
+    ::atomicSub(sum, 1ul);
+    atomicMax(mx, v << 40);
+    atomicOr(bits, 1ul << (threadIdx.x % 64));
+    __hip_atomic_fetch_add(loaded, 2, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_fetch_max(loaded + 1, int(threadIdx.x), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+    int expected = 0;
+    if (__hip_atomic_compare_exchange_strong(loaded + 2, &expected, 7, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE,
+                                             __HIP_MEMORY_SCOPE_SYSTEM))
+        __hip_atomic_store(loaded + 3, int(threadIdx.x) + 1, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_assert(__hip_atomic_load(loaded + 2, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) == 7);
+}
+
 __global__ void counters(unsigned *inc, unsigned *dec, float *sum, double *mn)
 {
     __builtin_amdgcn_atomic_inc32(inc, 9u, __ATOMIC_RELAXED, "agent");
@@ -423,6 +449,36 @@ int main()
         // 256 increments wrapping after 9 (0..9: 10 values), and decrements
         // from 0 wrapping to 9
         EXPECT(inc == 256 % 10 && dec == (10 - 256 % 10) % 10 && sum == 128.0f && mn == -3.0);
+    }
+
+    {
+        unsigned long sum = 0, mx = 0, bits = 0;
+        int loaded[4] = {};
+        long_atomics<<<2, 64>>>(&sum, &mx, &bits, loaded);
+        EXPECT(sum == 2 * 64 * 65 / 2 - 128 && mx == 64ul << 40 && bits == ~0ul);
+        EXPECT(loaded[0] == 256 && loaded[1] == 63 && loaded[2] == 7 && loaded[3] >= 1);
+    }
+
+    {
+        hipDevice_t device = -1;
+        EXPECT(hipStreamGetDevice(nullptr, &device) == hipSuccess && device == 0 && hipGetStreamDeviceId(nullptr) == 0);
+    }
+
+    // hip_bfloat16: to nearest even, NaNs kept NaNs, truncation, arithmetic
+    {
+        EXPECT(float(hip_bfloat16(1.0f)) == 1.0f && hip_bfloat16(1.0f).data == 0x3f80);
+        EXPECT(hip_bfloat16(1.0f + 0x1p-8f).data == 0x3f80);                // a tie: to even
+        EXPECT(hip_bfloat16(1.0f + 0x1.8p-8f).data == 0x3f81);
+        EXPECT(hip_bfloat16(1.0f + 0x1.8p-8f, hip_bfloat16::truncate).data == 0x3f80);
+        const float nan_low = std::bit_cast<float>(0x7f800001u);
+        EXPECT(std::isnan(hip_bfloat16(nan_low)) && std::isnan(hip_bfloat16(nan_low, hip_bfloat16::truncate)));
+        EXPECT(std::isinf(hip_bfloat16(std::numeric_limits<float>::max())) && std::iszero(hip_bfloat16(-0.0f)));
+        hip_bfloat16 x(2.0f);
+        x += hip_bfloat16(0.5f);
+        ++x;
+        EXPECT(float(x) == 3.5f && float(-x) == -3.5f && x > hip_bfloat16(3.0f) && x * x == hip_bfloat16(12.25f));
+        x = 0.25f;
+        EXPECT(float(hip_bfloat16::round_to_bfloat16(0.25f)) == float(x));
     }
 
     // Integer and bit operations

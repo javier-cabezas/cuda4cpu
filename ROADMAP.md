@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 133 of 159 pass today; most of the rest need
+shows what blocks real programs. 135 of 161 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -47,7 +47,8 @@ AMD's ISA manuals and LLVM's lowering.
    `lerp`, `sad`, the dot products), floating-point ones (`rcp`, `rsq`,
    `sin`/`cos` in turns, `exp2`, `log`, `ldexp`, `frexp`, `fract`, `class`,
    `fmed3`), and atomics. Then rocPRIM, built for `gfx1100`, in the
-   compatibility suite.
+   compatibility suite. Done: rocPRIM 7.2.4's block and device sums pass,
+   built with Clang.
 2. **Conversions and buffer resources:** fp8/bf8 in AMD's FNUZ and the OCP
    formats, stochastic rounding, scaled FP4/FP6/FP8 (OCP MX), and buffer
    loads and stores with AMD's out-of-range rules.

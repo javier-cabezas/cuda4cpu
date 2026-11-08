@@ -442,7 +442,61 @@
           "External"
         ]
       },
+      "dependencies": {
+        "rocPRIM": {
+          "url": "https://github.com/ROCm/rocPRIM.git",
+          "revision": "rocm-7.2.4",
+          "configure": [
+            {
+              "input": "rocprim/include/rocprim/rocprim_version.hpp.in",
+              "output": "rocprim/include/rocprim/rocprim_version.hpp",
+              "values": {
+                "rocprim_VERSION_NUMBER": "402000",
+                "rocprim_VERSION_MAJOR": "4",
+                "rocprim_VERSION_MINOR": "2",
+                "rocprim_VERSION_PATCH": "0"
+              }
+            }
+          ]
+        }
+      },
       "programs": [
+        {
+          "dir": "Libraries/rocPRIM/block_sum",
+          "name": "rocprim_block_sum",
+          "requires": [
+            "rocPRIM"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "Reduced Summation Result:\\t\\[ 523776, 1572352, 2620928, 3669504, 4718080, 5766656, 6815232, 7863808, 8912384, 7532280 \\]"
+        },
+        {
+          "dir": "Libraries/rocPRIM/device_sum",
+          "name": "rocprim_device_sum",
+          "requires": [
+            "rocPRIM"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "Reduced summation result: 42"
+        },
         {
           "dir": "HIP-Basic/assembly_to_executable"
         },

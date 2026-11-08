@@ -143,7 +143,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `hip_runtime.h` adds the kernel language: the mask-less warp functions,
     `hipLaunchKernelGGL` (a macro, or a function template with
     `HIP_TEMPLATE_KERNEL_LAUNCH`), `HIP_DYNAMIC_SHARED`, `hipThreadIdx_x`
-    and the like, and the `__HIP_ARCH_HAS_*` macros.
+    and the like, and the `__HIP_ARCH_HAS_*` macros. On the AMD platform,
+    also what AMD's headers have and libraries use: `HIP_vector_type`
+    (`detail::hip_vector`, to CUDA's vector types), `__hip_assert`, and the
+    atomics' `unsigned long` overloads, in `hip_api` (at global scope they
+    would hide CUDA's from `::atomicAdd`), which call `cuda_api::`'s
+    explicitly. `hip_bfloat16.h` (AMD's `hip_bfloat16` class) and
+    `device_functions.h` too, on both platforms.
   - `hip_common.h` defines `__HIP_PLATFORM_NVIDIA__`, and `__HIPCC__` with
     `__CUDACC__`. With `__HIP_PLATFORM_AMD__` (the drivers'
     `--cuda4cpu-platform=amd` or `CUDA4CPU_HIP_PLATFORM=amd`, which pass all
@@ -151,7 +157,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     an RDNA3 GPU, `gfx1100` unless a `__gfx11xx__` macro names another
     (`--offload-arch`), with `__AMDGCN__`, `__GFX11__`,
     `__AMDGCN_WAVEFRONT_SIZE__` 32 and `CUDA4CPU_AMDGPU_TARGET`, which
-    `hipGetDeviceProperties` reports as `gcnArchName` (and `major`/`minor`).
+    `hipGetDeviceProperties` reports as `gcnArchName` (and `major`/`minor`),
+    and `__amdgcn_processor__`: rocPRIM 7.2's `trampoline_kernel` runs its
+    body only for the architecture that names, and without it a device
+    algorithm silently did nothing.
     `__HIP_DEVICE_COMPILE__` stays undefined, like `__CUDA_ARCH__`. The
     rewriter's HIP prologue defines `__HIP_PLATFORM_NVIDIA__` only without
     it.
@@ -171,7 +180,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `__syncthreads()` named `s_barrier_name` for the divergent barrier
     check, and `s_sleep` calls `thread_block::interleave()`, so that
     spin-waits progress. Builtins with `ext_vector_type` operands will need
-    Clang (the user's decision), and go under `__clang__`.
+    Clang (the user's decision), and go under `__clang__`. The
+    non-template builtins are `extern "C"`, because rocPRIM declares
+    `extern "C" void __builtin_amdgcn_s_sleep(int);`. The `__hip_atomic_*`
+    functions (`__HIP_MEMORY_SCOPE_*`) are defined only when
+    `!__has_builtin(__hip_atomic_load)`: Clang has them as builtins.
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -220,6 +233,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does.
   `--language hip` (the default for `.hip` files) also defines `__HIPCC__` and
   `__HIP_PLATFORM_NVIDIA__`. It uses Python 3, standard library only.
+  The drivers pass it the compile's include directories (`include_dirs`:
+  `-I`, `-iquote`, `-isystem`, without cuda4cpu's and `/usr/include`), and
+  it follows `#include <...>` (and quote includes not found next to the
+  file) into them: such a library header is shadowed only if it or a header
+  it includes changes (`rewrite` returns whether it did; `done` holds the
+  copy, or None). Else its include stays as written, except a quote include
+  next to the including header, which a shadowed copy points to the original
+  path (`redirects`, applied after `changed` is computed, or every header
+  above it would be shadowed too). rocPRIM's device algorithms launch kernels
+  in headers.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template
@@ -318,7 +341,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `reject` are output regexes, `verified: false` marks programs that don't
   check their results, `skip` gives a reason not to run one, `timeout`
   gives a long program more time (such programs start first), and `env`
-  sets environment variables (the tensor-core samples' compute capability). `run.py`
+  sets environment variables (the tensor-core samples' compute capability).
+  A suite's `dependencies` are other repositories, pinned by revision,
+  fetched into `<work>/src/dependencies/<name>` and configured
+  (`configure`: files generated from `.in` templates' `@VAR@`s), which
+  programs name in `requires` and as `{name}` in include directories.
+  `"compiler": "clang"` marks a program that only Clang compiles (rocPRIM's):
+  with another host compiler (from the driver's `--version`), it's skipped
+  as unavailable, which keeps its baseline status. CI's
+  `compatibility-clang` job builds cuda4cpu with Clang 18 and runs them
+  (`--filter '*/rocprim_*'`). `run.py`
   fetches the suites, builds each program with `cuda4cpu-c++`, or
   `cuda4cpu-hipcc` for suites with `"driver": "hipcc"` (`.c` files with the
   C compiler), runs it, and reports. `baseline.json` holds the expected status of each
@@ -511,7 +543,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     program the host compiler links with `-L<toolkit>/lib -lamdhip64`, and
     HIP's AMD platform: the switch and the environment variable, the GPU
     `--offload-arch` names, NVIDIA's by default, and the errors (another
-    GPU, two, wave64, an unknown platform).
+    GPU, two, wave64, an unknown platform), and a launch in a header that
+    `-I` finds.
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
@@ -537,8 +570,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `__gfx1101__`): the AMD platform's macros and device properties,
     dispatch IDs, every lane operation and DPP control against tables from
     the ISA with three sets of exited lanes (outside EXEC), rocPRIM's DPP
-    scan and reduction, a spin-wait with `s_sleep`, and the integer,
-    floating-point and atomic builtins.
+    scan and reduction, a spin-wait with `s_sleep`, the integer,
+    floating-point and atomic builtins, and what else rocPRIM uses:
+    `hip_bfloat16`, the `unsigned long` atomics (called as `::atomicAdd`),
+    `__hip_atomic_*`, `HIP_vector_type`, `hipStreamGetDevice` and
+    `__amdgcn_processor__`.
 
 ## How execution works (read before touching `launch.hpp`)
 

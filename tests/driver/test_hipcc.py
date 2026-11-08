@@ -192,6 +192,22 @@ class AmdPlatform(unittest.TestCase):
         self.assertEqual(self.build_and_run('--cuda4cpu-platform=nvidia', env={'CUDA4CPU_HIP_PLATFORM': 'amd'}),
                          'nvidia 992')
 
+    def test_launch_in_a_library_header(self):
+        """A launch in a header that -I finds, as rocPRIM's, is rewritten"""
+        with tempfile.TemporaryDirectory() as work:
+            library = os.path.join(work, 'include', 'lib')
+            os.makedirs(library)
+            with open(os.path.join(library, 'fill.hpp'), 'w') as f:
+                f.write('#pragma once\n__global__ void fill(int *out) { out[threadIdx.x] = 7; }\n'
+                        '#define FILL(out) fill<<<1, 4>>>(out)\n')
+            with open(os.path.join(work, 'main.hip'), 'w') as f:
+                f.write('#include <hip/hip_runtime.h>\n#include <lib/fill.hpp>\n#include <cstdio>\n'
+                        'int main() { int out[4] = {}; FILL(out); std::printf("%d\\n", out[0] + out[3]); }\n')
+            result = tool('hipcc', '-I', os.path.join(work, 'include'), '-o', 'main', 'main.hip', cwd=work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run = subprocess.run([os.path.join(work, 'main')], capture_output=True, text=True)
+            self.assertEqual(run.stdout.strip(), '14', run.stderr)
+
     def test_errors(self):
         cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 GPUs'),
                  (['--cuda4cpu-platform=amd', '--offload-arch=gfx1100', '--offload-arch=gfx1101'], 'one AMD GPU'),

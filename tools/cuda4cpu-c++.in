@@ -406,8 +406,33 @@ def hip_platform(argv):
     if target not in AMD_TARGETS:
         return argv, [], (f'cuda4cpu emulates RDNA3 GPUs ({", ".join(AMD_TARGETS)}), not {target}')
     defines = ['-D__HIP_PLATFORM_AMD__=1', '-D__HIP_PLATFORM_HCC__=1', f'-D__{target}__=1', '-D__GFX11__=1',
+               f'-D__amdgcn_processor__="{target}"',
                '-D__AMDGCN__=1', '-D__AMDGPU__=1', '-D__AMDGCN_WAVEFRONT_SIZE__=32', '-D__AMDGCN_WAVEFRONT_SIZE=32']
     return rest, defines, None
+
+
+def include_dirs(argv):
+    """The directories the program's headers are searched in (-I, -iquote,
+    -isystem), for the rewriter to rewrite the headers in them that need it,
+    such as a library's with launches. Not cuda4cpu's own, nor the system's."""
+    dirs = []
+    for i, arg in enumerate(argv):
+        if arg in ('-I', '-iquote', '-isystem') and i + 1 < len(argv):
+            dirs.append(argv[i + 1])
+        elif arg.startswith(('-iquote', '-isystem')):
+            option = '-iquote' if arg.startswith('-iquote') else '-isystem'
+            if len(arg) > len(option):
+                dirs.append(arg[len(option):])
+        elif arg.startswith('-I') and len(arg) > 2:
+            dirs.append(arg[2:])
+    own = os.path.realpath(INCLUDE_DIR)
+    result = []
+    for d in dirs:
+        real = os.path.realpath(d)
+        if any(real == d or real.startswith(d + os.sep) for d in (own, '/usr/include')):
+            continue
+        result.append(os.path.abspath(d))
+    return list(dict.fromkeys(result))
 
 
 def is_driver(command):
@@ -687,6 +712,7 @@ def main(argv):
         args = []
         renamed = []                        # (rewritten, original, shadow directory) of each source
         renamed_languages = []              # the same, with each one's language
+        rewrite_includes = [option for d in include_dirs(argv) for option in ('-I', d)]
         x_language = None                   # set by -x: a language, 'other', or None (by extension)
         i = 0
         while i < len(argv):
@@ -724,7 +750,7 @@ def main(argv):
                 shadow_dir = os.path.join(work, str(i), 'headers')
                 os.makedirs(os.path.dirname(out))
                 status = run([sys.executable, REWRITE, arg, '-o', out, '--language', language,
-                              '--shadow-dir', shadow_dir], request)
+                              '--shadow-dir', shadow_dir] + rewrite_includes, request)
                 if status != 0:
                     return status
                 args += ['-x', 'c++', out, '-x', 'none']

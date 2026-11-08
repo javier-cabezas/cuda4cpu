@@ -114,7 +114,8 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   `gfx1152` and `gfx1153`. Without the switch, `--offload-arch` is ignored,
   as before. Wave64 (`-mwavefrontsize64`) and other GPUs are rejected.
 - **Macros:** `__HIP_PLATFORM_AMD__`, `__AMDGCN__`, `__AMDGPU__`, the
-  GPU's (`__gfx1101__`, `__GFX11__`) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
+  GPU's (`__gfx1101__`, `__GFX11__`, and `__amdgcn_processor__`, its name as
+  a string) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
   instead of `__HIP_PLATFORM_NVIDIA__`. Builds that don't go through the
   drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` macro, and
   `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
@@ -166,6 +167,17 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   inline functions, so `__has_builtin(__builtin_amdgcn_...)` is false, and
   code that checks it takes its other path. Builtins of other AMD GPUs
   compile too, unchecked.
+- **The rest of AMD's HIP headers that libraries use:** `hip/hip_bfloat16.h`
+  (`hip_bfloat16`, rounded to nearest even), `hip/device_functions.h`,
+  `HIP_vector_type<T, N>`, the atomics' `unsigned long` overloads, Clang's
+  `__hip_atomic_*` functions with their memory scopes (defined only when the
+  compiler doesn't have them), `__hip_assert`, and `hipStreamGetDevice`.
+- **rocPRIM** (rocm-7.2.4) works on this platform, with its DPP paths:
+  compile with `-D__HIP_DEVICE_COMPILE__=1` and the rocPRIM include
+  directory. It needs Clang as the host compiler (GCC rejects its explicit
+  specializations in class scope), and so a cuda4cpu built with Clang, for
+  one OpenMP runtime. The compatibility suite runs two of rocm-examples'
+  rocPRIM programs that way.
 - **Not yet:** builtins with Clang's vector types (WMMA, packed
   conversions, `fdot2`), fp8/fp4/fp6 conversions, buffer resources,
   `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4,

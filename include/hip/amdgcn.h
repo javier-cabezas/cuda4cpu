@@ -33,7 +33,9 @@
 // - Builtins of any AMD GPU compile, not only RDNA3's: as with the compiler
 //   for a GPU without them, code is expected to check the gfx macros.
 // - They are inline functions, not the compiler's builtins, so
-//   __has_builtin(__builtin_amdgcn_...) is false.
+//   __has_builtin(__builtin_amdgcn_...) is false. Those that aren't templates
+//   have C linkage, as builtins do, for code that declares them
+//   (extern "C" void __builtin_amdgcn_s_sleep(int);, in rocPRIM).
 // - Those that take or return Clang's ext_vector_type vectors (the matrix
 //   operations, packed conversions) aren't here yet.
 #pragma once
@@ -341,7 +343,7 @@ inline std::memory_order memory_order(unsigned order)
 }
 
 //! The name that the divergent barrier check gives s_barrier
-inline constexpr char s_barrier_name[] = "__builtin_amdgcn_s_barrier()";
+extern "C" inline constexpr char s_barrier_name[] = "__builtin_amdgcn_s_barrier()";
 
 //! HSA's kernel dispatch packet, which dispatch_ptr points to
 struct dispatch_packet {
@@ -366,26 +368,26 @@ static_assert(sizeof(dispatch_packet) == 64);
 // and the grid, which HSA measures in work-items
 //
 
-inline unsigned int __builtin_amdgcn_workitem_id_x() { return threadIdx.x; }
-inline unsigned int __builtin_amdgcn_workitem_id_y() { return threadIdx.y; }
-inline unsigned int __builtin_amdgcn_workitem_id_z() { return threadIdx.z; }
-inline unsigned int __builtin_amdgcn_workgroup_id_x() { return blockIdx.x; }
-inline unsigned int __builtin_amdgcn_workgroup_id_y() { return blockIdx.y; }
-inline unsigned int __builtin_amdgcn_workgroup_id_z() { return blockIdx.z; }
-inline unsigned short __builtin_amdgcn_workgroup_size_x() { return (unsigned short)blockDim.x; }
-inline unsigned short __builtin_amdgcn_workgroup_size_y() { return (unsigned short)blockDim.y; }
-inline unsigned short __builtin_amdgcn_workgroup_size_z() { return (unsigned short)blockDim.z; }
-inline unsigned int __builtin_amdgcn_grid_size_x() { return gridDim.x * blockDim.x; }
-inline unsigned int __builtin_amdgcn_grid_size_y() { return gridDim.y * blockDim.y; }
-inline unsigned int __builtin_amdgcn_grid_size_z() { return gridDim.z * blockDim.z; }
+extern "C" inline unsigned int __builtin_amdgcn_workitem_id_x() { return threadIdx.x; }
+extern "C" inline unsigned int __builtin_amdgcn_workitem_id_y() { return threadIdx.y; }
+extern "C" inline unsigned int __builtin_amdgcn_workitem_id_z() { return threadIdx.z; }
+extern "C" inline unsigned int __builtin_amdgcn_workgroup_id_x() { return blockIdx.x; }
+extern "C" inline unsigned int __builtin_amdgcn_workgroup_id_y() { return blockIdx.y; }
+extern "C" inline unsigned int __builtin_amdgcn_workgroup_id_z() { return blockIdx.z; }
+extern "C" inline unsigned short __builtin_amdgcn_workgroup_size_x() { return (unsigned short)blockDim.x; }
+extern "C" inline unsigned short __builtin_amdgcn_workgroup_size_y() { return (unsigned short)blockDim.y; }
+extern "C" inline unsigned short __builtin_amdgcn_workgroup_size_z() { return (unsigned short)blockDim.z; }
+extern "C" inline unsigned int __builtin_amdgcn_grid_size_x() { return gridDim.x * blockDim.x; }
+extern "C" inline unsigned int __builtin_amdgcn_grid_size_y() { return gridDim.y * blockDim.y; }
+extern "C" inline unsigned int __builtin_amdgcn_grid_size_z() { return gridDim.z * blockDim.z; }
 
-constexpr unsigned int __builtin_amdgcn_wavefrontsize()
+extern "C" constexpr unsigned int __builtin_amdgcn_wavefrontsize()
 {
     return cuda4cpu::detail::amdgcn::wavefront_size;
 }
 
 //! The launch's dispatch packet, filled in for the calling thread's launch
-inline void *__builtin_amdgcn_dispatch_ptr()
+extern "C" inline void *__builtin_amdgcn_dispatch_ptr()
 {
     static thread_local cuda4cpu::detail::amdgcn::dispatch_packet packet;
     const auto block = blockDim, grid = gridDim;
@@ -447,7 +449,7 @@ inline uint32_t cuda4cpu_amdgcn_read_exec_lo(uint64_t site)
     return cuda4cpu::detail::amdgcn::exec(site);
 }
 
-inline uint32_t __builtin_amdgcn_read_exec_hi()
+extern "C" inline uint32_t __builtin_amdgcn_read_exec_hi()
 {
     return 0;
 }
@@ -467,25 +469,25 @@ inline uint64_t cuda4cpu_amdgcn_ballot_w64(uint64_t site, bool predicate)
     return cuda4cpu_amdgcn_ballot_w32(site, predicate);
 }
 
-inline bool __builtin_amdgcn_inverse_ballot_w32(uint32_t mask)
+extern "C" inline bool __builtin_amdgcn_inverse_ballot_w32(uint32_t mask)
 {
     return (mask >> cuda4cpu::detail::amdgcn::lane() & 1) != 0;
 }
 
-inline bool __builtin_amdgcn_inverse_ballot_w64(uint64_t mask)
+extern "C" inline bool __builtin_amdgcn_inverse_ballot_w64(uint64_t mask)
 {
     return (mask >> cuda4cpu::detail::amdgcn::lane() & 1) != 0;
 }
 
 //! add plus the bits of mask below the calling lane, of lanes 0 to 31
-inline unsigned int __builtin_amdgcn_mbcnt_lo(unsigned int mask, unsigned int add)
+extern "C" inline unsigned int __builtin_amdgcn_mbcnt_lo(unsigned int mask, unsigned int add)
 {
     const unsigned l = cuda4cpu::detail::amdgcn::lane();
     return add + unsigned(std::popcount(l == 0 ? 0u : mask & ((1u << l) - 1)));
 }
 
 //! The same, of lanes 32 to 63, which a 32-lane wavefront doesn't have
-inline unsigned int __builtin_amdgcn_mbcnt_hi(unsigned int, unsigned int add)
+extern "C" inline unsigned int __builtin_amdgcn_mbcnt_hi(unsigned int, unsigned int add)
 {
     return add;
 }
@@ -588,7 +590,7 @@ inline int cuda4cpu_amdgcn_wave_shuffle(uint64_t site, int src, int idx)
     {                                                                          \
         return cuda4cpu::detail::amdgcn::__VA_ARGS__;                          \
     }                                                                          \
-    inline T __builtin_amdgcn_wave_reduce_##name(T value, int strategy)        \
+    extern "C" inline T __builtin_amdgcn_wave_reduce_##name(T value, int strategy) \
     {                                                                          \
         return cuda4cpu_amdgcn_wave_reduce_##name(0, value, strategy);         \
     }
@@ -628,13 +630,13 @@ template <typename T>
 inline T __builtin_amdgcn_readlane(T value, int lane) { return cuda4cpu_amdgcn_readlane(0, value, lane); }
 template <typename T>
 inline T __builtin_amdgcn_writelane(T src, int lane, T old) { return cuda4cpu_amdgcn_writelane(0, src, lane, old); }
-inline uint64_t __builtin_amdgcn_read_exec() { return cuda4cpu_amdgcn_read_exec(0); }
-inline uint32_t __builtin_amdgcn_read_exec_lo() { return cuda4cpu_amdgcn_read_exec_lo(0); }
-inline uint32_t __builtin_amdgcn_ballot_w32(bool predicate) { return cuda4cpu_amdgcn_ballot_w32(0, predicate); }
-inline uint64_t __builtin_amdgcn_ballot_w64(bool predicate) { return cuda4cpu_amdgcn_ballot_w64(0, predicate); }
-inline int __builtin_amdgcn_ds_bpermute(int addr, int src) { return cuda4cpu_amdgcn_ds_bpermute(0, addr, src); }
-inline int __builtin_amdgcn_ds_permute(int addr, int src) { return cuda4cpu_amdgcn_ds_permute(0, addr, src); }
-inline int __builtin_amdgcn_ds_swizzle(int src, int offset) { return cuda4cpu_amdgcn_ds_swizzle(0, src, offset); }
+extern "C" inline uint64_t __builtin_amdgcn_read_exec() { return cuda4cpu_amdgcn_read_exec(0); }
+extern "C" inline uint32_t __builtin_amdgcn_read_exec_lo() { return cuda4cpu_amdgcn_read_exec_lo(0); }
+extern "C" inline uint32_t __builtin_amdgcn_ballot_w32(bool predicate) { return cuda4cpu_amdgcn_ballot_w32(0, predicate); }
+extern "C" inline uint64_t __builtin_amdgcn_ballot_w64(bool predicate) { return cuda4cpu_amdgcn_ballot_w64(0, predicate); }
+extern "C" inline int __builtin_amdgcn_ds_bpermute(int addr, int src) { return cuda4cpu_amdgcn_ds_bpermute(0, addr, src); }
+extern "C" inline int __builtin_amdgcn_ds_permute(int addr, int src) { return cuda4cpu_amdgcn_ds_permute(0, addr, src); }
+extern "C" inline int __builtin_amdgcn_ds_swizzle(int src, int offset) { return cuda4cpu_amdgcn_ds_swizzle(0, src, offset); }
 template <typename T>
 inline T __builtin_amdgcn_update_dpp(T old, T src, int dpp_ctrl, int row_mask, int bank_mask, bool bound_ctrl)
 {
@@ -657,7 +659,104 @@ inline T __builtin_amdgcn_permlanex16(T old, T src, unsigned int src1, unsigned 
 {
     return cuda4cpu_amdgcn_permlanex16(0, old, src, src1, src2, fi, bound_ctrl);
 }
-inline int __builtin_amdgcn_wave_shuffle(int src, int idx) { return cuda4cpu_amdgcn_wave_shuffle(0, src, idx); }
+extern "C" inline int __builtin_amdgcn_wave_shuffle(int src, int idx) { return cuda4cpu_amdgcn_wave_shuffle(0, src, idx); }
+
+//
+// Clang's atomics for HIP (__hip_atomic_*), with a memory order
+// (__ATOMIC_*) and a scope (__HIP_MEMORY_SCOPE_*). Every scope is the
+// system's here, so the scope argument only matters to the compiler.
+//
+
+// Clang defines these only when it compiles HIP
+#ifndef __HIP_MEMORY_SCOPE_SINGLETHREAD
+#define __HIP_MEMORY_SCOPE_SINGLETHREAD 1
+#define __HIP_MEMORY_SCOPE_WAVEFRONT 2
+#define __HIP_MEMORY_SCOPE_WORKGROUP 3
+#define __HIP_MEMORY_SCOPE_AGENT 4
+#define __HIP_MEMORY_SCOPE_SYSTEM 5
+#endif
+
+// Clang has the functions for every target: they are only defined for GCC
+#if !__has_builtin(__hip_atomic_load)
+
+template <typename T>
+inline T __hip_atomic_load(T *ptr, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).load(cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline void __hip_atomic_store(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    std::atomic_ref<T>(*ptr).store(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_exchange(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).exchange(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+//! The failure order can't be stronger than the success one in C++; it is
+//! the success order here, which is as strong
+template <typename T>
+inline bool __hip_atomic_compare_exchange_strong(T *ptr, T *expected, std::type_identity_t<T> desired, int success,
+                                                 int, int)
+{
+    return std::atomic_ref<T>(*ptr).compare_exchange_strong(*expected, desired,
+                                                            cuda4cpu::detail::amdgcn::memory_order(success));
+}
+
+template <typename T>
+inline bool __hip_atomic_compare_exchange_weak(T *ptr, T *expected, std::type_identity_t<T> desired, int success,
+                                               int failure, int scope)
+{
+    return __hip_atomic_compare_exchange_strong(ptr, expected, desired, success, failure, scope);
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_add(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).fetch_add(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_sub(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).fetch_sub(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_and(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).fetch_and(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_or(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).fetch_or(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_xor(T *ptr, std::type_identity_t<T> value, int order, int)
+{
+    return std::atomic_ref<T>(*ptr).fetch_xor(value, cuda4cpu::detail::amdgcn::memory_order(order));
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_min(T *ptr, std::type_identity_t<T> value, int, int)
+{
+    return cuda4cpu::detail::amdgcn::atomic_update(ptr, [&](T old) { return value < old ? value : old; });
+}
+
+template <typename T>
+inline T __hip_atomic_fetch_max(T *ptr, std::type_identity_t<T> value, int, int)
+{
+    return cuda4cpu::detail::amdgcn::atomic_update(ptr, [&](T old) { return old < value ? value : old; });
+}
+
+#endif
 
 //
 // Synchronization, clocks, and hints to the compiler and the hardware,
@@ -665,7 +764,7 @@ inline int __builtin_amdgcn_wave_shuffle(int src, int idx) { return cuda4cpu_amd
 //
 
 //! __syncthreads(), which the divergent barrier check names by this name
-inline void __builtin_amdgcn_s_barrier()
+extern "C" inline void __builtin_amdgcn_s_barrier()
 {
     cuda4cpu::thread_block::syncthreads(cuda4cpu::detail::amdgcn::s_barrier_name, 0);
 }
@@ -678,7 +777,7 @@ inline void cuda4cpu_amdgcn_wave_barrier(uint64_t site)
     (void)cuda4cpu::detail::amdgcn::exec(site);
 }
 
-inline void __builtin_amdgcn_wave_barrier()
+extern "C" inline void __builtin_amdgcn_wave_barrier()
 {
     cuda4cpu_amdgcn_wave_barrier(0);
 }
@@ -693,32 +792,32 @@ inline void __builtin_amdgcn_fence(unsigned int order, const char *, AddressSpac
 }
 
 //! Lets the other threads of the block run, as a waiting wavefront lets others
-inline void __builtin_amdgcn_s_sleep(int)
+extern "C" inline void __builtin_amdgcn_s_sleep(int)
 {
     cuda4cpu::thread_block::interleave();
 }
 
 //! The shader clock, as clock64()
-inline uint64_t __builtin_amdgcn_s_memtime()
+extern "C" inline uint64_t __builtin_amdgcn_s_memtime()
 {
     return uint64_t(clock64());
 }
 
 //! The constant 100 MHz clock
-inline uint64_t __builtin_amdgcn_s_memrealtime()
+extern "C" inline uint64_t __builtin_amdgcn_s_memrealtime()
 {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count()) / 10;
 }
 
-inline void __builtin_amdgcn_s_waitcnt(int) {}
-inline void __builtin_amdgcn_sched_barrier(int) {}
-inline void __builtin_amdgcn_sched_group_barrier(int, int, int) {}
-inline void __builtin_amdgcn_iglp_opt(int) {}
-inline void __builtin_amdgcn_s_setprio(short) {}
-inline void __builtin_amdgcn_s_dcache_inv() {}
-inline void __builtin_amdgcn_s_dcache_wb() {}
-inline void __builtin_amdgcn_buffer_wbinvl1() {}
+extern "C" inline void __builtin_amdgcn_s_waitcnt(int) {}
+extern "C" inline void __builtin_amdgcn_sched_barrier(int) {}
+extern "C" inline void __builtin_amdgcn_sched_group_barrier(int, int, int) {}
+extern "C" inline void __builtin_amdgcn_iglp_opt(int) {}
+extern "C" inline void __builtin_amdgcn_s_setprio(short) {}
+extern "C" inline void __builtin_amdgcn_s_dcache_inv() {}
+extern "C" inline void __builtin_amdgcn_s_dcache_wb() {}
+extern "C" inline void __builtin_amdgcn_buffer_wbinvl1() {}
 
 //
 // Integer and bit operations
@@ -726,7 +825,7 @@ inline void __builtin_amdgcn_buffer_wbinvl1() {}
 
 //! Bytes of {src0, src1} (selectors 0 to 7), their sign bits (8 to 11), 0x00
 //! (12) or 0xff (13 and above), chosen by each byte of sel
-inline unsigned int __builtin_amdgcn_perm(unsigned int src0, unsigned int src1, unsigned int sel)
+extern "C" inline unsigned int __builtin_amdgcn_perm(unsigned int src0, unsigned int src1, unsigned int sel)
 {
     const uint64_t both = uint64_t(src0) << 32 | src1;
     unsigned int result = 0;
@@ -747,24 +846,24 @@ inline unsigned int __builtin_amdgcn_perm(unsigned int src0, unsigned int src1, 
 }
 
 //! {src0, src1} shifted right by src2 bits (alignbit) or bytes (alignbyte)
-inline unsigned int __builtin_amdgcn_alignbit(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_alignbit(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     return unsigned(((uint64_t(src0) << 32) | src1) >> (src2 & 31));
 }
 
-inline unsigned int __builtin_amdgcn_alignbyte(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_alignbyte(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     return unsigned(((uint64_t(src0) << 32) | src1) >> (8 * (src2 & 3)));
 }
 
 //! The width bits of src from bit offset, zero- or sign-extended
-inline unsigned int __builtin_amdgcn_ubfe(unsigned int src, unsigned int offset, unsigned int width)
+extern "C" inline unsigned int __builtin_amdgcn_ubfe(unsigned int src, unsigned int offset, unsigned int width)
 {
     width &= 31;
     return width == 0 ? 0 : (src >> (offset & 31)) & ((1u << width) - 1);
 }
 
-inline int __builtin_amdgcn_sbfe(int src, unsigned int offset, unsigned int width)
+extern "C" inline int __builtin_amdgcn_sbfe(int src, unsigned int offset, unsigned int width)
 {
     width &= 31;
     if (width == 0)
@@ -775,7 +874,7 @@ inline int __builtin_amdgcn_sbfe(int src, unsigned int offset, unsigned int widt
 
 //! The average of each byte of src0 and src1, rounded up when the byte of
 //! src2 is odd
-inline unsigned int __builtin_amdgcn_lerp(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_lerp(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     unsigned int result = 0;
     for (unsigned k = 0; k < 32; k += 8)
@@ -785,7 +884,7 @@ inline unsigned int __builtin_amdgcn_lerp(unsigned int src0, unsigned int src1, 
 
 //! The sum of absolute differences of bytes (sad_u8, and shifted left 16 in
 //! sad_hi_u8) or of 16-bit halves (sad_u16), plus src2
-inline unsigned int __builtin_amdgcn_sad_u8(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_sad_u8(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     unsigned int sum = src2;
     for (unsigned k = 0; k < 32; k += 8)
@@ -793,12 +892,12 @@ inline unsigned int __builtin_amdgcn_sad_u8(unsigned int src0, unsigned int src1
     return sum;
 }
 
-inline unsigned int __builtin_amdgcn_sad_hi_u8(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_sad_hi_u8(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     return (__builtin_amdgcn_sad_u8(src0, src1, 0) << 16) + src2;
 }
 
-inline unsigned int __builtin_amdgcn_sad_u16(unsigned int src0, unsigned int src1, unsigned int src2)
+extern "C" inline unsigned int __builtin_amdgcn_sad_u16(unsigned int src0, unsigned int src1, unsigned int src2)
 {
     return src2 + unsigned(std::abs(int(src0 & 0xffff) - int(src1 & 0xffff))) +
            unsigned(std::abs(int(src0 >> 16) - int(src1 >> 16)));
@@ -806,45 +905,45 @@ inline unsigned int __builtin_amdgcn_sad_u16(unsigned int src0, unsigned int src
 
 // Dot products of the 8-bit (dot4) or 4-bit (dot8) integers packed in a and
 // b, plus c; with clamp, saturated rather than wrapped
-inline int __builtin_amdgcn_sdot4(int a, int b, int c, bool clamp)
+extern "C" inline int __builtin_amdgcn_sdot4(int a, int b, int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_int(c + d::dot(uint32_t(a), true, uint32_t(b), true, 8), clamp);
 }
 
-inline int __builtin_amdgcn_sdot8(int a, int b, int c, bool clamp)
+extern "C" inline int __builtin_amdgcn_sdot8(int a, int b, int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_int(c + d::dot(uint32_t(a), true, uint32_t(b), true, 4), clamp);
 }
 
-inline unsigned int __builtin_amdgcn_udot4(unsigned int a, unsigned int b, unsigned int c, bool clamp)
+extern "C" inline unsigned int __builtin_amdgcn_udot4(unsigned int a, unsigned int b, unsigned int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_uint(int64_t(c) + d::dot(a, false, b, false, 8), clamp);
 }
 
-inline unsigned int __builtin_amdgcn_udot8(unsigned int a, unsigned int b, unsigned int c, bool clamp)
+extern "C" inline unsigned int __builtin_amdgcn_udot8(unsigned int a, unsigned int b, unsigned int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_uint(int64_t(c) + d::dot(a, false, b, false, 4), clamp);
 }
 
 //! With the signedness of each operand given
-inline int __builtin_amdgcn_sudot4(bool a_signed, int a, bool b_signed, int b, int c, bool clamp)
+extern "C" inline int __builtin_amdgcn_sudot4(bool a_signed, int a, bool b_signed, int b, int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_int(c + d::dot(uint32_t(a), a_signed, uint32_t(b), b_signed, 8), clamp);
 }
 
-inline int __builtin_amdgcn_sudot8(bool a_signed, int a, bool b_signed, int b, int c, bool clamp)
+extern "C" inline int __builtin_amdgcn_sudot8(bool a_signed, int a, bool b_signed, int b, int c, bool clamp)
 {
     namespace d = cuda4cpu::detail::amdgcn;
     return d::clamp_int(c + d::dot(uint32_t(a), a_signed, uint32_t(b), b_signed, 4), clamp);
 }
 
 //! Each bit twice
-inline uint64_t __builtin_amdgcn_s_bitreplicate(unsigned int src)
+extern "C" inline uint64_t __builtin_amdgcn_s_bitreplicate(unsigned int src)
 {
     uint64_t result = 0;
     for (unsigned k = 0; k < 32; ++k)
@@ -853,7 +952,7 @@ inline uint64_t __builtin_amdgcn_s_bitreplicate(unsigned int src)
 }
 
 //! old with byte (sel & 3) replaced by f rounded to an integer in [0, 255]
-inline unsigned int __builtin_amdgcn_cvt_pk_u8_f32(float f, unsigned int sel, unsigned int old)
+extern "C" inline unsigned int __builtin_amdgcn_cvt_pk_u8_f32(float f, unsigned int sel, unsigned int old)
 {
     const unsigned shift = 8 * (sel & 3);
     const float rounded = std::isnan(f) ? 0.0f : std::clamp(std::nearbyint(f), 0.0f, 255.0f);
@@ -865,45 +964,45 @@ inline unsigned int __builtin_amdgcn_cvt_pk_u8_f32(float f, unsigned int sel, un
 // cosines of x turns (2 pi x radians); exp2 and log, which is log2
 //
 
-inline double __builtin_amdgcn_rcp(double x) { return 1.0 / x; }
-inline float __builtin_amdgcn_rcpf(float x) { return 1.0f / x; }
-inline _Float16 __builtin_amdgcn_rcph(_Float16 x) { return _Float16(1.0f / float(x)); }
-inline double __builtin_amdgcn_rsq(double x) { return 1.0 / std::sqrt(x); }
-inline float __builtin_amdgcn_rsqf(float x) { return 1.0f / std::sqrt(x); }
-inline _Float16 __builtin_amdgcn_rsqh(_Float16 x) { return _Float16(1.0f / std::sqrt(float(x))); }
-inline double __builtin_amdgcn_sqrt(double x) { return std::sqrt(x); }
-inline float __builtin_amdgcn_sqrtf(float x) { return std::sqrt(x); }
-inline _Float16 __builtin_amdgcn_sqrth(_Float16 x) { return _Float16(std::sqrt(float(x))); }
-inline float __builtin_amdgcn_sinf(float x) { return x == 0 ? x : float(std::sin(cuda4cpu::detail::amdgcn::turns(x))); }
-inline float __builtin_amdgcn_cosf(float x) { return float(std::cos(cuda4cpu::detail::amdgcn::turns(x))); }
-inline _Float16 __builtin_amdgcn_sinh(_Float16 x) { return x == 0 ? x : _Float16(std::sin(cuda4cpu::detail::amdgcn::turns(float(x)))); }
-inline _Float16 __builtin_amdgcn_cosh(_Float16 x) { return _Float16(std::cos(cuda4cpu::detail::amdgcn::turns(float(x)))); }
-inline float __builtin_amdgcn_exp2f(float x) { return std::exp2(x); }
-inline float __builtin_amdgcn_logf(float x) { return std::log2(x); }
+extern "C" inline double __builtin_amdgcn_rcp(double x) { return 1.0 / x; }
+extern "C" inline float __builtin_amdgcn_rcpf(float x) { return 1.0f / x; }
+extern "C" inline _Float16 __builtin_amdgcn_rcph(_Float16 x) { return _Float16(1.0f / float(x)); }
+extern "C" inline double __builtin_amdgcn_rsq(double x) { return 1.0 / std::sqrt(x); }
+extern "C" inline float __builtin_amdgcn_rsqf(float x) { return 1.0f / std::sqrt(x); }
+extern "C" inline _Float16 __builtin_amdgcn_rsqh(_Float16 x) { return _Float16(1.0f / std::sqrt(float(x))); }
+extern "C" inline double __builtin_amdgcn_sqrt(double x) { return std::sqrt(x); }
+extern "C" inline float __builtin_amdgcn_sqrtf(float x) { return std::sqrt(x); }
+extern "C" inline _Float16 __builtin_amdgcn_sqrth(_Float16 x) { return _Float16(std::sqrt(float(x))); }
+extern "C" inline float __builtin_amdgcn_sinf(float x) { return x == 0 ? x : float(std::sin(cuda4cpu::detail::amdgcn::turns(x))); }
+extern "C" inline float __builtin_amdgcn_cosf(float x) { return float(std::cos(cuda4cpu::detail::amdgcn::turns(x))); }
+extern "C" inline _Float16 __builtin_amdgcn_sinh(_Float16 x) { return x == 0 ? x : _Float16(std::sin(cuda4cpu::detail::amdgcn::turns(float(x)))); }
+extern "C" inline _Float16 __builtin_amdgcn_cosh(_Float16 x) { return _Float16(std::cos(cuda4cpu::detail::amdgcn::turns(float(x)))); }
+extern "C" inline float __builtin_amdgcn_exp2f(float x) { return std::exp2(x); }
+extern "C" inline float __builtin_amdgcn_logf(float x) { return std::log2(x); }
 
-inline double __builtin_amdgcn_ldexp(double x, int e) { return std::ldexp(x, e); }
-inline float __builtin_amdgcn_ldexpf(float x, int e) { return std::ldexp(x, e); }
-inline _Float16 __builtin_amdgcn_ldexph(_Float16 x, int e) { return _Float16(std::ldexp(float(x), e)); }
+extern "C" inline double __builtin_amdgcn_ldexp(double x, int e) { return std::ldexp(x, e); }
+extern "C" inline float __builtin_amdgcn_ldexpf(float x, int e) { return std::ldexp(x, e); }
+extern "C" inline _Float16 __builtin_amdgcn_ldexph(_Float16 x, int e) { return _Float16(std::ldexp(float(x), e)); }
 
 //! frexp's mantissa (the value itself if infinite or NaN) and exponent (0 then)
-inline double __builtin_amdgcn_frexp_mant(double x) { int e; return std::isfinite(x) ? std::frexp(x, &e) : x; }
-inline float __builtin_amdgcn_frexp_mantf(float x) { int e; return std::isfinite(x) ? std::frexp(x, &e) : x; }
-inline _Float16 __builtin_amdgcn_frexp_manth(_Float16 x) { return _Float16(__builtin_amdgcn_frexp_mantf(float(x))); }
-inline int __builtin_amdgcn_frexp_exp(double x) { int e = 0; if (std::isfinite(x)) std::frexp(x, &e); return e; }
-inline int __builtin_amdgcn_frexp_expf(float x) { int e = 0; if (std::isfinite(x)) std::frexp(x, &e); return e; }
-inline short __builtin_amdgcn_frexp_exph(_Float16 x) { return short(__builtin_amdgcn_frexp_expf(float(x))); }
+extern "C" inline double __builtin_amdgcn_frexp_mant(double x) { int e; return std::isfinite(x) ? std::frexp(x, &e) : x; }
+extern "C" inline float __builtin_amdgcn_frexp_mantf(float x) { int e; return std::isfinite(x) ? std::frexp(x, &e) : x; }
+extern "C" inline _Float16 __builtin_amdgcn_frexp_manth(_Float16 x) { return _Float16(__builtin_amdgcn_frexp_mantf(float(x))); }
+extern "C" inline int __builtin_amdgcn_frexp_exp(double x) { int e = 0; if (std::isfinite(x)) std::frexp(x, &e); return e; }
+extern "C" inline int __builtin_amdgcn_frexp_expf(float x) { int e = 0; if (std::isfinite(x)) std::frexp(x, &e); return e; }
+extern "C" inline short __builtin_amdgcn_frexp_exph(_Float16 x) { return short(__builtin_amdgcn_frexp_expf(float(x))); }
 
 //! x - floor(x), below 1
-inline double __builtin_amdgcn_fract(double x) { return cuda4cpu::detail::amdgcn::fract(x); }
-inline float __builtin_amdgcn_fractf(float x) { return cuda4cpu::detail::amdgcn::fract(x); }
-inline _Float16 __builtin_amdgcn_fracth(_Float16 x) { return _Float16(cuda4cpu::detail::amdgcn::fract(float(x))); }
+extern "C" inline double __builtin_amdgcn_fract(double x) { return cuda4cpu::detail::amdgcn::fract(x); }
+extern "C" inline float __builtin_amdgcn_fractf(float x) { return cuda4cpu::detail::amdgcn::fract(x); }
+extern "C" inline _Float16 __builtin_amdgcn_fracth(_Float16 x) { return _Float16(cuda4cpu::detail::amdgcn::fract(float(x))); }
 
 //! Whether x is of a class that mask has: bit 0 signaling NaN, 1 quiet NaN,
 //! 2 -infinity, 3 -normal, 4 -subnormal, 5 -0, 6 +0, 7 +subnormal,
 //! 8 +normal, 9 +infinity
-inline bool __builtin_amdgcn_class(double x, int mask) { return cuda4cpu::detail::amdgcn::fp_class(x, mask); }
-inline bool __builtin_amdgcn_classf(float x, int mask) { return cuda4cpu::detail::amdgcn::fp_class(x, mask); }
-inline bool __builtin_amdgcn_classh(_Float16 x, int mask)
+extern "C" inline bool __builtin_amdgcn_class(double x, int mask) { return cuda4cpu::detail::amdgcn::fp_class(x, mask); }
+extern "C" inline bool __builtin_amdgcn_classf(float x, int mask) { return cuda4cpu::detail::amdgcn::fp_class(x, mask); }
+extern "C" inline bool __builtin_amdgcn_classh(_Float16 x, int mask)
 {
     // A half's class is its float's, except subnormals and signaling NaNs
     const uint16_t bits = std::bit_cast<uint16_t>(x);
@@ -920,8 +1019,8 @@ inline bool __builtin_amdgcn_classh(_Float16 x, int mask)
 }
 
 //! The median, or with a NaN, the minimum of the others
-inline float __builtin_amdgcn_fmed3f(float a, float b, float c) { return cuda4cpu::detail::amdgcn::med3(a, b, c); }
-inline _Float16 __builtin_amdgcn_fmed3h(_Float16 a, _Float16 b, _Float16 c)
+extern "C" inline float __builtin_amdgcn_fmed3f(float a, float b, float c) { return cuda4cpu::detail::amdgcn::med3(a, b, c); }
+extern "C" inline _Float16 __builtin_amdgcn_fmed3h(_Float16 a, _Float16 b, _Float16 c)
 {
     return _Float16(cuda4cpu::detail::amdgcn::med3(float(a), float(b), float(c)));
 }
@@ -933,26 +1032,26 @@ inline _Float16 __builtin_amdgcn_fmed3h(_Float16 a, _Float16 b, _Float16 c)
 //
 
 //! old >= value ? 0 : old + 1
-inline uint32_t __builtin_amdgcn_atomic_inc32(volatile uint32_t *p, uint32_t value, unsigned int, const char *)
+extern "C" inline uint32_t __builtin_amdgcn_atomic_inc32(volatile uint32_t *p, uint32_t value, unsigned int, const char *)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(const_cast<uint32_t *>(p),
                                                    [&](uint32_t old) { return old >= value ? 0 : old + 1; });
 }
 
-inline uint64_t __builtin_amdgcn_atomic_inc64(volatile uint64_t *p, uint64_t value, unsigned int, const char *)
+extern "C" inline uint64_t __builtin_amdgcn_atomic_inc64(volatile uint64_t *p, uint64_t value, unsigned int, const char *)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(const_cast<uint64_t *>(p),
                                                    [&](uint64_t old) { return old >= value ? 0 : old + 1; });
 }
 
 //! old == 0 || old > value ? value : old - 1
-inline uint32_t __builtin_amdgcn_atomic_dec32(volatile uint32_t *p, uint32_t value, unsigned int, const char *)
+extern "C" inline uint32_t __builtin_amdgcn_atomic_dec32(volatile uint32_t *p, uint32_t value, unsigned int, const char *)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(const_cast<uint32_t *>(p),
                                                    [&](uint32_t old) { return old == 0 || old > value ? value : old - 1; });
 }
 
-inline uint64_t __builtin_amdgcn_atomic_dec64(volatile uint64_t *p, uint64_t value, unsigned int, const char *)
+extern "C" inline uint64_t __builtin_amdgcn_atomic_dec64(volatile uint64_t *p, uint64_t value, unsigned int, const char *)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(const_cast<uint64_t *>(p),
                                                    [&](uint64_t old) { return old == 0 || old > value ? value : old - 1; });
@@ -961,7 +1060,7 @@ inline uint64_t __builtin_amdgcn_atomic_dec64(volatile uint64_t *p, uint64_t val
 // Floating-point atomics on global, flat (generic) and LDS (shared) memory,
 // which are all memory here
 #define CUDA4CPU_FLOAT_ATOMIC(name, T, update)                                                    \
-    inline T __builtin_amdgcn_##name(T *p, T value)                                               \
+    extern "C" inline T __builtin_amdgcn_##name(T *p, T value)                                    \
     {                                                                                             \
         return cuda4cpu::detail::amdgcn::atomic_update(p, [&](T old) { return update; });        \
     }
@@ -979,17 +1078,17 @@ CUDA4CPU_FLOAT_ATOMIC(ds_atomic_fadd_f64, double, old + value)
 
 // LDS atomics with an order, a scope and volatility, which only matter to
 // the compiler
-inline float __builtin_amdgcn_ds_faddf(float *p, float value, int, int, bool)
+extern "C" inline float __builtin_amdgcn_ds_faddf(float *p, float value, int, int, bool)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(p, [&](float old) { return old + value; });
 }
 
-inline float __builtin_amdgcn_ds_fminf(float *p, float value, int, int, bool)
+extern "C" inline float __builtin_amdgcn_ds_fminf(float *p, float value, int, int, bool)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(p, [&](float old) { return std::fmin(old, value); });
 }
 
-inline float __builtin_amdgcn_ds_fmaxf(float *p, float value, int, int, bool)
+extern "C" inline float __builtin_amdgcn_ds_fmaxf(float *p, float value, int, int, bool)
 {
     return cuda4cpu::detail::amdgcn::atomic_update(p, [&](float old) { return std::fmax(old, value); });
 }
