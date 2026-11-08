@@ -57,7 +57,9 @@ AMD's ISA manuals and LLVM's lowering.
    passes as `gfx1201` too.
 3. **WMMA on 32-lane wavefronts**, RDNA3's and RDNA4's (`_gfx12`), and
    SWMMAC, with the hardware's lane layouts. They take `ext_vector_type`
-   vectors, so they need Clang as the host compiler. Then rocWMMA's samples.
+   vectors, so they need Clang as the host compiler. Done. Then rocWMMA's
+   samples, which need AMD's vector types (`HIP_vector_type<T, N>` as a
+   class template that rocWMMA specializes) on the AMD platform.
 4. **64-lane wavefronts and CDNA** (`gfx90a`, `gfx942`, `gfx950`): MFMA,
    and the conversions only CDNA has, fp8/bf8 in AMD's FNUZ formats
    (`gfx942`) and the scaled FP4/FP6/FP8 ones (OCP MX, `gfx950`). They need

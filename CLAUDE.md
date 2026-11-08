@@ -94,7 +94,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   both. The classes derive from templates (`detail::nv_fp8<I>`,
   `detail::amd_fp8<I, We, Wm>`); CUDA's convert explicitly, AMD's
   implicitly, so `__half(amd_value)` is ambiguous where copy-initialization
-  isn't.
+  isn't. `hip_fp8.h`'s classes (`__hip_fp8_e4m3`, ...) are at global
+  scope, as AMD's, since rocWMMA declares them first.
 - `include/cuComplex.h` and `include/hip/hip_complex.h`: complex numbers as
   `float2`/`double2`, with CUDA's formulas (scaled division and absolute
   value, `cuCfmaf`'s order of additions). The HIP names are macros for the
@@ -196,6 +197,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `buffer_address` applies the out-of-range rules of AMD's rocjitsu
     (`addr_calc_buffer.h` in ROCm/rocm-systems, qualified on gfx1100 and
     gfx1201): no ISA manual could be fetched.
+  - `amdgcn_wmma.h` (included by `amdgcn.h` with Clang): the WMMA and
+    SWMMAC builtins of 32-lane wavefronts, phase 3. They're lane
+    operations: `mm::run` writes each lane's A, B, C and index to a
+    per-warp thread-local slot (`mm::operands`), `__syncwarp(exec)`, and
+    each lane computes its 8 elements of D from every lane's (`warp_call`),
+    then syncs again. The layouts are AMD's Matrix Instruction Calculator's
+    (`InstCalcGfx11`, `InstCalcGfx12` in `matrix_calculator.py`) and
+    rocjitsu's (`lib/arith/src/wmma`), which disagree only on the 4-bit
+    SWMMAC with K = 64 (rocjitsu's is used). The arithmetic is rocjitsu's
+    "loose" model: block order and rounding of 16-bit results, integer
+    stages with clamp; its bit-exact model of the hardware's dot units
+    isn't reproduced.
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -592,6 +605,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     form, on every code, midpoint and neighbor and 20000 random floats), and
     buffer resources in each out-of-range mode, with the scalar offset,
     dword by dword (Clang), the lane as index, stores and atomics.
+    `hip_amdgcn_wmma` (`hip/amdgcn_wmma.hip`, Clang only): every WMMA
+    and SWMMAC builtin against an exact host product, with fragments packed
+    by the test's own layouts (the calculator's register and bit formulas),
+    and the 16-bit rounding blocks, bfloat16's truncation, staged clamp,
+    RDNA3's copy in each half, and C's other halves with `opsel`.
 
 ## How execution works (read before touching `launch.hpp`)
 
