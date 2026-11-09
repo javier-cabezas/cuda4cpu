@@ -678,9 +678,27 @@ def find_dim_fields(tokens):
         if tokens[i].text not in ('gridDim', 'blockDim'):
             continue
         before = tokens[i - 1].text
-        if before in ('.', '->') or \
-                (before == '::' and i >= 2 and (tokens[i - 2].kind == 'id' or tokens[i - 2].text == '>')):
+        if before in ('.', '->') or (before == '::' and i >= 2 and names_class(tokens, i - 2)):
             yield i
+
+
+def names_class(tokens, k):
+    """Whether tokens[k], before a ::, ends a name that qualifies another: an
+    identifier that isn't a keyword (return ::blockDim.x), or the > of a
+    template's arguments, not a comparison (x > ::blockDim.x)"""
+    t = tokens[k]
+    if t.kind == 'id':
+        return t.text not in KEYWORDS
+    if t.text != '>':
+        return False
+    opener = match_back(tokens, k)
+    if opener is None or opener == 0 or tokens[opener - 1].kind != 'id' or tokens[opener - 1].text in KEYWORDS:
+        return False
+    # The lexer splits && and || into single characters
+    inside = tokens[opener:k]
+    if any(u.text in (';', '{', '}') for u in inside):
+        return False
+    return not any(u.text in ('&', '|') and v.text == u.text for u, v in zip(inside, inside[1:]))
 
 
 # Words after which gridDim or blockDim is an expression, not a declaration

@@ -156,12 +156,15 @@ inline V lax_operand(const A &a)
     return std::bit_cast<V>(a);
 }
 
-//! A result that converts to any vector of its size, as the builtins'
+//! A result that converts to any vector of its size, as the builtins'.
+//! Passed to a function overloaded for two such types, it's ambiguous,
+//! where the compiler's builtin would pick the overload for its own type.
 template <typename V>
 struct lax_result {
     V value;
 
-    template <typename U, std::enable_if_t<sizeof(U) == sizeof(V) && !std::is_arithmetic_v<U>> * = nullptr>
+    template <typename U, std::enable_if_t<sizeof(U) == sizeof(V) && !std::is_arithmetic_v<U> &&
+                                           std::is_trivially_copyable_v<U>> * = nullptr>
     operator U() const
     {
         return std::bit_cast<U>(value);

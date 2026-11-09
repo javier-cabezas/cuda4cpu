@@ -161,6 +161,10 @@ class Launches(unittest.TestCase):
         # Qualified by a class (rocWMMA's fragment<...>::blockDim()), not by a leading ::
         self.assertEqual(rewrite('template <int N> unsigned f<N>::blockDim() { return S::gridDim + ::blockDim.x; }'),
                          'template <int N> unsigned f<N>::cuda4cpu_blockDim() { return S::cuda4cpu_gridDim + ::blockDim.x; }')
+        # Not after a keyword or a comparison
+        for code in ('unsigned f() { return ::blockDim.x; }', 'bool f(int x) { return x > ::blockDim.x; }',
+                     'bool f(int a, int b, int x) { return a < b && x > ::gridDim.x; }'):
+            self.assertEqual(rewrite(code), code)
 
     def test_spaces_between_brackets(self):
         self.assertEqual(rewrite('k << < g, b >> > (x);'), launch('k', ' g, b ', 'x') + ';')
