@@ -58,6 +58,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   global scope, so helpers go in `cuda4cpu::detail`, never in `cuda_api`.
   Most functions are header-only. Device properties and aligned allocation
   are in the library.
+  The vector types (`float4`, ... in `types.hpp`, `VECTOR_TYPE`) are
+  CUDA's structs, except on HIP's AMD platform (`__HIP_PLATFORM_AMD__`
+  without `__HIP_PLATFORM_NVIDIA__`, known when `cuda_runtime.h` is
+  included, from the drivers' `-D`), where they are aliases of AMD's
+  `HIP_vector_type<T, N>` (`hip/amd_vector_types.h`, global scope, HIP 7's
+  interface; every operation goes through `operator[]`, so that rocWMMA's
+  `HIP_vector_base` specializations, of any storage, work).
 - `include/cuda/graphs.hpp` + `lib/graphs.cpp`: CUDA graphs and stream
   capture. The API is declared in the header and defined in the library,
   except what needs a kernel's type: `detail::bound_kernel` (a kernel with
@@ -84,6 +91,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   comparison and math functions of bfloat16 are overloads of half's
   (`__hadd`, `hsqrt`, ...). `hip/hip_fp16.h` and `hip/hip_bf16.h` include
   them, the latter with HIP's names (`__hip_bfloat16`, `HIPRT_*_BF16`).
+  On HIP's AMD platform, `__half`'s operators are function templates
+  (`CUDA4CPU_HALF_OPERATOR`, `template <int = 0>`), so that a library's own
+  non-template operators win the tie (AMD's are device-only and rocWMMA's
+  host-only; cuda4cpu has no such split), and `__half` converts to and from
+  `_Float16` exactly.
 - `include/cuda_fp8.h` and `include/hip/hip_fp8.h`: 8-bit floats, as
   `small_float.hpp` formats. CUDA's and AMD's rules for what doesn't fit
   differ, and each header follows its vendor's (`detail::nv_fp8_bits`,
@@ -180,7 +192,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     others, every lane copies all the slots, and a second one keeps them
     from being overwritten too early. The builtins' names are functions too,
     for calls around the macros, which share one place. DPP (`dpp_source`), `ds_swizzle` and `permlane` compute each
-    lane's source from LLVM's encodings (`SIDefines.h`). `s_barrier` is a
+    lane's source from LLVM's encodings (`SIDefines.h`), and
+    `ds_swizzle`'s FFT and rotate modes from rocjitsu's `ds_swizzle.cpp`
+    (checked against an RDNA4 GPU). `s_barrier` is a
     `__syncthreads()` named `s_barrier_name` for the divergent barrier
     check, and `s_sleep` calls `thread_block::interleave()`, so that
     spin-waits progress. Builtins with `ext_vector_type` operands will need
@@ -208,7 +222,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     SWMMAC with K = 64 (rocjitsu's is used). The arithmetic is rocjitsu's
     "loose" model: block order and rounding of 16-bit results, integer
     stages with clamp; its bit-exact model of the hardware's dot units
-    isn't reproduced.
+    isn't reproduced. The `cuda4cpu_amdgcn_*` functions the macros call
+    are templates that bit-cast any operand of the right size
+    (`lax_operand`) and return a `lax_result`, which converts to any vector
+    of its size, as Clang's builtins do: rocWMMA passes 8 halves as 4
+    floats and assigns the result with `= {...}`. CDNA's MFMA/SMFMAC names
+    (from Clang's reference) are variadic templates that abort, so that
+    rocWMMA's gfx9 branches, whose calls aren't dependent, compile.
 - `lib/cuda4cpu.cpp`: the main compiled source. It holds all the fiber code
   (guarded stacks, the x86-64 assembly context switch and its
   `ucontext`/`_setjmp` fallback, the barrier scheduler, the per-OS-thread
@@ -242,7 +262,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     `std::vector<dim3>`), or a later declarator of a statement that starts
     with a type; a parameter's scope is the function's body, past a
     constructor's initializers, or a for/if/while/switch statement. Not
-    member functions defined out of line.
+    variables of member functions defined out of line. Also `C::gridDim`,
+    qualified by a class (rocWMMA's `fragment<...>::blockDim()` defined
+    out of line), not `::gridDim`.
   - turns `extern __shared__ T x[][N]` into a pointer to arrays,
     `dynamic_shared<T[N]>()`
   - turns `clock()` inside `__global__`/`__device__` bodies into
@@ -374,7 +396,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   with another host compiler (from the driver's `--version`), it's skipped
   as unavailable, which keeps its baseline status. CI's
   `compatibility-clang` job builds cuda4cpu with Clang 18 and runs them
-  (`--filter '*/rocprim_*'`). `run.py`
+  (`--filter '*/roc[pw]*_*'`, rocPRIM's and rocWMMA's). `run.py`
   fetches the suites, builds each program with `cuda4cpu-c++`, or
   `cuda4cpu-hipcc` for suites with `"driver": "hipcc"` (`.c` files with the
   C compiler), runs it, and reports. `baseline.json` holds the expected status of each

@@ -158,6 +158,9 @@ class Launches(unittest.TestCase):
     def test_dim_fields(self):
         self.assertEqual(rewrite('p.gridDim = g; q->blockDim.x = 1; n = gridDim.x * blockDim.x;'),
                          'p.cuda4cpu_gridDim = g; q->cuda4cpu_blockDim.x = 1; n = gridDim.x * blockDim.x;')
+        # Qualified by a class (rocWMMA's fragment<...>::blockDim()), not by a leading ::
+        self.assertEqual(rewrite('template <int N> unsigned f<N>::blockDim() { return S::gridDim + ::blockDim.x; }'),
+                         'template <int N> unsigned f<N>::cuda4cpu_blockDim() { return S::cuda4cpu_gridDim + ::blockDim.x; }')
 
     def test_spaces_between_brackets(self):
         self.assertEqual(rewrite('k << < g, b >> > (x);'), launch('k', ' g, b ', 'x') + ';')

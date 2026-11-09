@@ -146,6 +146,29 @@ inline int64_t saturate(int64_t acc)
     return std::clamp<int64_t>(acc, INT32_MIN, INT32_MAX);
 }
 
+//! An operand of the type a builtin takes, from any of its size: as the
+//! compiler's builtins, which take a vector of the same size (rocWMMA
+//! passes 8 halves as 4 floats)
+template <typename V, typename A>
+inline V lax_operand(const A &a)
+{
+    static_assert(sizeof(A) == sizeof(V), "a matrix operand of another size");
+    return std::bit_cast<V>(a);
+}
+
+//! A result that converts to any vector of its size, as the builtins'
+template <typename V>
+struct lax_result {
+    V value;
+
+    template <typename U, std::enable_if_t<sizeof(U) == sizeof(V) && !std::is_arithmetic_v<U>> * = nullptr>
+    operator U() const
+    {
+        return std::bit_cast<U>(value);
+    }
+    auto operator[](unsigned i) const { return value[i]; }
+};
+
 //! Gives the lane's operands to the warp's lanes that reach site with it,
 //! and returns compute's D from all of theirs
 template <typename D, typename A, typename B, typename F>
@@ -439,14 +462,16 @@ inline v8i32 sparse_int(const warp_call &w, unsigned l, const v8i32 &c, unsigned
 // RDNA3
 
 #define CUDA4CPU_GFX11_FLOAT(name, In, AB)                                                                       \
-    inline cuda4cpu::detail::amdgcn::mm::v8f32 cuda4cpu_amdgcn_##name(                                            \
-        uint64_t site, cuda4cpu::detail::amdgcn::mm::AB a, cuda4cpu::detail::amdgcn::mm::AB b,                    \
-        cuda4cpu::detail::amdgcn::mm::v8f32 c)                                                                    \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::v8f32> cuda4cpu_amdgcn_##name( \
+        uint64_t site, const TA &a_, const TB &b_, const TC &c_)                                                  \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<m::AB>(a_), b = m::lax_operand<m::AB>(b_);                                  \
+        const auto c = m::lax_operand<m::v8f32>(c_);                                                              \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::v8f32, (m::gfx11_float<m::kind::In, m::v8f32>(w, l, c, false, m::kind::f16,     \
-                                                                                false)));                         \
+        return {CUDA4CPU_MM_RUN(m::v8f32, (m::gfx11_float<m::kind::In, m::v8f32>(w, l, c, false, m::kind::f16,     \
+                                                                                false)))};                         \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::v8f32 __builtin_amdgcn_##name(                                \
         cuda4cpu::detail::amdgcn::mm::AB a, cuda4cpu::detail::amdgcn::mm::AB b,                                   \
@@ -459,13 +484,14 @@ CUDA4CPU_GFX11_FLOAT(wmma_f32_16x16x16_bf16_w32, bf16, v16i16)
 #undef CUDA4CPU_GFX11_FLOAT
 
 #define CUDA4CPU_GFX11_PACKED(name, In, V)                                                                       \
-    inline cuda4cpu::detail::amdgcn::mm::V cuda4cpu_amdgcn_##name(                                                \
-        uint64_t site, cuda4cpu::detail::amdgcn::mm::V a, cuda4cpu::detail::amdgcn::mm::V b,                      \
-        cuda4cpu::detail::amdgcn::mm::V c, bool opsel)                                                            \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::V> cuda4cpu_amdgcn_##name(     \
+        uint64_t site, const TA &a_, const TB &b_, const TC &c_, bool opsel)                                      \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<m::V>(a_), b = m::lax_operand<m::V>(b_), c = m::lax_operand<m::V>(c_);      \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::V, (m::gfx11_float<m::kind::In, m::V>(w, l, c, true, m::kind::In, opsel)));     \
+        return {CUDA4CPU_MM_RUN(m::V, (m::gfx11_float<m::kind::In, m::V>(w, l, c, true, m::kind::In, opsel)))};     \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::V __builtin_amdgcn_##name(                                    \
         cuda4cpu::detail::amdgcn::mm::V a, cuda4cpu::detail::amdgcn::mm::V b, cuda4cpu::detail::amdgcn::mm::V c, \
@@ -482,13 +508,15 @@ CUDA4CPU_GFX11_PACKED(wmma_bf16_16x16x16_bf16_tied_w32, bf16, v16i16)
 #undef CUDA4CPU_GFX11_PACKED
 
 #define CUDA4CPU_GFX11_INT(name, bits, AB)                                                                       \
-    inline cuda4cpu::detail::amdgcn::mm::v8i32 cuda4cpu_amdgcn_##name(                                            \
-        uint64_t site, bool sign_a, cuda4cpu::detail::amdgcn::mm::AB a, bool sign_b,                              \
-        cuda4cpu::detail::amdgcn::mm::AB b, cuda4cpu::detail::amdgcn::mm::v8i32 c, bool clamp)                    \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::v8i32> cuda4cpu_amdgcn_##name( \
+        uint64_t site, bool sign_a, const TA &a_, bool sign_b, const TB &b_, const TC &c_, bool clamp)            \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<m::AB>(a_), b = m::lax_operand<m::AB>(b_);                                  \
+        const auto c = m::lax_operand<m::v8i32>(c_);                                                              \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::v8i32, m::gfx11_int(w, l, c, bits, sign_a, sign_b, clamp));                     \
+        return {CUDA4CPU_MM_RUN(m::v8i32, m::gfx11_int(w, l, c, bits, sign_a, sign_b, clamp))};                     \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::v8i32 __builtin_amdgcn_##name(                                \
         bool sign_a, cuda4cpu::detail::amdgcn::mm::AB a, bool sign_b, cuda4cpu::detail::amdgcn::mm::AB b,         \
@@ -503,13 +531,15 @@ CUDA4CPU_GFX11_INT(wmma_i32_16x16x16_iu4_w32, 4, v2i32)
 // RDNA4
 
 #define CUDA4CPU_GFX12_FLOAT(name, In, AB, D, packed, out)                                                       \
-    inline cuda4cpu::detail::amdgcn::mm::D cuda4cpu_amdgcn_##name(                                               \
-        uint64_t site, cuda4cpu::detail::amdgcn::mm::AB a, cuda4cpu::detail::amdgcn::mm::AB b,                    \
-        cuda4cpu::detail::amdgcn::mm::D c)                                                                        \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::D> cuda4cpu_amdgcn_##name(     \
+        uint64_t site, const TA &a_, const TB &b_, const TC &c_)                                                  \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<m::AB>(a_), b = m::lax_operand<m::AB>(b_);                                  \
+        const auto c = m::lax_operand<m::D>(c_);                                                                  \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::D, (m::gfx12_float<m::kind::In, m::D>(w, l, c, packed, m::kind::out)));         \
+        return {CUDA4CPU_MM_RUN(m::D, (m::gfx12_float<m::kind::In, m::D>(w, l, c, packed, m::kind::out)))};         \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::D __builtin_amdgcn_##name(                                    \
         cuda4cpu::detail::amdgcn::mm::AB a, cuda4cpu::detail::amdgcn::mm::AB b, cuda4cpu::detail::amdgcn::mm::D c) \
@@ -523,13 +553,15 @@ CUDA4CPU_GFX12_FLOAT(wmma_bf16_16x16x16_bf16_w32_gfx12, bf16, v8i16, v8i16, true
 #undef CUDA4CPU_GFX12_FLOAT
 
 #define CUDA4CPU_GFX12_FP8(name, ka, kb)                                                                         \
-    inline cuda4cpu::detail::amdgcn::mm::v8f32 cuda4cpu_amdgcn_##name(                                            \
-        uint64_t site, cuda4cpu::detail::amdgcn::mm::v2i32 a, cuda4cpu::detail::amdgcn::mm::v2i32 b,              \
-        cuda4cpu::detail::amdgcn::mm::v8f32 c)                                                                    \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::v8f32> cuda4cpu_amdgcn_##name( \
+        uint64_t site, const TA &a_, const TB &b_, const TC &c_)                                                  \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<m::v2i32>(a_), b = m::lax_operand<m::v2i32>(b_);                            \
+        const auto c = m::lax_operand<m::v8f32>(c_);                                                              \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::v8f32, m::gfx12_fp8(w, l, c, m::kind::ka, m::kind::kb));                        \
+        return {CUDA4CPU_MM_RUN(m::v8f32, m::gfx12_fp8(w, l, c, m::kind::ka, m::kind::kb))};                        \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::v8f32 __builtin_amdgcn_##name(                                \
         cuda4cpu::detail::amdgcn::mm::v2i32 a, cuda4cpu::detail::amdgcn::mm::v2i32 b,                             \
@@ -544,14 +576,15 @@ CUDA4CPU_GFX12_FP8(wmma_f32_16x16x16_bf8_bf8_w32_gfx12, bf8, bf8)
 #undef CUDA4CPU_GFX12_FP8
 
 #define CUDA4CPU_GFX12_INT(name, bits, K, AB)                                                                    \
-    inline cuda4cpu::detail::amdgcn::mm::v8i32 cuda4cpu_amdgcn_##name(uint64_t site, bool sign_a, AB a,           \
-                                                                       bool sign_b, AB b,                         \
-                                                                       cuda4cpu::detail::amdgcn::mm::v8i32 c,     \
-                                                                       bool clamp)                                \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::v8i32> cuda4cpu_amdgcn_##name( \
+        uint64_t site, bool sign_a, const TA &a_, bool sign_b, const TB &b_, const TC &c_, bool clamp)            \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
+        const auto a = m::lax_operand<AB>(a_), b = m::lax_operand<AB>(b_);                                        \
+        const auto c = m::lax_operand<m::v8i32>(c_);                                                              \
         const uint32_t index = 0;                                                                                 \
-        return CUDA4CPU_MM_RUN(m::v8i32, m::gfx12_int(w, l, c, bits, K, sign_a, sign_b, clamp));                  \
+        return {CUDA4CPU_MM_RUN(m::v8i32, m::gfx12_int(w, l, c, bits, K, sign_a, sign_b, clamp))};                  \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::v8i32 __builtin_amdgcn_##name(                                \
         bool sign_a, AB a, bool sign_b, AB b, cuda4cpu::detail::amdgcn::mm::v8i32 c, bool clamp)                  \
@@ -566,13 +599,16 @@ CUDA4CPU_GFX12_INT(wmma_i32_16x16x32_iu4_w32_gfx12, 4, 32, cuda4cpu::detail::amd
 // SWMMAC: C is also the result's register on a GPU
 
 #define CUDA4CPU_SWMMAC_FLOAT(name, ka, kb, A, B, D, packed, out)                                                \
-    inline cuda4cpu::detail::amdgcn::mm::D cuda4cpu_amdgcn_##name(                                               \
-        uint64_t site, cuda4cpu::detail::amdgcn::mm::A a, cuda4cpu::detail::amdgcn::mm::B b,                      \
-        cuda4cpu::detail::amdgcn::mm::D c, int index)                                                             \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::D> cuda4cpu_amdgcn_##name(     \
+        uint64_t site, const TA &a_, const TB &b_, const TC &c_, int index)                                       \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
-        return CUDA4CPU_MM_RUN(m::D, (m::sparse_float<m::D>(w, l, c, m::kind::ka, m::kind::kb, packed,            \
-                                                            m::kind::out)));                                      \
+        const auto a = m::lax_operand<m::A>(a_);                                                                  \
+        const auto b = m::lax_operand<m::B>(b_);                                                                  \
+        const auto c = m::lax_operand<m::D>(c_);                                                                  \
+        return {CUDA4CPU_MM_RUN(m::D, (m::sparse_float<m::D>(w, l, c, m::kind::ka, m::kind::kb, packed,            \
+                                                            m::kind::out)))};                                      \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::D __builtin_amdgcn_##name(                                    \
         cuda4cpu::detail::amdgcn::mm::A a, cuda4cpu::detail::amdgcn::mm::B b, cuda4cpu::detail::amdgcn::mm::D c,  \
@@ -591,13 +627,15 @@ CUDA4CPU_SWMMAC_FLOAT(swmmac_f32_16x16x32_bf8_bf8_w32, bf8, bf8, v2i32, v4i32, v
 #undef CUDA4CPU_SWMMAC_FLOAT
 
 #define CUDA4CPU_SWMMAC_INT(name, bits, K, A, B)                                                                 \
-    inline cuda4cpu::detail::amdgcn::mm::v8i32 cuda4cpu_amdgcn_##name(uint64_t site, bool sign_a, A a,            \
-                                                                       bool sign_b, B b,                          \
-                                                                       cuda4cpu::detail::amdgcn::mm::v8i32 c,     \
-                                                                       int index, bool clamp)                     \
+    template <typename TA, typename TB, typename TC>                                                              \
+    inline cuda4cpu::detail::amdgcn::mm::lax_result<cuda4cpu::detail::amdgcn::mm::v8i32> cuda4cpu_amdgcn_##name( \
+        uint64_t site, bool sign_a, const TA &a_, bool sign_b, const TB &b_, const TC &c_, int index, bool clamp) \
     {                                                                                                             \
         namespace m = cuda4cpu::detail::amdgcn::mm;                                                               \
-        return CUDA4CPU_MM_RUN(m::v8i32, m::sparse_int(w, l, c, bits, K, sign_a, sign_b, clamp));                 \
+        const auto a = m::lax_operand<A>(a_);                                                                     \
+        const auto b = m::lax_operand<B>(b_);                                                                     \
+        const auto c = m::lax_operand<m::v8i32>(c_);                                                              \
+        return {CUDA4CPU_MM_RUN(m::v8i32, m::sparse_int(w, l, c, bits, K, sign_a, sign_b, clamp))};                 \
     }                                                                                                             \
     extern "C" inline cuda4cpu::detail::amdgcn::mm::v8i32 __builtin_amdgcn_##name(                                \
         bool sign_a, A a, bool sign_b, B b, cuda4cpu::detail::amdgcn::mm::v8i32 c, int index, bool clamp)         \
@@ -612,6 +650,110 @@ CUDA4CPU_SWMMAC_INT(swmmac_i32_16x16x64_iu4_w32, 4, 64, cuda4cpu::detail::amdgcn
 #undef CUDA4CPU_SWMMAC_INT
 
 #undef CUDA4CPU_MM_RUN
+
+//
+// CDNA's matrix operations (MFMA, SMFMAC) need 64-lane wavefronts, which
+// cuda4cpu doesn't emulate yet: they are declared, so that code with
+// branches for CDNA GPUs compiles (rocWMMA's), and abort if called
+//
+
+namespace cuda4cpu::detail::amdgcn::mm {
+
+//! The result of an operation that aborted: converts to any type
+struct unsupported_result {
+    template <typename U>
+    operator U() const
+    {
+        return U();
+    }
+    int operator[](unsigned) const { return 0; }
+};
+
+}
+
+#define CUDA4CPU_CDNA_MATRIX(name)                                                              \
+    template <typename... Args>                                                                  \
+    inline cuda4cpu::detail::amdgcn::mm::unsupported_result __builtin_amdgcn_##name(const Args &...) \
+    {                                                                                            \
+        cuda4cpu::detail::amdgcn::unsupported("__builtin_amdgcn_" #name                          \
+                                              " needs a CDNA GPU's 64-lane wavefronts");         \
+    }
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x16bf16_1k)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x16f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x1f32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x2bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x32_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x4bf16_1k)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x4f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x4f32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x8_xf32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_16x16x8bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x16_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x1f32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x2bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x2f32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x4_xf32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x4bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x4bf16_1k)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x4f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x8bf16_1k)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_32x32x8f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_4x4x1f32)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_4x4x2bf16)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_4x4x4bf16_1k)
+CUDA4CPU_CDNA_MATRIX(mfma_f32_4x4x4f16)
+CUDA4CPU_CDNA_MATRIX(mfma_f64_16x16x4f64)
+CUDA4CPU_CDNA_MATRIX(mfma_f64_4x4x4f64)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_16x16x16i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_16x16x32_i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_16x16x4i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_16x16x64_i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_32x32x16_i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_32x32x32_i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_32x32x4i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_32x32x8i8)
+CUDA4CPU_CDNA_MATRIX(mfma_i32_4x4x4i8)
+CUDA4CPU_CDNA_MATRIX(mfma_scale_f32_16x16x128_f8f6f4)
+CUDA4CPU_CDNA_MATRIX(mfma_scale_f32_32x32x64_f8f6f4)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x128_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x128_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x128_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x128_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x32_bf16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x32_f16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_bf16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_f16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_16x16x64_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x16_bf16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x16_f16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_bf16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_f16)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x32_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x64_bf8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x64_bf8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x64_fp8_bf8)
+CUDA4CPU_CDNA_MATRIX(smfmac_f32_32x32x64_fp8_fp8)
+CUDA4CPU_CDNA_MATRIX(smfmac_i32_16x16x128_i8)
+CUDA4CPU_CDNA_MATRIX(smfmac_i32_16x16x64_i8)
+CUDA4CPU_CDNA_MATRIX(smfmac_i32_32x32x32_i8)
+CUDA4CPU_CDNA_MATRIX(smfmac_i32_32x32x64_i8)
+#undef CUDA4CPU_CDNA_MATRIX
 
 // The macros, which pass the call's place
 #define __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(...) cuda4cpu_amdgcn_wmma_f32_16x16x16_f16_w32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)

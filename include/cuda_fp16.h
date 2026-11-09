@@ -125,6 +125,11 @@ public:
     constexpr __half &operator=(unsigned long long v) { __x = detail::to_half_bits(double(v)); return *this; }
 
     constexpr operator float() const { return float(detail::from_half_bits(__x)); }
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__) && defined(__FLT16_MANT_DIG__)
+    // AMD's __half is built on _Float16, which it converts to and from exactly
+    constexpr __half(_Float16 h) : __x(std::bit_cast<unsigned short>(h)) {}
+    constexpr operator _Float16() const { return std::bit_cast<_Float16>(__x); }
+#endif
     operator signed char() const { return to_integer<signed char>(); }
     operator unsigned char() const { return to_integer<unsigned char>(); }
     operator char() const { return to_integer<char>(); }
@@ -500,55 +505,66 @@ CUDA4CPU_HALF_MATH(hrint, h2rint, std::nearbyint(x))
 // Operators
 //
 
+// On HIP's AMD platform, function templates, so that a library's own
+// operators win over them, as AMD's device-only ones lose to a library's
+// host ones (rocWMMA's): the parameters stay __half, with their conversions
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
+#define CUDA4CPU_HALF_OPERATOR template <int = 0>
+#else
+#define CUDA4CPU_HALF_OPERATOR
+#endif
+
 #ifndef __CUDA_NO_HALF_OPERATORS__
 
-constexpr __half operator+(const __half &a, const __half &b) { return __hadd(a, b); }
-constexpr __half operator-(const __half &a, const __half &b) { return __hsub(a, b); }
-constexpr __half operator*(const __half &a, const __half &b) { return __hmul(a, b); }
-constexpr __half operator/(const __half &a, const __half &b) { return __hdiv(a, b); }
-constexpr __half &operator+=(__half &a, const __half &b) { return a = __hadd(a, b); }
-constexpr __half &operator-=(__half &a, const __half &b) { return a = __hsub(a, b); }
-constexpr __half &operator*=(__half &a, const __half &b) { return a = __hmul(a, b); }
-constexpr __half &operator/=(__half &a, const __half &b) { return a = __hdiv(a, b); }
-constexpr __half operator+(const __half &a) { return a; }
-constexpr __half operator-(const __half &a) { return __hneg(a); }
-constexpr __half &operator++(__half &a) { return a = __hadd(a, __half(__half_raw{0x3c00})); }
-constexpr __half &operator--(__half &a) { return a = __hsub(a, __half(__half_raw{0x3c00})); }
-constexpr __half operator++(__half &a, int) { const __half old = a; ++a; return old; }
-constexpr __half operator--(__half &a, int) { const __half old = a; --a; return old; }
-constexpr bool operator==(const __half &a, const __half &b) { return __heq(a, b); }
-constexpr bool operator!=(const __half &a, const __half &b) { return __hneu(a, b); }
-constexpr bool operator<(const __half &a, const __half &b) { return __hlt(a, b); }
-constexpr bool operator<=(const __half &a, const __half &b) { return __hle(a, b); }
-constexpr bool operator>(const __half &a, const __half &b) { return __hgt(a, b); }
-constexpr bool operator>=(const __half &a, const __half &b) { return __hge(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator+(const __half &a, const __half &b) { return __hadd(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator-(const __half &a, const __half &b) { return __hsub(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator*(const __half &a, const __half &b) { return __hmul(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator/(const __half &a, const __half &b) { return __hdiv(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator+=(__half &a, const __half &b) { return a = __hadd(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator-=(__half &a, const __half &b) { return a = __hsub(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator*=(__half &a, const __half &b) { return a = __hmul(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator/=(__half &a, const __half &b) { return a = __hdiv(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator+(const __half &a) { return a; }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator-(const __half &a) { return __hneg(a); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator++(__half &a) { return a = __hadd(a, __half(__half_raw{0x3c00})); }
+CUDA4CPU_HALF_OPERATOR constexpr __half &operator--(__half &a) { return a = __hsub(a, __half(__half_raw{0x3c00})); }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator++(__half &a, int) { const __half old = a; ++a; return old; }
+CUDA4CPU_HALF_OPERATOR constexpr __half operator--(__half &a, int) { const __half old = a; --a; return old; }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator==(const __half &a, const __half &b) { return __heq(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator!=(const __half &a, const __half &b) { return __hneu(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator<(const __half &a, const __half &b) { return __hlt(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator<=(const __half &a, const __half &b) { return __hle(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator>(const __half &a, const __half &b) { return __hgt(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator>=(const __half &a, const __half &b) { return __hge(a, b); }
 
 #endif
 
 #ifndef __CUDA_NO_HALF2_OPERATORS__
 
-constexpr __half2 operator+(const __half2 &a, const __half2 &b) { return __hadd2(a, b); }
-constexpr __half2 operator-(const __half2 &a, const __half2 &b) { return __hsub2(a, b); }
-constexpr __half2 operator*(const __half2 &a, const __half2 &b) { return __hmul2(a, b); }
-constexpr __half2 operator/(const __half2 &a, const __half2 &b) { return __h2div(a, b); }
-constexpr __half2 &operator+=(__half2 &a, const __half2 &b) { return a = __hadd2(a, b); }
-constexpr __half2 &operator-=(__half2 &a, const __half2 &b) { return a = __hsub2(a, b); }
-constexpr __half2 &operator*=(__half2 &a, const __half2 &b) { return a = __hmul2(a, b); }
-constexpr __half2 &operator/=(__half2 &a, const __half2 &b) { return a = __h2div(a, b); }
-constexpr __half2 operator+(const __half2 &a) { return a; }
-constexpr __half2 operator-(const __half2 &a) { return __hneg2(a); }
-constexpr __half2 &operator++(__half2 &a) { return a = __hadd2(a, __half2half2(__half_raw{0x3c00})); }
-constexpr __half2 &operator--(__half2 &a) { return a = __hsub2(a, __half2half2(__half_raw{0x3c00})); }
-constexpr __half2 operator++(__half2 &a, int) { const __half2 old = a; ++a; return old; }
-constexpr __half2 operator--(__half2 &a, int) { const __half2 old = a; --a; return old; }
-constexpr bool operator==(const __half2 &a, const __half2 &b) { return __hbeq2(a, b); }
-constexpr bool operator!=(const __half2 &a, const __half2 &b) { return __hbneu2(a, b); }
-constexpr bool operator<(const __half2 &a, const __half2 &b) { return __hblt2(a, b); }
-constexpr bool operator<=(const __half2 &a, const __half2 &b) { return __hble2(a, b); }
-constexpr bool operator>(const __half2 &a, const __half2 &b) { return __hbgt2(a, b); }
-constexpr bool operator>=(const __half2 &a, const __half2 &b) { return __hbge2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator+(const __half2 &a, const __half2 &b) { return __hadd2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator-(const __half2 &a, const __half2 &b) { return __hsub2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator*(const __half2 &a, const __half2 &b) { return __hmul2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator/(const __half2 &a, const __half2 &b) { return __h2div(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator+=(__half2 &a, const __half2 &b) { return a = __hadd2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator-=(__half2 &a, const __half2 &b) { return a = __hsub2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator*=(__half2 &a, const __half2 &b) { return a = __hmul2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator/=(__half2 &a, const __half2 &b) { return a = __h2div(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator+(const __half2 &a) { return a; }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator-(const __half2 &a) { return __hneg2(a); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator++(__half2 &a) { return a = __hadd2(a, __half2half2(__half_raw{0x3c00})); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 &operator--(__half2 &a) { return a = __hsub2(a, __half2half2(__half_raw{0x3c00})); }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator++(__half2 &a, int) { const __half2 old = a; ++a; return old; }
+CUDA4CPU_HALF_OPERATOR constexpr __half2 operator--(__half2 &a, int) { const __half2 old = a; --a; return old; }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator==(const __half2 &a, const __half2 &b) { return __hbeq2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator!=(const __half2 &a, const __half2 &b) { return __hbneu2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator<(const __half2 &a, const __half2 &b) { return __hblt2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator<=(const __half2 &a, const __half2 &b) { return __hble2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator>(const __half2 &a, const __half2 &b) { return __hbgt2(a, b); }
+CUDA4CPU_HALF_OPERATOR constexpr bool operator>=(const __half2 &a, const __half2 &b) { return __hbge2(a, b); }
 
 #endif
+
+#undef CUDA4CPU_HALF_OPERATOR
 
 //
 // Atomics, as compare-and-swap loops

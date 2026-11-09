@@ -132,8 +132,30 @@ OP(s_bf8_bf8, __builtin_amdgcn_swmmac_f32_16x16x32_bf8_bf8_w32(load<v2i>(a), loa
 OP(s_iu8, __builtin_amdgcn_swmmac_i32_16x16x32_iu8_w32(true, load<v2i>(a), true, load<v4i>(b), load<v8i>(c), index, false))
 OP(s_iu4_k32, __builtin_amdgcn_swmmac_i32_16x16x32_iu4_w32(false, load<int>(a), true, load<v2i>(b), load<v8i>(c), index, false))
 OP(s_iu4_k64, __builtin_amdgcn_swmmac_i32_16x16x64_iu4_w32(true, load<v2i>(a), false, load<v4i>(b), load<v8i>(c), index, false))
+// As rocWMMA calls them: 8 halves in 4 floats, and the result assigned to
+// another vector of its size
+typedef float v4f __attribute__((ext_vector_type(4)));
+OP(f32_f16_12_lax, ([&] {
+       v8f d;
+       d = {__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(load<v4f>(a), load<v4f>(b), load<v8f>(c))};
+       return d;
+   }()))
+OP(f16_12_lax, ([&] {
+       v4f d;
+       d = {__builtin_amdgcn_wmma_f16_16x16x16_f16_w32_gfx12(load<v4f>(a), load<v4f>(b), load<v4f>(c))};
+       return d;
+   }()))
 // The names as functions
 OP(f32_f16_function, (__builtin_amdgcn_wmma_f32_16x16x16_f16_w32)(load<v16h>(a), load<v16h>(b), load<v8f>(c)))
+
+//! CDNA's matrix operations compile, for code with branches for those GPUs,
+//! and abort if called (never, here)
+[[maybe_unused]] static v8f cdna(v8f c)
+{
+    v8f d;
+    d = {__builtin_amdgcn_mfma_f32_32x32x2f32(1.0f, 2.0f, c, 0, 0, 0)};
+    return d;
+}
 
 //
 // Element types: their bits, and values to and from them
@@ -478,6 +500,8 @@ int main()
         {"swmmac_i32_16x16x32_iu4_w32", launch<s_iu4_k32>, arch::sparse, type::u4, type::i4, type::i32, 32},
         {"swmmac_i32_16x16x64_iu4_w32", launch<s_iu4_k64>, arch::sparse, type::i4, type::u4, type::i32, 64},
         {"(__builtin_amdgcn_wmma_f32_16x16x16_f16_w32)", launch<f32_f16_function>, arch::gfx11, type::f16, type::f16, type::f32, 16},
+        {"wmma_f32_16x16x16_f16_w32_gfx12 (other vectors)", launch<f32_f16_12_lax>, arch::gfx12, type::f16, type::f16, type::f32, 16},
+        {"wmma_f16_16x16x16_f16_w32_gfx12 (other vectors)", launch<f16_12_lax>, arch::gfx12, type::f16, type::f16, type::f16, 16},
     };
     for (const test_case &tc : cases)
         for (int round = 0; round < 3; ++round)

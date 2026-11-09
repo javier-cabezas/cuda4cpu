@@ -28,8 +28,8 @@
 //   nothing from a lane outside EXEC
 //   (zero, or its old value where the instruction keeps it), where a GPU may
 //   give a stale value. DPP, ds_swizzle and permlane follow the encodings of
-//   LLVM's AMDGPU backend and AMD's ISA manuals: ds_swizzle's FFT and rotate
-//   modes aren't supported.
+//   LLVM's AMDGPU backend and AMD's ISA manuals, and ds_swizzle's FFT and
+//   rotate modes AMD's rocjitsu simulator.
 // - Builtins of any AMD GPU compile, not only RDNA3's: as with the compiler
 //   for a GPU without them, code is expected to check the gfx macros.
 // - They are inline functions, not the compiler's builtins, so
@@ -204,9 +204,24 @@ inline unsigned swizzle_source(unsigned l, int offset)
         const unsigned and_mask = p & 31, or_mask = (p >> 5) & 31, xor_mask = (p >> 10) & 31;
         return (l & ~31u) | ((((l & 31) & and_mask) | or_mask) ^ xor_mask);
     }
-    if ((p & 0xff00) == 0x8000)                 // a permutation of each quad
+    if (p < 0xc000)                             // a permutation of each quad
         return (l & ~3u) | ((p >> (2 * (l & 3))) & 3);
-    unsupported("ds_swizzle's FFT and rotate modes (offsets from 0xC000) aren't supported");
+    // FFT and rotate, as AMD's rocjitsu has them, checked against an RDNA4
+    // GPU: the lanes' bits in mask stay, the others are reversed and shifted
+    // (FFT) or rotated, within groups of 32 lanes
+    const unsigned lane = l & 31, mask = p & 31;
+    unsigned source;
+    if (p >= 0xe000) {
+        const unsigned reversed = ((lane & 1) << 4) | ((lane & 2) << 2) | (lane & 4) | ((lane & 8) >> 2) |
+                                  ((lane & 16) >> 4);
+        source = (reversed >> std::popcount(mask)) | (lane & mask);
+    } else {
+        unsigned rotate = (p >> 5) & 31;
+        if (p & 1024)
+            rotate = 0u - rotate;
+        source = (lane & mask) | ((lane + rotate) & ~mask);
+    }
+    return (l & ~31u) | (source & 31);
 }
 
 template <typename T>
