@@ -151,6 +151,21 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
     them;
   - atomics: `atomic_inc`, `atomic_dec`, and the floating-point adds,
     minimums and maximums on global, flat and LDS memory;
+  - with Clang, the wave matrix operations of 32-lane wavefronts: RDNA3's
+    WMMA (`wmma_f32_16x16x16_f16_w32`, `_bf16`, the 16-bit results with
+    `opsel` and their `_tied` forms, `wmma_i32_16x16x16_iu8_w32` and
+    `_iu4`), RDNA4's (the same, `_w32_gfx12`, plus the FP8/BF8 ones and
+    `wmma_i32_16x16x32_iu4_w32_gfx12`) and RDNA4's sparse SWMMAC
+    (`swmmac_*_w32`, with A 4:2 sparse and an index register). Each lane
+    holds the elements of A, B, C and D that AMD's Matrix Instruction
+    Calculator gives it, and the arithmetic follows the hardware's order:
+    exact products, float sums in K order (RDNA4's DOT4 order for 16-bit
+    inputs), 16-bit results rounded after each block of 2 (RDNA3) or 4
+    (RDNA4) products, bfloat16's by truncation, and integers saturated at
+    each of the hardware's stages with `clamp`, as AMD's rocjitsu simulator
+    has it. The rounding inside a block isn't the hardware's to the last
+    bit. The 4-bit SWMMAC with K = 64 follows rocjitsu's layout, which
+    differs from the calculator's;
   - RDNA4's: the split barrier (`s_barrier_signal`, `s_barrier_wait`),
     `s_sleep_var`, and the conversions between float and the OCP 8-bit
     formats (FP8 is E4M3, BF8 E5M2): `cvt_f32_fp8`, `cvt_f32_bf8`,
@@ -197,8 +212,10 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   specializations in class scope), and so a cuda4cpu built with Clang, for
   one OpenMP runtime. The compatibility suite runs two of rocm-examples'
   rocPRIM programs that way.
-- **Not yet:** the matrix builtins (WMMA, SWMMAC) and other builtins with
-  Clang's vector types (`fdot2`, packed 16-bit conversions), CDNA's FNUZ
+- **Not yet:** AMD's vector types (`HIP_vector_type<T, N>` as a class
+  template, which rocWMMA extends: on this platform it names CUDA's vector
+  types), other builtins with Clang's vector types (`fdot2`, packed 16-bit
+  conversions), the WMMA of 64-lane wavefronts, CDNA's FNUZ
   fp8 conversions and the scaled FP4/FP6/FP8 ones (gfx942, gfx950), swizzled,
   structured and formatted buffer accesses, scalar buffer loads,
   `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4's

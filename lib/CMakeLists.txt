@@ -29,6 +29,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/vector_types.h
             ${CUDA4CPU_INCLUDE_DIR}/defines.hpp
             ${CUDA4CPU_INCLUDE_DIR}/hip/amdgcn.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/amdgcn_wmma.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/device_functions.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_bfloat16.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/hip_common.h

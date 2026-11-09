@@ -252,6 +252,16 @@ target_compile_definitions(hip_amdgcn_rdna4 PRIVATE __HIP_PLATFORM_AMD__=1 __gfx
 add_test(NAME hip_amdgcn_rdna4 COMMAND hip_amdgcn_rdna4)
 set_tests_properties(hip_amdgcn_rdna4 PROPERTIES ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=error")
 
+# The wave matrix builtins (WMMA, SWMMAC), which take Clang's vectors
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_executable(hip_amdgcn_wmma)
+    set_target_properties(hip_amdgcn_wmma PROPERTIES CXX_EXTENSIONS OFF)
+    cuda4cpu_add_hip_sources(hip_amdgcn_wmma hip/amdgcn_wmma.hip)
+    target_compile_definitions(hip_amdgcn_wmma PRIVATE __HIP_PLATFORM_AMD__=1 __gfx1201__=1)
+    add_test(NAME hip_amdgcn_wmma COMMAND hip_amdgcn_wmma)
+    set_tests_properties(hip_amdgcn_wmma PROPERTIES ENVIRONMENT "CUDA4CPU_DIVERGENT_BARRIERS=error")
+endif()
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rewrite_unit
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/test_rewrite.py

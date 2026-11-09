@@ -76,8 +76,8 @@
   supports AMD GPUs compiles on HIP's AMD platform
   (`--cuda4cpu-platform=amd`), which emulates an RDNA3 or RDNA4 GPU with
   32-lane wavefronts and has part of AMD's builtins (`__builtin_amdgcn_*`):
-  not the matrix operations, nor 64-lane wavefronts (CDNA) and their
-  builtins. See
+  not 64-lane wavefronts (CDNA) and their builtins, and the matrix
+  operations only with Clang. See
   [HIP](hip.md#hips-amd-platform).
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
   `__reduce_*_sync`, 16-bit integer atomics, pipelines that a group shares

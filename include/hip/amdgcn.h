@@ -37,7 +37,8 @@
 //   have C linkage, as builtins do, for code that declares them
 //   (extern "C" void __builtin_amdgcn_s_sleep(int);, in rocPRIM).
 // - Those that take or return Clang's ext_vector_type vectors are defined
-//   only for Clang (__clang__). The matrix operations aren't here yet.
+//   only for Clang (__clang__), the matrix operations among them
+//   (amdgcn_wmma.h).
 #pragma once
 
 #include <algorithm>
@@ -1474,3 +1475,8 @@ CUDA4CPU_BUFFER_ATOMIC(fmax_f64, double, std::fmax(old, value))
 #define __builtin_amdgcn_wave_reduce_fmin_f64(...) cuda4cpu_amdgcn_wave_reduce_fmin_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
 #define __builtin_amdgcn_wave_reduce_fmax_f32(...) cuda4cpu_amdgcn_wave_reduce_fmax_f32(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
 #define __builtin_amdgcn_wave_reduce_fmax_f64(...) cuda4cpu_amdgcn_wave_reduce_fmax_f64(CUDA4CPU_AMDGCN_SITE, __VA_ARGS__)
+
+// The wave matrix operations (WMMA, SWMMAC), which take Clang's vectors
+#ifdef __clang__
+#include "amdgcn_wmma.h"
+#endif

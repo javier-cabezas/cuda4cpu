@@ -318,56 +318,55 @@ private:
 
 }
 
-inline namespace hip_api {
-
-struct __hip_fp8_e4m3 : detail::amd_fp8<__HIP_E4M3, 4, 3> {
-    using amd_fp8::amd_fp8;
-};
-
-struct __hip_fp8x2_e4m3 : detail::amd_fp8x2<__HIP_E4M3, 4, 3> {
-    using amd_fp8x2::amd_fp8x2;
-};
-
-struct __hip_fp8x4_e4m3 : detail::amd_fp8x4<__HIP_E4M3, 4, 3> {
-    using amd_fp8x4::amd_fp8x4;
-};
-
-struct __hip_fp8_e5m2 : detail::amd_fp8<__HIP_E5M2, 5, 2> {
-    using amd_fp8::amd_fp8;
-};
-
-struct __hip_fp8x2_e5m2 : detail::amd_fp8x2<__HIP_E5M2, 5, 2> {
-    using amd_fp8x2::amd_fp8x2;
-};
-
-struct __hip_fp8x4_e5m2 : detail::amd_fp8x4<__HIP_E5M2, 5, 2> {
-    using amd_fp8x4::amd_fp8x4;
-};
-
-struct __hip_fp8_e4m3_fnuz : detail::amd_fp8<__HIP_E4M3_FNUZ, 4, 3> {
-    using amd_fp8::amd_fp8;
-};
-
-struct __hip_fp8x2_e4m3_fnuz : detail::amd_fp8x2<__HIP_E4M3_FNUZ, 4, 3> {
-    using amd_fp8x2::amd_fp8x2;
-};
-
-struct __hip_fp8x4_e4m3_fnuz : detail::amd_fp8x4<__HIP_E4M3_FNUZ, 4, 3> {
-    using amd_fp8x4::amd_fp8x4;
-};
-
-struct __hip_fp8_e5m2_fnuz : detail::amd_fp8<__HIP_E5M2_FNUZ, 5, 2> {
-    using amd_fp8::amd_fp8;
-};
-
-struct __hip_fp8x2_e5m2_fnuz : detail::amd_fp8x2<__HIP_E5M2_FNUZ, 5, 2> {
-    using amd_fp8x2::amd_fp8x2;
-};
-
-struct __hip_fp8x4_e5m2_fnuz : detail::amd_fp8x4<__HIP_E5M2_FNUZ, 5, 2> {
-    using amd_fp8x4::amd_fp8x4;
-};
-
 }
 
-}
+// The classes at global scope, as AMD's: code declares them first
+// (struct __hip_fp8_e4m3;, in rocWMMA)
+
+struct __hip_fp8_e4m3 : cuda4cpu::detail::amd_fp8<cuda4cpu::__HIP_E4M3, 4, 3> {
+    using amd_fp8::amd_fp8;
+};
+
+struct __hip_fp8x2_e4m3 : cuda4cpu::detail::amd_fp8x2<cuda4cpu::__HIP_E4M3, 4, 3> {
+    using amd_fp8x2::amd_fp8x2;
+};
+
+struct __hip_fp8x4_e4m3 : cuda4cpu::detail::amd_fp8x4<cuda4cpu::__HIP_E4M3, 4, 3> {
+    using amd_fp8x4::amd_fp8x4;
+};
+
+struct __hip_fp8_e5m2 : cuda4cpu::detail::amd_fp8<cuda4cpu::__HIP_E5M2, 5, 2> {
+    using amd_fp8::amd_fp8;
+};
+
+struct __hip_fp8x2_e5m2 : cuda4cpu::detail::amd_fp8x2<cuda4cpu::__HIP_E5M2, 5, 2> {
+    using amd_fp8x2::amd_fp8x2;
+};
+
+struct __hip_fp8x4_e5m2 : cuda4cpu::detail::amd_fp8x4<cuda4cpu::__HIP_E5M2, 5, 2> {
+    using amd_fp8x4::amd_fp8x4;
+};
+
+struct __hip_fp8_e4m3_fnuz : cuda4cpu::detail::amd_fp8<cuda4cpu::__HIP_E4M3_FNUZ, 4, 3> {
+    using amd_fp8::amd_fp8;
+};
+
+struct __hip_fp8x2_e4m3_fnuz : cuda4cpu::detail::amd_fp8x2<cuda4cpu::__HIP_E4M3_FNUZ, 4, 3> {
+    using amd_fp8x2::amd_fp8x2;
+};
+
+struct __hip_fp8x4_e4m3_fnuz : cuda4cpu::detail::amd_fp8x4<cuda4cpu::__HIP_E4M3_FNUZ, 4, 3> {
+    using amd_fp8x4::amd_fp8x4;
+};
+
+struct __hip_fp8_e5m2_fnuz : cuda4cpu::detail::amd_fp8<cuda4cpu::__HIP_E5M2_FNUZ, 5, 2> {
+    using amd_fp8::amd_fp8;
+};
+
+struct __hip_fp8x2_e5m2_fnuz : cuda4cpu::detail::amd_fp8x2<cuda4cpu::__HIP_E5M2_FNUZ, 5, 2> {
+    using amd_fp8x2::amd_fp8x2;
+};
+
+struct __hip_fp8x4_e5m2_fnuz : cuda4cpu::detail::amd_fp8x4<cuda4cpu::__HIP_E5M2_FNUZ, 5, 2> {
+    using amd_fp8x4::amd_fp8x4;
+};
