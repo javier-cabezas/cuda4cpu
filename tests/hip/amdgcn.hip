@@ -27,11 +27,16 @@
 // integer, floating-point and atomic builtins against references written
 // apart from amdgcn.h; and the rest of what rocPRIM uses: hip_bfloat16,
 // the unsigned long atomics, Clang's __hip_atomic_* (ours under GCC),
-// HIP_vector_type, hipStreamGetDevice and __amdgcn_processor__.
+// HIP_vector_type, hipStreamGetDevice and __amdgcn_processor__; and AMD's
+// vector types (amd_vector_types.h), with hip_complex.h and the 16-bit
+// floats on them.
 //
 
 #include <hip/device_functions.h>
 #include <hip/hip_bfloat16.h>
+#include <hip/hip_bf16.h>
+#include <hip/hip_complex.h>
+#include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 
 #include <bit>
@@ -59,8 +64,15 @@ static unsigned errors = 0;
     } while (0)
 
 static_assert(__builtin_amdgcn_wavefrontsize() == 32);
-static_assert(std::is_same_v<HIP_vector_type<float, 4>, float4> && std::is_same_v<HIP_vector_type<signed char, 2>, char2> &&
-              std::is_same_v<HIP_vector_type<unsigned long, 1>, ulong1>);
+// AMD's vector types: class templates, with CUDA's sizes and AMD's alignments
+static_assert(std::is_same_v<HIP_vector_type<float, 4>, float4> && std::is_same_v<HIP_vector_type<char, 2>, char2> &&
+              std::is_same_v<HIP_vector_type<unsigned long, 1>, ulong1> &&
+              std::is_base_of_v<HIP_vector_base<int, 3>, int3>);
+static_assert(sizeof(float3) == 12 && alignof(float3) == 4 && sizeof(float4) == 16 && alignof(float4) == 16 &&
+              sizeof(double2) == 16 && alignof(double2) == 16 && sizeof(uchar3) == 3 && alignof(short2) == 4);
+static_assert(std::is_trivially_copyable_v<float4> && std::is_trivially_copyable_v<int3> &&
+              std::is_standard_layout_v<double2>);
+static_assert(sizeof(float4::Native_vec_) == 16 && sizeof(int3::Native_vec_) == 12);
 static_assert(__builtin_strcmp(__amdgcn_processor__, "gfx1101") == 0);
 
 constexpr int warp = 32;
@@ -78,6 +90,7 @@ struct lane_results {
     unsigned exec_lo, ballot, inverse, mbcnt_id, mbcnt_mask;
     unsigned long long exec, ballot64;
     int bpermute, permute, swizzle_swap, swizzle_quad, swizzle_15;
+    int rotate_left, rotate_right_halves, fft, fft_pairs;
     int dpp[40];
     int dpp_masked, dpp_bound, dpp8, permlane16, permlanex16, permlane64, shuffle;
     unsigned reduce_add, reduce_sub;
@@ -113,6 +126,10 @@ __global__ void lane_ops(lane_results *out, int exited)
     r.swizzle_swap = __builtin_amdgcn_ds_swizzle(v, 1 << 10 | 0x1f);      // xor 1: swap pairs
     r.swizzle_quad = __builtin_amdgcn_ds_swizzle(v, 0x8000 | 0x1b);       // quads reversed
     r.swizzle_15 = __builtin_amdgcn_ds_swizzle(v, 15 << 5);               // lane 15 of each 32
+    r.rotate_left = __builtin_amdgcn_ds_swizzle(v, 0xc000 | 3 << 5);       // from lane + 3
+    r.rotate_right_halves = __builtin_amdgcn_ds_swizzle(v, 0xc000 | 1 << 10 | 5 << 5 | 0x10);
+    r.fft = __builtin_amdgcn_ds_swizzle(v, 0xe000);                       // bits reversed
+    r.fft_pairs = __builtin_amdgcn_ds_swizzle(v, 0xe000 | 1);
     for (int i = 0; i < dpp_count; ++i)
         r.dpp[i] = __builtin_amdgcn_mov_dpp(v, dpp_controls[i], 0xf, 0xf, true);
     // Rows 0 and banks 1 and 3 written; out of bounds keeps the old value
@@ -194,6 +211,18 @@ static void check_lanes(int exited)
             wrong += r.swizzle_swap != value(lane ^ 1);
             wrong += r.swizzle_quad != value(lane / 4 * 4 + 3 - lane % 4);
             wrong += r.swizzle_15 != value(15);
+            // The ISA's rotate and FFT: lane bits in the mask kept, the others
+            // rotated (by 3, or -5 within each half of 16) or reversed
+            const auto reverse5 = [](int x) {
+                int y = 0;
+                for (int b = 0; b < 5; ++b)
+                    y |= ((x >> b) & 1) << (4 - b);
+                return y;
+            };
+            wrong += r.rotate_left != value((lane + 3) % warp);
+            wrong += r.rotate_right_halves != value((lane & 16) | ((lane - 5 + 16) % 16));
+            wrong += r.fft != value(reverse5(lane));
+            wrong += r.fft_pairs != value((reverse5(lane) >> 1) | (lane & 1));
             for (int i = 0; i < dpp_count; ++i) {
                 const int from = dpp_reference(lane, dpp_controls[i]);
                 const int expected = from == -2 ? -9999 : from < 0 ? 0 : value(from);
@@ -369,6 +398,12 @@ __global__ void long_atomics(unsigned long *sum, unsigned long *mx, unsigned lon
     __hip_assert(__hip_atomic_load(loaded + 2, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) == 7);
 }
 
+//! float4 arithmetic in a kernel
+__global__ void scale(float4 *v, float4 by)
+{
+    v[threadIdx.x] = v[threadIdx.x] * by + 1.0f;
+}
+
 __global__ void counters(unsigned *inc, unsigned *dec, float *sum, double *mn)
 {
     __builtin_amdgcn_atomic_inc32(inc, 9u, __ATOMIC_RELAXED, "agent");
@@ -479,6 +514,38 @@ int main()
         EXPECT(float(x) == 3.5f && float(-x) == -3.5f && x > hip_bfloat16(3.0f) && x * x == hip_bfloat16(12.25f));
         x = 0.25f;
         EXPECT(float(hip_bfloat16::round_to_bfloat16(0.25f)) == float(x));
+    }
+
+    // AMD's vector types
+    {
+        float4 a = make_float4(1, 2, 3, 4), b{4, 3, 2, 1};
+        EXPECT((a + b == make_vector_type<float, 4>(5) && (a - b).w == 3 && (a * b).y == 6 && (a / b).z == 1.5f));
+        EXPECT((make_vector_type<int, 4>(7) == int4(7, 7, 7, 7)));
+        EXPECT(a * 2.0f == float4(2, 4, 6, 8) && 1.0f + a == float4(2, 3, 4, 5) && -a == float4(-1, -2, -3, -4));
+        EXPECT(a != b && a == float4(1, 2, 3, 4) && a[2] == 3 && b.x == 4);
+        a += 1.0f;
+        ++a;
+        EXPECT(a == float4(3, 4, 5, 6) && (a++).x == 3 && a.x == 4);
+        // One value is x, the others zero, as in HIP 7
+        EXPECT(int4(5) == int4(5, 0, 0, 0) && float2(2.5f).y == 0);
+        int3 bits(12, 10, 6);
+        EXPECT((bits & 6) == int3(4, 2, 6) && (bits | int3(1)) == int3(13, 10, 6) && (bits ^ 2) == int3(14, 8, 4) &&
+               (bits << 1) == int3(24, 20, 12) && (bits % 4) == int3(0, 2, 2) && ~int3(0) == int3(-1, -1, -1) &&
+               (bits >> 1) == int3(6, 5, 3));
+        EXPECT((__hipMapVector<int, 4>(make_float2(1.5f, 2.5f)) == int4(1, 2, 0, 0)));
+        EXPECT((__hipMapVector<float, 2>(int4(1, 2, 3, 4)) == float2(1, 2)));
+        get_native_vector(b)[3] = 9;
+        EXPECT(b.w == 9);
+        uchar4 u = make_uchar4(250, 1, 2, 3);
+        u += uchar4(10, 1, 1, 1);
+        EXPECT(u.x == 4 && u.w == 4);
+        float4 v[4] = {{1, 1, 1, 1}, {2, 2, 2, 2}, {3, 3, 3, 3}, {4, 4, 4, 4}};
+        scale<<<1, 4>>>(v, float4(2, 3, 4, 5));
+        EXPECT(v[3] == float4(9, 13, 17, 21));
+        // CUDA's types that are pairs of floats, on them
+        const hipFloatComplex z = hipCmulf(make_hipFloatComplex(1, 2), make_hipFloatComplex(3, -1));
+        EXPECT(hipCrealf(z) == 5 && hipCimagf(z) == 5);
+        EXPECT(__low2float(__floats2half2_rn(1.5f, 2.5f)) == 1.5f && __bfloat162float(__float2bfloat16(3.0f)) == 3.0f);
     }
 
     // Integer and bit operations

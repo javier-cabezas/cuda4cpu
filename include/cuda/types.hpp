@@ -24,6 +24,12 @@
 #include <memory>
 #include <vector>
 
+// On HIP's AMD platform, the vector types are AMD's class templates
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
+#define CUDA4CPU_AMD_VECTOR_TYPES 1
+#include "../hip/amd_vector_types.h"
+#endif
+
 namespace cuda4cpu {
 
 // The CUDA API lives in the inline namespace cuda_api: code that includes
@@ -76,6 +82,18 @@ struct dim3 {
     {}
 };
 
+#if defined(CUDA4CPU_AMD_VECTOR_TYPES)
+#define VECTOR_TYPE(n,t)                                                \
+    using n##1 = ::HIP_vector_type<t, 1>;                               \
+    using n##2 = ::HIP_vector_type<t, 2>;                               \
+    using n##3 = ::HIP_vector_type<t, 3>;                               \
+    using n##4 = ::HIP_vector_type<t, 4>;                               \
+                                                                        \
+    inline n##1 make_##n##1(t x) { return n##1(x); }                    \
+    inline n##2 make_##n##2(t x, t y) { return {x, y}; }                \
+    inline n##3 make_##n##3(t x, t y, t z) { return {x, y, z}; }        \
+    inline n##4 make_##n##4(t x, t y, t z, t w) { return {x, y, z, w}; }
+#else
 #define VECTOR_TYPE(n,t) \
     typedef struct {     \
         t x;             \
@@ -103,6 +121,7 @@ struct dim3 {
     inline n##2 make_##n##2(t x, t y) { return {x, y}; }            \
     inline n##3 make_##n##3(t x, t y, t z) { return {x, y, z}; }    \
     inline n##4 make_##n##4(t x, t y, t z, t w) { return {x, y, z, w}; }
+#endif
 
 VECTOR_TYPE(char, char)
 VECTOR_TYPE(uchar, unsigned char)

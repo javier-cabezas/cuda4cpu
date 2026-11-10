@@ -13,11 +13,11 @@ and HIP programs with `cuda4cpu-hipcc`:
 - **rocm-examples:** AMD's HIP examples: HIP-Basic, the examples of the HIP
   documentation, and the reduction tutorial, excluding those that need
   graphics interop, the module API, HIPRTC, ROCm libraries or several GPUs,
-  and two of the rocPRIM examples, on [HIP's AMD platform](hip.md#hips-amd-platform)
-  with rocPRIM fetched at a pinned release, as RDNA3 GPUs, and one as an
-  RDNA4 GPU. rocPRIM needs Clang: with GCC,
-  `run.py` skips them, and CI runs them in a job that builds cuda4cpu with
-  Clang.
+  and two of the rocPRIM examples and three of the rocWMMA ones (those in
+  half precision), on [HIP's AMD platform](hip.md#hips-amd-platform), with
+  the libraries fetched at a pinned release, as RDNA3 GPUs, and one of
+  each as an RDNA4 GPU. They need Clang: with GCC, `run.py` skips them,
+  and CI runs them in a job that builds cuda4cpu with Clang.
   Most check their results, or print results that the suite checks. Many
   of the documentation's examples only check for API errors.
 
@@ -29,7 +29,7 @@ passing. Today:
 |---|---|---|
 | cuda-samples | 46 of 66 (1 more waives itself, and 5 are skipped as too slow) | 14 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
-| rocm-examples | 80 of 85 | 5 |
+| rocm-examples | 84 of 89 | 5 |
 
 Most of what's missing is a few features:
 

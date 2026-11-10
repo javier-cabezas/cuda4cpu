@@ -280,34 +280,8 @@ inline void hipLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &dimB
 #define __hip_assert(cond) assert(cond)
 #endif
 
-// AMD's vector types are HIP_vector_type<T, n> (float4 is
-// HIP_vector_type<float, 4>), which code such as rocPRIM names: here, CUDA's
-namespace cuda4cpu::detail {
-template <typename T, unsigned int N>
-struct hip_vector;
-#define CUDA4CPU_HIP_VECTOR(T, name)                                                            \
-    template <> struct hip_vector<T, 1> { using type = name##1; };                              \
-    template <> struct hip_vector<T, 2> { using type = name##2; };                              \
-    template <> struct hip_vector<T, 3> { using type = name##3; };                              \
-    template <> struct hip_vector<T, 4> { using type = name##4; };
-CUDA4CPU_HIP_VECTOR(char, char)
-CUDA4CPU_HIP_VECTOR(signed char, char)
-CUDA4CPU_HIP_VECTOR(unsigned char, uchar)
-CUDA4CPU_HIP_VECTOR(short, short)
-CUDA4CPU_HIP_VECTOR(unsigned short, ushort)
-CUDA4CPU_HIP_VECTOR(int, int)
-CUDA4CPU_HIP_VECTOR(unsigned int, uint)
-CUDA4CPU_HIP_VECTOR(long, long)
-CUDA4CPU_HIP_VECTOR(unsigned long, ulong)
-CUDA4CPU_HIP_VECTOR(long long, longlong)
-CUDA4CPU_HIP_VECTOR(unsigned long long, ulonglong)
-CUDA4CPU_HIP_VECTOR(float, float)
-CUDA4CPU_HIP_VECTOR(double, double)
-#undef CUDA4CPU_HIP_VECTOR
-}
-
-template <typename T, unsigned int N>
-using HIP_vector_type = typename cuda4cpu::detail::hip_vector<T, N>::type;
+// AMD's vector types (HIP_vector_type<T, n>) are cuda/types.hpp's on this
+// platform: amd_vector_types.h
 
 // In hip_api, which hip_runtime_api.h exports with CUDA's cuda_api: a global
 // overload would hide CUDA's atomics from calls such as ::atomicAdd(...),

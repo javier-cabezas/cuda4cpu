@@ -133,8 +133,8 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
     `dispatch_ptr`, HSA's dispatch packet;
   - lane operations: `readfirstlane`, `readlane`, `writelane`,
     `read_exec*`, `ballot_w32`/`w64`, `inverse_ballot_*`, `mbcnt_lo`/`hi`,
-    `ds_bpermute`, `ds_permute`, `ds_swizzle` (bit masks and quad
-    permutations), `mov_dpp`, `update_dpp` (every DPP control, with row
+    `ds_bpermute`, `ds_permute`, `ds_swizzle` (bit masks, quad
+    permutations, and the FFT and rotate modes, as AMD's rocjitsu has them), `mov_dpp`, `update_dpp` (every DPP control, with row
     and bank masks and `bound_ctrl`), `mov_dpp8`, `permlane16`,
     `permlanex16`, `permlane64`, `wave_shuffle` and `wave_reduce_*`;
   - synchronization and timing: `s_barrier`, `wave_barrier`, `fence`,
@@ -212,13 +212,31 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   specializations in class scope), and so a cuda4cpu built with Clang, for
   one OpenMP runtime. The compatibility suite runs two of rocm-examples'
   rocPRIM programs that way.
-- **Not yet:** AMD's vector types (`HIP_vector_type<T, N>` as a class
-  template, which rocWMMA extends: on this platform it names CUDA's vector
-  types), other builtins with Clang's vector types (`fdot2`, packed 16-bit
+- **AMD's vector types:** `float4`, `int2` and the other vector types are
+  AMD's class templates, `HIP_vector_type<T, N>` derived from
+  `HIP_vector_base<T, N>`, with HIP 7's interface
+  (`hip/amd_vector_types.h`): the same sizes as CUDA's, AMD's alignments,
+  element-wise operators with vectors and scalars, `operator[]`,
+  `make_vector_type<T, N>()`, `get_native_vector()` and `__hipMapVector`.
+  A vector built from one value has it as `x` and zeros elsewhere, as in
+  HIP 7. Libraries extend them: rocWMMA specializes `HIP_vector_base` for
+  its own types and up to 512 elements. On this platform only, the
+  `__half` operators are function templates, so that a library's own
+  operators for `__half` win over them (AMD's are device-only, a
+  library's host-only), and `__half` converts to and from `_Float16`.
+- **rocWMMA** (rocm-7.2.4) works too, on RDNA3 and RDNA4, with the same
+  options and Clang: rocm-examples' half-precision rocWMMA programs pass
+  in the compatibility suite. Its F32 and F64 programs report that the GPU
+  doesn't support them, as on an RDNA GPU. The matrix builtins take any
+  vector of their operand's size, and their results convert to one, as
+  the compiler's do (rocWMMA passes 8 halves as 4 floats). CDNA's MFMA
+  and SMFMAC builtins are declared, so that code with branches for those
+  GPUs compiles, and abort if called.
+- **Not yet:** other builtins with Clang's vector types (`fdot2`, packed 16-bit
   conversions), the WMMA of 64-lane wavefronts, CDNA's FNUZ
   fp8 conversions and the scaled FP4/FP6/FP8 ones (gfx942, gfx950), swizzled,
   structured and formatted buffer accesses, scalar buffer loads,
-  `ds_swizzle`'s FFT and rotate modes, `is_shared`/`is_private`, RDNA4's
+  `is_shared`/`is_private`, RDNA4's
   other new builtins (`permlane16_var`, ...), and CDNA's 64-lane wavefronts and MFMA: see the
   [roadmap](../ROADMAP.md#amd-gpu-builtins). AMD runs a wavefront's lanes
   in lockstep, and cuda4cpu doesn't: code that relies on it without
