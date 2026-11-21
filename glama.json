@@ -1,0 +1,25 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "javier-cabezas"
+  ],
+  "name": "cuda4cpu",
+  "title": "cuda4cpu",
+  "description": "Compile, run and test CUDA and HIP programs on the CPU, unmodified, without a GPU, and find the bugs a GPU hides at their source lines: missing __syncthreads(), races between thread orders, out-of-bounds accesses, reads of uninitialized memory and leaks. The tools take sources inline, so the server needs no host files, credentials or network: its image includes the compilers.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/javier-cabezas/cuda4cpu"
+  },
+  "license": "Apache-2.0",
+  "transport": "stdio",
+  "dockerfile": "glama/Dockerfile",
+  "tags": [
+    "cuda",
+    "hip",
+    "rocm",
+    "gpu-programming",
+    "testing",
+    "debugging",
+    "cpp"
+  ]
+}

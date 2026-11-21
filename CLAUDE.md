@@ -423,9 +423,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   including the line AddressSanitizer reports in `out_of_bounds.cu`.
   The project and the README's `FetchContent` snippet pin the latest release
   (`GIT_TAG v0.6.0`): update both, the `VERSION` in the top-level
-  `CMakeLists.txt`, `server.json`'s `version` and image tag, and the
-  action's `@v0.6.0` in the README and `docs/usage.md`, when tagging a new
-  one. The `Packages` workflow fails a release whose tag doesn't match.
+  `CMakeLists.txt`, `server.json`'s `version` and image tag, the image tag
+  in `glama/Dockerfile`, and the action's `@v0.6.0` in the README and
+  `docs/usage.md`, when tagging a new one. The `Packages` workflow fails a release whose tag doesn't match.
 - Packages (`.github/workflows/release.yml`, the `Packages` workflow): the
   release archive (`cuda4cpu-linux-x86_64.tar.gz`, with a versioned top
   directory, so that `releases/latest/download/` finds it; built with GCC 14
@@ -433,7 +433,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`Dockerfile`: `ghcr.io/javier-cabezas/cuda4cpu`, cuda4cpu in
   `/usr/local` with GCC 14 and CMake, the MCP server by default, labeled
   with its MCP Registry name) and the MCP Registry entry (`server.json`,
-  published with `mcp-publisher` through GitHub's OIDC). `action.yml` at the
+  published with `mcp-publisher` through GitHub's OIDC). `glama.json` and
+  `glama/Dockerfile` (the released image) are for Glama's directory, which
+  builds a server from them and lists it as deployable once it starts and
+  answers introspection; Glama's schema defines only `maintainers`, the
+  other fields follow listed servers. `action.yml` at the
   root makes the repository an action that installs an archive.
   `packaging/smoke-test.sh <prefix>` checks an installation: the drivers,
   the CMake package, the toolchain file (CMake 4.1+), and the MCP server's
