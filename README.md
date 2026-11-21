@@ -1,4 +1,4 @@
-![cuda4cpu](https://raw.githubusercontent.com/wiki/javier-cabezas/cuda4cpu/images/cuda4cpu_logo_300x75.png)
+![cuda4cpu](https://raw.githubusercontent.com/javier-cabezas/cuda4cpu/main/docs/images/wordmark.svg)
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
 [![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-140%20of%20166%20pass-brightgreen)](docs/compatibility.md)

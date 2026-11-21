@@ -412,7 +412,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `docs/`: the user documentation that the README links to: `usage.md`
   (building, using it in a project, what the rewriter does), `features.md`,
   `hip.md`, `compatibility.md`, `how-it-works.md`, `debugging.md` and
-  `limitations.md`. When the compatibility suite's results change, update the
+  `limitations.md`. `docs/images/` has the social preview, and the logos that
+  `make-logo.py` generates: the square `logo.svg`/`logo.png` and the README's
+  `wordmark.svg` (by absolute URL, for sites that copy the README), in Ubuntu
+  Bold as outlines on a transparent background, in colors readable on light
+  and dark pages alike. Nothing switches colors: an SVG shown as an image
+  sees the OS's color scheme, not the page's, and so does GitHub's new
+  repository view for a `<picture>` when its themed-picture script doesn't
+  load; the `#gh-dark-mode-only` links are deprecated. When the compatibility suite's results change, update the
   table in `docs/compatibility.md`, the count in the README's badge and
   bullets, and `ROADMAP.md`. `ROADMAP.md` lists planned features and
   performance work; `CONTRIBUTING.md` is for contributors.
