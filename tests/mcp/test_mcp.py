@@ -92,12 +92,13 @@ class Client:
         reply = self.request('tools/call', {'name': tool, 'arguments': arguments})
         result = reply['result']
         content = result.get('structuredContent')
-        if content is not None and not result.get('isError'):
+        if not result.get('isError'):
             if not hasattr(self, 'output_schemas'):
                 tools = self.request('tools/list')['result']['tools']
                 self.output_schemas = {t['name']: t.get('outputSchema') for t in tools}
             schema = self.output_schemas.get(tool)
             assert schema, f'{tool} has no outputSchema'
+            assert content is not None, f'{tool} returned no structuredContent'
             errors = schema_errors(content, schema)
             assert not errors, f'{tool}: structuredContent does not match its outputSchema: {errors[:5]}'
         return result, content
@@ -172,6 +173,16 @@ class Protocol(unittest.TestCase):
             reply = client.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}})
             self.assertEqual(reply['result']['protocolVersion'], '2024-11-05')
             self.assertIn('tools', reply['result']['capabilities'])
+            # Only 2024-11-05's fields: no annotations, title, outputSchema
+            # or structuredContent
+            tools = client.request('tools/list')['result']['tools']
+            self.assertEqual({k for t in tools for k in t}, {'name', 'description', 'inputSchema'})
+            reply = client.request('tools/call', {'name': 'capabilities', 'arguments': {}})['result']
+            self.assertNotIn('structuredContent', reply)
+            self.assertIn('cuda4cpu', reply['content'][0]['text'])
+            reply = client.request('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {}})
+            tools = client.request('tools/list')['result']['tools']
+            self.assertEqual({k for t in tools for k in t}, {'name', 'description', 'inputSchema', 'annotations'})
             reply = client.request('initialize', {'protocolVersion': '1999-01-01', 'capabilities': {}})
             self.assertEqual(reply['result']['protocolVersion'], '2025-06-18')
             self.assertIn('instructions', reply['result'])
@@ -188,8 +199,9 @@ class Protocol(unittest.TestCase):
             # Only compile and capabilities leave the system as it was: the
             # others run the program, unsandboxed
             read_only = tool['name'] in ('compile', 'capabilities')
-            self.assertEqual(tool['annotations']['readOnlyHint'], read_only, tool['name'])
-            self.assertEqual(tool['annotations']['destructiveHint'], not read_only, tool['name'])
+            self.assertEqual(tool['annotations'], {'title': tool['title'], 'readOnlyHint': read_only,
+                                                   'destructiveHint': not read_only, 'idempotentHint': read_only,
+                                                   'openWorldHint': not read_only}, tool['name'])
 
     def test_errors(self):
         self.assertEqual(CLIENT.request('ping')['result'], {})

@@ -366,7 +366,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `structuredContent` must match; the descriptions say when to use each
   tool rather than the others, what it does to the system and what it
   costs, as Glama's tool definition score asks. Keep them in sync with the
-  results.
+  results. A client that negotiates an older protocol gets only its
+  version's fields (`tool_definition`: annotations from 2025-03-26, title,
+  `outputSchema` and `structuredContent` from 2025-06-18).
   `check` runs a sanitizer build first (memory errors stop it, since other
   results would be unreliable and a corrupted heap can hang), then the
   default order twice (exit code, and whether the output is deterministic),
