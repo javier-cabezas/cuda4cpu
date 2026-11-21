@@ -1,8 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/wordmark-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/wordmark-light.svg">
-  <img alt="cuda4cpu" src="docs/images/wordmark.svg" width="318" height="75">
-</picture>
+![cuda4cpu](https://raw.githubusercontent.com/javier-cabezas/cuda4cpu/main/docs/images/wordmark.svg)
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
 [![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-140%20of%20166%20pass-brightgreen)](docs/compatibility.md)

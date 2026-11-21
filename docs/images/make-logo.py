@@ -23,10 +23,11 @@
   light and dark pages alike. An SVG shown as an image can't know the page's
   theme (prefers-color-scheme there is the operating system's), so it
   doesn't switch colors.
-- wordmark-light.svg and wordmark-dark.svg: "cuda4cpu" on one line, in the
-  README logo's colors and in brighter ones, which the README picks with a
-  <picture> by GitHub's theme; wordmark.svg, in the colors readable on both,
-  for viewers without <picture>.
+- wordmark.svg: "cuda4cpu" on one line, for the README, in the same
+  colors. Not a <picture> with a variant per theme: GitHub's new repository
+  view picks its source by the operating system's scheme when the script
+  that follows GitHub's theme doesn't load, which leaves a dark 4 on a dark
+  page; and the #gh-dark-mode-only links that work around it are deprecated.
 
 Needs fontTools, Pillow and the Ubuntu font (fonts-ubuntu). Usage:
 
@@ -44,18 +45,13 @@ GREEN, DARK, BLUE = 'green', 'dark', 'blue'          # the colors' roles
 # least 3:1 against white and GitHub's dark #0d1117 (WCAG, large text). The
 # social preview's #24292f and #005aa0 vanish on dark pages.
 PALETTE = {GREEN: '#609700', DARK: '#7d8590', BLUE: '#2a7fd4'}
-# For pages whose theme is known: the README logo's and the social preview's
-# colors on light ones, brighter ones on dark ones (GitHub's dark text is
-# #e6edf3)
-LIGHT = {GREEN: '#609700', DARK: '#24292f', BLUE: '#005aa0'}
-DARK_THEME = {GREEN: '#8cc83c', DARK: '#e6edf3', BLUE: '#4aa3ff'}
 SIZE = 512                      # the square, in SVG units
 BAR = 20                        # the bar's height
 WIDTH = 0.76                    # the widest line's share of the square
 LEADING = 0.86                  # baseline to baseline, in ems
 PNG_SIZE = 512
 WORDMARK_HEIGHT = 75            # the README logo's, as it's shown
-MARGIN = 0.06                   # around the wordmark's ink, in ems
+MARGIN = 0.06                   # around the wordmark's ink, on every side, in ems
 
 if len(sys.argv) not in (2, 3):
     sys.exit('usage: make-logo.py OUTPUT_DIR [PREVIEW_DIR]')
@@ -141,22 +137,22 @@ def svg(shapes, palette, width, height, bar=()):
 
 
 def render(shapes, palette, width, height, scale, bar=(), background=(0, 0, 0, 0)):
-    """The shapes, scale pixels per unit, drawn 4 times larger and reduced,
-    for antialiasing"""
-    k = scale * 4
-    size = (round(width * k), round(height * k))
-    image = Image.new('RGBA', size, background)
+    """The shapes, about scale pixels per unit (the image's size rounded),
+    drawn 4 times larger and reduced, for antialiasing"""
+    size = (round(width * scale), round(height * scale))
+    kx, ky = size[0] * 4 / width, size[1] * 4 / height
+    image = Image.new('RGBA', (size[0] * 4, size[1] * 4), background)
     draw = ImageDraw.Draw(image)
     for role, a, b in bar:
-        draw.rectangle([round(a * width * k), 0, round(b * width * k) - 1, round(BAR * k) - 1], fill=palette[role])
+        draw.rectangle([round(a * width * kx), 0, round(b * width * kx) - 1, round(BAR * ky) - 1], fill=palette[role])
     for role, cs in shapes:
         mask = Image.new('1', image.size, 0)
         for c in cs:            # even-odd: each contour flips the pixels inside it
             layer = Image.new('1', image.size, 0)
-            ImageDraw.Draw(layer).polygon([(x * k, y * k) for x, y in c], fill=1)
+            ImageDraw.Draw(layer).polygon([(x * kx, y * ky) for x, y in c], fill=1)
             mask = ImageChops.logical_xor(mask, layer)
         image.paste(palette[role], mask=mask)
-    return image.resize((size[0] // 4, size[1] // 4), Image.BOX)       # each pixel, the mean of its 4x4
+    return image.resize(size, Image.BOX)       # each pixel, the mean of its 4x4
 
 
 def write(name, text):
@@ -199,16 +195,16 @@ render(shapes, PALETTE, SIZE, SIZE, PNG_SIZE / SIZE, bar).save(os.path.join(out_
 previews('logo', shapes, {'light': PALETTE, 'dark': PALETTE}, SIZE, SIZE, 0.5, bar)
 
 #
-# The wordmark: its ink, with a margin, scaled to the README logo's height
+# The wordmark: its ink, with the same margin on every side, scaled to the
+# README logo's height
 #
 
-parts, width, ymin, ymax = line([(c, GREEN) for c in 'cuda'] + [('4', DARK)] + [(c, BLUE) for c in 'cpu'])
+parts, _, ymin, ymax = line([(c, GREEN) for c in 'cuda'] + [('4', DARK)] + [(c, BLUE) for c in 'cpu'])
+xs = [x for _, cs in parts for c in cs for x, _ in c]
 margin = MARGIN * upem
 scale = WORDMARK_HEIGHT / (ymax - ymin + 2 * margin)
-word_width = round((width + 2 * margin) * scale, 2)
-shapes = positioned(parts, margin * scale, (ymax + margin) * scale, scale)
-for name, palette in (('wordmark.svg', PALETTE), ('wordmark-light.svg', LIGHT), ('wordmark-dark.svg', DARK_THEME)):
-    write(name, svg(shapes, palette, word_width, WORDMARK_HEIGHT))
-previews('wordmark', shapes, {'light': LIGHT, 'dark': DARK_THEME}, word_width, WORDMARK_HEIGHT, 4)
-previews('wordmark-shared', shapes, {'light': PALETTE, 'dark': PALETTE}, word_width, WORDMARK_HEIGHT, 4)
+word_width = round((max(xs) - min(xs) + 2 * margin) * scale, 2)
+shapes = positioned(parts, (margin - min(xs)) * scale, (ymax + margin) * scale, scale)
+write('wordmark.svg', svg(shapes, PALETTE, word_width, WORDMARK_HEIGHT))
+previews('wordmark', shapes, {'light': PALETTE, 'dark': PALETTE}, word_width, WORDMARK_HEIGHT, 4)
 print('wordmark', word_width, 'x', WORDMARK_HEIGHT)
