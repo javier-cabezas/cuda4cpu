@@ -38,8 +38,36 @@ SERVER = None
 BUGS = None
 
 
+def schema_errors(value, schema, where='result'):
+    """Where value doesn't match schema, for the JSON Schema the tools'
+    outputSchema use: type (one or a list), properties, items, enum and
+    required. Clients may check structuredContent against it."""
+    types = schema.get('type')
+    if types is not None:
+        names = types if isinstance(types, list) else [types]
+        python = {'object': dict, 'array': list, 'string': str, 'boolean': bool, 'null': type(None),
+                  'integer': int, 'number': (int, float)}
+        ok = any(isinstance(value, python[t]) and not (t in ('integer', 'number') and isinstance(value, bool))
+                 for t in names)
+        if not ok:
+            return [f'{where}: {value!r:.80} is not {types}']
+    errors = []
+    if 'enum' in schema and value not in schema['enum']:
+        errors.append(f'{where}: {value!r} is not one of {schema["enum"]}')
+    if isinstance(value, dict):
+        errors += [f'{where}: no {k}' for k in schema.get('required', []) if k not in value]
+        for k, sub in schema.get('properties', {}).items():
+            if k in value:
+                errors += schema_errors(value[k], sub, f'{where}.{k}')
+    if isinstance(value, list) and 'items' in schema:
+        for i, item in enumerate(value):
+            errors += schema_errors(item, schema['items'], f'{where}[{i}]')
+    return errors
+
+
 class Client:
-    """An MCP client of one server process"""
+    """An MCP client of one server process. Every tool result's
+    structuredContent is checked against the tool's outputSchema."""
 
     def __init__(self):
         environment = {k: v for k, v in os.environ.items() if not k.startswith('CUDA4CPU_')}
@@ -63,7 +91,17 @@ class Client:
     def call(self, tool, **arguments):
         reply = self.request('tools/call', {'name': tool, 'arguments': arguments})
         result = reply['result']
-        return result, result.get('structuredContent')
+        content = result.get('structuredContent')
+        if not result.get('isError'):
+            if not hasattr(self, 'output_schemas'):
+                tools = self.request('tools/list')['result']['tools']
+                self.output_schemas = {t['name']: t.get('outputSchema') for t in tools}
+            schema = self.output_schemas.get(tool)
+            assert schema, f'{tool} has no outputSchema'
+            assert content is not None, f'{tool} returned no structuredContent'
+            errors = schema_errors(content, schema)
+            assert not errors, f'{tool}: structuredContent does not match its outputSchema: {errors[:5]}'
+        return result, content
 
     def close(self):
         self.process.stdin.close()
@@ -135,6 +173,16 @@ class Protocol(unittest.TestCase):
             reply = client.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}})
             self.assertEqual(reply['result']['protocolVersion'], '2024-11-05')
             self.assertIn('tools', reply['result']['capabilities'])
+            # Only 2024-11-05's fields: no annotations, title, outputSchema
+            # or structuredContent
+            tools = client.request('tools/list')['result']['tools']
+            self.assertEqual({k for t in tools for k in t}, {'name', 'description', 'inputSchema'})
+            reply = client.request('tools/call', {'name': 'capabilities', 'arguments': {}})['result']
+            self.assertNotIn('structuredContent', reply)
+            self.assertIn('cuda4cpu', reply['content'][0]['text'])
+            reply = client.request('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {}})
+            tools = client.request('tools/list')['result']['tools']
+            self.assertEqual({k for t in tools for k in t}, {'name', 'description', 'inputSchema', 'annotations'})
             reply = client.request('initialize', {'protocolVersion': '1999-01-01', 'capabilities': {}})
             self.assertEqual(reply['result']['protocolVersion'], '2025-06-18')
             self.assertIn('instructions', reply['result'])
@@ -146,7 +194,14 @@ class Protocol(unittest.TestCase):
         self.assertEqual([t['name'] for t in tools], ['compile', 'run', 'check', 'test_kernel', 'capabilities'])
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
-            self.assertTrue(tool['description'])
+            self.assertEqual(tool['outputSchema']['type'], 'object')
+            self.assertTrue(tool['description'] and tool['title'])
+            # Only compile and capabilities leave the system as it was: the
+            # others run the program, unsandboxed
+            read_only = tool['name'] in ('compile', 'capabilities')
+            self.assertEqual(tool['annotations'], {'title': tool['title'], 'readOnlyHint': read_only,
+                                                   'destructiveHint': not read_only, 'idempotentHint': read_only,
+                                                   'openWorldHint': not read_only}, tool['name'])
 
     def test_errors(self):
         self.assertEqual(CLIENT.request('ping')['result'], {})

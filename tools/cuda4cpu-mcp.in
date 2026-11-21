@@ -432,30 +432,119 @@ RUN_PROPERTIES = {
                                                          f'at most {MAX_TIMEOUT})'},
 }
 
+#
+# The tools' results, as JSON Schema: what structuredContent holds (the text
+# content is a summary of it). Values that can be missing are null.
+#
+
+LOCATION_SCHEMA = {'type': 'object', 'properties': {
+    'file': {'type': ['string', 'null']}, 'line': {'type': ['integer', 'null']},
+    'function': {'type': 'string', 'description': "A sanitizer's frame: the function"}}}
+DIAGNOSTIC_SCHEMA = {'type': 'object', 'description': "A compiler error or warning, at the sources' own lines",
+                     'properties': {'file': {'type': ['string', 'null']}, 'line': {'type': ['integer', 'null']},
+                                    'column': {'type': ['integer', 'null']}, 'severity': {'type': 'string'},
+                                    'message': {'type': 'string'}}}
+FINDING_SCHEMA = {'type': 'object', 'description': 'A problem found', 'properties': {
+    'kind': {'type': 'string', 'description': "What it is: 'depends on the thread order', 'reads uninitialized "
+                                              "memory', 'divergent barrier', 'memory leak', 'AddressSanitizer: "
+                                              "heap-buffer-overflow', 'undefined behavior', 'crash in a kernel', "
+                                              "'timeout', ..."},
+    'message': {'type': 'string'},
+    'meaning': {'type': 'string', 'description': 'What it means for the program, and on a GPU (findings about '
+                                                 'the whole program: thread order, uninitialized memory)'},
+    'locations': {'type': 'array', 'items': LOCATION_SCHEMA, 'description': 'Where in the source, when it is '
+                                                                          'known'},
+    'run': {'type': 'string', 'description': 'The run that found it'},
+    'orders': {'type': 'array', 'items': {'type': 'string'}, 'description': 'The thread orders that change the '
+                                                                            'result'},
+    'first_difference': {'type': 'object', 'description': 'The first line of output that differs'}}}
+COMPILE_OUTPUT = {
+    'compiled': {'type': 'boolean'},
+    'language': {'type': 'string', 'enum': ['cuda', 'hip']},
+    'diagnostics': {'type': 'array', 'items': DIAGNOSTIC_SCHEMA},
+    'unsupported': {'type': 'array', 'items': {'type': 'string'},
+                    'description': 'CUDA or HIP features the sources use that cuda4cpu does not implement (when '
+                                   'they do not compile)'},
+    'compiler_output': {'type': 'string', 'description': "The compiler's output, clipped (when they do not "
+                                                         'compile)'},
+}
+COMPILE_REQUIRED = ['compiled', 'language', 'diagnostics']    # in every result
+RUN_OUTPUT = {
+    'exit_code': {'type': ['integer', 'null'], 'description': 'null if a signal or the time limit ended it'},
+    'signal': {'type': ['string', 'null'], 'description': 'The signal that killed it, as SIGSEGV'},
+    'timed_out': {'type': 'boolean'},
+    'seconds': {'type': 'number'},
+    'stdout': {'type': 'string', 'description': 'Clipped to its start and end'},
+    'stderr': {'type': 'string', 'description': 'Clipped to its start and end'},
+    'findings': {'type': 'array', 'items': FINDING_SCHEMA},
+}
+RUN_SCHEMA = {'type': 'object', 'properties': RUN_OUTPUT}
+CHECK_OUTPUT = {
+    **COMPILE_OUTPUT,
+    'verdict': {'type': 'string', 'enum': ['no problems found', 'problems found', 'does not compile']},
+    'findings': {'type': 'array', 'items': FINDING_SCHEMA},
+    'runs': {'type': 'array', 'description': 'Each run: its order, what it was, and how it ended',
+             'items': {'type': 'object', 'properties': {
+                 'order': {'type': 'string'}, 'description': {'type': 'string'},
+                 'exit_code': {'type': ['integer', 'null']}, 'signal': {'type': ['string', 'null']},
+                 'timed_out': {'type': 'boolean'}, 'seconds': {'type': 'number'}}}},
+    'forward': {**RUN_SCHEMA, 'description': "The run in the default order, with the program's output"},
+    'deterministic_output': {'type': 'boolean', 'description': 'Whether two runs in the default order print the '
+                                                               'same'},
+    'sanitizers': {**RUN_SCHEMA, 'description': 'The sanitizer run, when its errors stopped the others'},
+    'sanitizer_build': {'type': 'object', 'description': 'When the sanitizer build failed'},
+    'note': {'type': 'string', 'description': 'How the runs were compared, or why some did not run'},
+    'caveat': {'type': 'string'},
+}
+
 TOOLS = [
     {'name': 'compile',
-     'description': 'Compile CUDA or HIP sources with cuda4cpu, as nvcc or hipcc would: whether they build, the '
-                    "compiler's diagnostics at the sources' own lines, and the features the sources use that "
-                    'cuda4cpu does not implement (textures, inline PTX, CUDA libraries, ...).',
-     'inputSchema': {'type': 'object', 'properties': FILE_PROPERTIES}},
+     'title': 'Compile CUDA or HIP sources',
+     'description': 'Compile CUDA or HIP sources with cuda4cpu, as nvcc or hipcc would, without running them: '
+                    'whether they build, the compiler\'s errors at the sources\' own lines, and the features they '
+                    'use that cuda4cpu does not implement (textures, inline PTX, CUDA libraries, ...). Use it to '
+                    'fix build errors; use run to see what a program prints, check to look for bugs, and '
+                    'test_kernel to test one kernel against expected values. It builds in a temporary directory '
+                    'that it deletes, changes no source file and needs no network.',
+     'annotations': {'title': 'Compile CUDA or HIP sources', 'readOnlyHint': True, 'destructiveHint': False,
+                     'idempotentHint': True, 'openWorldHint': False},
+     'inputSchema': {'type': 'object', 'properties': FILE_PROPERTIES},
+     'outputSchema': {'type': 'object', 'properties': COMPILE_OUTPUT, 'required': COMPILE_REQUIRED}},
     {'name': 'run',
-     'description': "Compile and run a CUDA or HIP program on the CPU: its exit code, output, and the problems "
-                    "cuda4cpu reports (divergent barriers, copies in the wrong direction). Use check to look for "
-                    'bugs.',
-     'inputSchema': {'type': 'object', 'properties': RUN_PROPERTIES}},
+     'title': 'Run a CUDA or HIP program on the CPU',
+     'description': 'Compile a CUDA or HIP program and run it once on the CPU, in the default thread order: its '
+                    'exit code, output, and the problems cuda4cpu reports (divergent barriers, copies in the '
+                    'wrong direction, crashes in kernels, each at its line). Use it to see what a program '
+                    'prints; use check instead to look for bugs, since one run hides those that depend on the '
+                    'thread order or on memory never written. If the program does not compile, run returns '
+                    "compile's result and does not run it. The program runs with the server's permissions, "
+                    'without a sandbox, in working_directory (by default the directory of the last path, or a '
+                    'temporary one for inline files, deleted afterwards), and may do there whatever its code '
+                    'does. Each run stops at timeout_seconds.',
+     'annotations': {'title': 'Run a CUDA or HIP program on the CPU', 'readOnlyHint': False,
+                     'destructiveHint': True, 'idempotentHint': False, 'openWorldHint': True},
+     'inputSchema': {'type': 'object', 'properties': RUN_PROPERTIES},
+     'outputSchema': {'type': 'object', 'properties': {**COMPILE_OUTPUT, **RUN_OUTPUT}, 'required': COMPILE_REQUIRED}},
     {'name': 'check',
-     'description': 'Look for bugs in a CUDA or HIP program without a GPU. Runs it with the threads of each block '
-                    'in several orders (forward, reverse, random with several seeds, warp orders): a result that '
-                    'changes with the order means a missing __syncthreads() or __syncwarp(), or a race. Also '
-                    "reports cuda4cpu's checks (divergent barriers and warp operations, copies in the wrong "
-                    'direction, allocations never freed), runs with new allocations filled with 0xff bytes '
-                    '(a changed result means reads of memory never written; when the output varies, it runs with 0xff '
-                    'bytes and with zeros twice each, and a result that each fill makes steady but the two make '
-                    'different means the same), and runs a build with '
-                    'AddressSanitizer and UBSan (out-of-bounds and use-after-free accesses, undefined behavior), '
-                    'with source lines. The program should check '
-                    'its own results or print them; output that varies between identical runs (timings) is '
-                    'compared by exit code only, unless ignore_patterns removes the lines that vary.',
+     'title': 'Find bugs in a CUDA or HIP program',
+     'description': 'Look for the bugs a GPU hides in a CUDA or HIP program, without a GPU, by running it in '
+                    'several ways and comparing the results: first built with AddressSanitizer and UBSan '
+                    '(out-of-bounds and use-after-free accesses, undefined behavior; errors there stop the other '
+                    'runs), then twice in the default order, then with new allocations filled with 0xff bytes '
+                    '(a changed result means reads of memory never written), then with the threads of each '
+                    'block in other orders (reverse, warp reverse, and random and warp random for each seed): a '
+                    'result that changes means a missing __syncthreads() or __syncwarp(), or a race. It also '
+                    "reports cuda4cpu's checks: divergent barriers and warp operations, copies in the wrong "
+                    'direction, allocations never freed. Each finding has a kind and a message; those at a place '
+                    'in the source (sanitizers, cuda4cpu\'s checks) give its file and line, and those about the '
+                    'whole run (thread order, uninitialized memory) what they mean. With the default 3 seeds, a call builds twice and runs the program about 12 '
+                    'times, each up to timeout_seconds: use run for a single run, and test_kernel for one '
+                    "kernel. The program should check its own results or print them. Output that varies "
+                    'between two runs in the default order (timings) is compared by exit code only, unless '
+                    'ignore_patterns removes the lines that vary. The program runs as in run: with the '
+                    "server's permissions, without a sandbox.",
+     'annotations': {'title': 'Find bugs in a CUDA or HIP program', 'readOnlyHint': False,
+                     'destructiveHint': True, 'idempotentHint': False, 'openWorldHint': True},
      'inputSchema': {'type': 'object', 'properties': {
          **RUN_PROPERTIES,
          'seeds': {'type': 'array', 'items': {'type': 'integer'},
@@ -464,14 +553,24 @@ TOOLS = [
          'ignore_patterns': {'type': 'array', 'items': {'type': 'string'},
                              'description': 'Regular expressions of output lines to leave out of the comparison '
                                             'between orders, such as timings'},
-     }}},
+     }},
+     'outputSchema': {'type': 'object', 'properties': CHECK_OUTPUT, 'required': COMPILE_REQUIRED + ['verdict']}},
     {'name': 'test_kernel',
-     'description': 'Test one kernel without writing a program: give its source, the launch configuration, its '
-                    'arguments (scalars, and arrays with their data, given or generated), and the expected '
-                    'outputs, as values or as a host reference function. A generated program launches the '
-                    'kernel, compares each output (exactly for integers, within a tolerance for floating '
-                    'point) and reports the elements that differ. With check (the default), it also runs in '
-                    'the thread orders and with the sanitizers that check uses.',
+     'title': 'Test one CUDA or HIP kernel',
+     'description': 'Test one kernel against expected outputs without writing a program: give its source, the '
+                    'launch configuration, its arguments (scalars, and arrays given or generated), and the '
+                    'expected outputs, as values or as a host reference function. Prefer it to run or check '
+                    'when you have one kernel and know its correct results; use check for a whole program. '
+                    'cuda4cpu generates a program that launches the kernel once and compares each output array, '
+                    'exactly for integers and within a tolerance for floating point; then, unless check is '
+                    "false, it runs it as check does (about 12 runs). Returns passed, and for each output its "
+                    'elements, mismatches, largest error and first mismatches (index, got, expected); with '
+                    "check, also check's verdict and findings (a sanitizer error stops it before the outputs are "
+                    'compared), and without it, the findings of its one run, if any. The kernel runs as C++ on '
+                    "the CPU with the server's "
+                    'permissions, without a sandbox, in a temporary directory that is deleted afterwards.',
+     'annotations': {'title': 'Test one CUDA or HIP kernel', 'readOnlyHint': False, 'destructiveHint': True,
+                     'idempotentHint': False, 'openWorldHint': True},
      'inputSchema': {'type': 'object', 'required': ['kernel', 'name', 'grid', 'block', 'arguments'], 'properties': {
          'kernel': {'type': 'string', 'description': 'The source of the kernel, with what it needs (device '
                                                      'functions, includes, constants)'},
@@ -511,11 +610,27 @@ TOOLS = [
                                                      '(default true)'},
          'seeds': {'type': 'array', 'items': {'type': 'integer'}, 'description': "As check's"},
          'timeout_seconds': RUN_PROPERTIES['timeout_seconds'],
-     }}},
+     }},
+     'outputSchema': {'type': 'object', 'properties': {
+         **CHECK_OUTPUT, **RUN_OUTPUT,
+         'passed': {'type': 'boolean', 'description': 'The outputs match, and check (if run) found nothing'},
+         'outputs': {'type': 'array', 'items': {'type': 'object', 'properties': {
+             'output': {'type': 'string'}, 'elements': {'type': 'integer'}, 'mismatches': {'type': 'integer'},
+             'max_abs_error': {'type': 'number'},
+             'first_mismatches': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                 'index': {'type': 'integer'}, 'got': {}, 'expected': {}}}}}}},
+         'launch_error': {'type': 'string'},
+     }, 'required': COMPILE_REQUIRED + ['passed']}},
     {'name': 'capabilities',
-     'description': 'What cuda4cpu implements of CUDA and HIP, what it does not, and how its checks work: read it '
-                    'before relying on a feature.',
-     'inputSchema': {'type': 'object', 'properties': {}}},
+     'title': "cuda4cpu's capabilities and limitations",
+     'description': 'Read what cuda4cpu implements of CUDA and HIP, what it does not, and how its checks work, '
+                    'as Markdown from its documentation: read it before relying on a feature, or when compile '
+                    'reports something unsupported. It only reads documentation installed with cuda4cpu: no '
+                    'arguments, no side effects, always the same text.',
+     'annotations': {'title': "cuda4cpu's capabilities and limitations", 'readOnlyHint': True,
+                     'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': False},
+     'inputSchema': {'type': 'object', 'properties': {}},
+     'outputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text']}},
 ]
 
 
@@ -1133,19 +1248,36 @@ def respond(message_id, result=None, error=None):
     sys.stdout.flush()
 
 
+# The protocol version initialize agreed on: the tools' definitions and
+# results have only that version's fields
+NEGOTIATED = {'version': PROTOCOL_VERSIONS[0]}
+
+
+def tool_definition(tool, version):
+    """tool as the version defines a tool: annotations from 2025-03-26, title
+    and outputSchema from 2025-06-18"""
+    keep = {'name', 'description', 'inputSchema'}
+    if version >= '2025-03-26':
+        keep.add('annotations')
+    if version >= '2025-06-18':
+        keep |= {'title', 'outputSchema'}
+    return {k: v for k, v in tool.items() if k in keep}
+
+
 def handle(message):
     method = message.get('method')
     params = message.get('params') or {}
     if method == 'initialize':
         requested = params.get('protocolVersion')
-        return {'protocolVersion': requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
+        NEGOTIATED['version'] = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
+        return {'protocolVersion': NEGOTIATED['version'],
                 'capabilities': {'tools': {'listChanged': False}},
                 'serverInfo': {'name': 'cuda4cpu', 'version': VERSION},
                 'instructions': INSTRUCTIONS}
     if method == 'ping':
         return {}
     if method == 'tools/list':
-        return {'tools': TOOLS}
+        return {'tools': [tool_definition(tool, NEGOTIATED['version']) for tool in TOOLS]}
     if method == 'tools/call':
         name = params.get('name')
         if name not in HANDLERS:
@@ -1158,8 +1290,10 @@ def handle(message):
         except Exception:
             return {'content': [{'type': 'text', 'text': 'cuda4cpu-mcp failed:\n' + traceback.format_exc()}],
                     'isError': True}
-        return {'content': [{'type': 'text', 'text': summary(name, result)}], 'structuredContent': result,
-                'isError': False}
+        reply = {'content': [{'type': 'text', 'text': summary(name, result)}], 'isError': False}
+        if NEGOTIATED['version'] >= '2025-06-18':          # structuredContent is 2025-06-18's
+            reply['structuredContent'] = result
+        return reply
     raise NotImplementedError(method)
 
 
