@@ -357,8 +357,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `HIPCC_VERBOSE` (`hipcc-cmd:` lines), and `--emit-static-lib` compiles
   the sources (calling `main` for each) and archives them.
 - `tools/cuda4cpu-mcp.in`: an MCP server (stdio, JSON-RPC one message per
-  line, standard library only) with `compile`, `run`, `check` and
-  `capabilities` tools, on cuda4cpu-nvcc and cuda4cpu-hipcc next to it.
+  line, standard library only) with `compile`, `run`, `check`,
+  `test_kernel` and `capabilities` tools, on cuda4cpu-nvcc and
+  cuda4cpu-hipcc next to it. Each tool has a `title`, `annotations` (only
+  `compile` and `capabilities` are read-only: the others run the program
+  unsandboxed, so they're destructive and open-world) and an `outputSchema`
+  (`COMPILE_OUTPUT`, `RUN_OUTPUT`, `CHECK_OUTPUT`) that its
+  `structuredContent` must match; the descriptions say when to use each
+  tool rather than the others, what it does to the system and what it
+  costs, as Glama's tool definition score asks. Keep them in sync with the
+  results.
   `check` runs a sanitizer build first (memory errors stop it, since other
   results would be unreliable and a corrupted heap can hang), then the
   default order twice (exit code, and whether the output is deterministic),
@@ -587,7 +595,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     files, and the toolkit: its `bin/nvcc`, and a program that
     the host compiler links with `-lcudart`.
   - `mcp_server` (`mcp/test_mcp.py`): cuda4cpu-mcp driven over stdio:
-    the protocol (initialize, version negotiation, errors), each tool, and
+    the protocol (initialize, version negotiation, errors), the tools'
+    titles, annotations and output schemas (every call's `structuredContent`
+    is checked against its tool's `outputSchema`), each tool, and
     `check` on programs with known bugs (the `examples/bugs` programs, a
     divergent barrier, a copy in the wrong direction, signed overflow, a
     leak, a read of memory never written, a failure, a hang, varying
