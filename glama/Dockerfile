@@ -19,5 +19,5 @@
 # The MCP server for Glama's directory (glama.json): the released image,
 # whose server needs no host files, credentials or network. Its tools take
 # sources inline. Bump the tag with each release, as server.json's.
-FROM ghcr.io/javier-cabezas/cuda4cpu:0.6.0
+FROM ghcr.io/javier-cabezas/cuda4cpu:0.6.1
 CMD ["cuda4cpu-mcp"]
