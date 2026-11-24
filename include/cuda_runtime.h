@@ -46,6 +46,26 @@ using namespace cuda4cpu::cuda_api;
 #define __DRIVER_TYPES_H__
 #endif
 
+// NVIDIA's CCCL (Thrust, CUB, libcu++), from a CUDA toolkit or its own
+// repository, on the CPU: Thrust's device system is OpenMP's, as nvcc builds
+// it with THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_OMP; CCCL's NVTX ranges
+// are off (cuda4cpu's NVTX does nothing); and so is its support of CUDA's
+// half, bfloat16 and 8-bit types, which it declares at global scope, where
+// they would collide with cuda4cpu's (in cuda4cpu::cuda_api). Algorithms of
+// those types still work. Not on HIP's AMD platform, where rocThrust takes
+// its HIP backend.
+#if !(defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__))
+#ifndef THRUST_DEVICE_SYSTEM
+#define THRUST_DEVICE_SYSTEM THRUST_DEVICE_SYSTEM_OMP
+#endif
+#ifndef CCCL_DISABLE_NVTX
+#define CCCL_DISABLE_NVTX
+#endif
+#ifndef CCCL_DISABLE_FP16_SUPPORT
+#define CCCL_DISABLE_FP16_SUPPORT
+#endif
+#endif
+
 //! Calling convention of host callbacks, empty on Linux
 #ifndef CUDART_CB
 #define CUDART_CB

@@ -56,6 +56,11 @@
 #define __align__(n) __attribute__((aligned(n)))
 #define __device__
 #define __host__
+// AMD's header of these qualifiers (hip/amd_detail/host_defines.h), by its
+// include guard, which libraries test before redefining their own (rocThrust)
+#ifndef HIP_INCLUDE_HIP_AMD_DETAIL_HOST_DEFINES_H
+#define HIP_INCLUDE_HIP_AMD_DETAIL_HOST_DEFINES_H
+#endif
 #define __shared__ static thread_local
 #define __constant__
 

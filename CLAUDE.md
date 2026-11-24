@@ -96,7 +96,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   comparison and math functions of bfloat16 are overloads of half's
   (`__hadd`, `hsqrt`, ...). `hip/hip_fp16.h` and `hip/hip_bf16.h` include
   them, the latter with HIP's names (`__hip_bfloat16`, `HIPRT_*_BF16`).
-  On HIP's AMD platform, `__half`'s operators are function templates
+  On HIP's AMD platform, `__half`, `__half2` and their raw structs are at
+  global scope, as AMD's (`CUDA4CPU_HALF_GLOBAL`; rocThrust declares
+  `struct __half;`), with using-declarations in `cuda_api`, and global
+  using-declarations of the operators, which argument-dependent lookup then
+  finds (it ignores using-directives). Their operators are function templates
   (`CUDA4CPU_HALF_OPERATOR`, `template <int = 0>`), so that a library's own
   non-template operators win the tie (AMD's are device-only and rocWMMA's
   host-only; cuda4cpu has no such split), and `__half` converts to and from
@@ -156,6 +160,30 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   double: without `-mfma` it's a libm call, and float products of these
   types are exact). Syncs are about half of its time; a warp operation that
   the releasing lane computes would need one.
+- `include/cuda/texture.hpp`: texture objects (CUDA's descriptors,
+  `cudaCreateTextureObject`, ..., and `tex1Dfetch`), of linear and pitched
+  memory only: a handle points to a copy of the descriptors. CUDA arrays and
+  their textures aren't implemented. rocPRIM's texture cache iterator, which
+  rocThrust includes, needs the types and functions.
+- `include/thrust/`: cuda4cpu's overlay of NVIDIA's Thrust (CCCL), before it
+  on the include path, for its OpenMP backend, which `cuda_runtime.h`
+  selects (`THRUST_DEVICE_SYSTEM`, with `CCCL_DISABLE_NVTX` and
+  `CCCL_DISABLE_FP16_SUPPORT`: CCCL declares `struct __half;` and the other
+  extended types at global scope, which collide with cuda4cpu's in
+  `cuda_api`). `system/omp/memory_resource.h` replaces CCCL's with
+  `cudaMalloc`/`cudaMallocManaged` resources, and
+  `system/omp/detail/malloc_and_free.h` adds OpenMP overloads of `malloc`
+  and `free` on `cudaMalloc`, so that Thrust's memory is device memory to
+  cuda4cpu; `system/omp/detail/execution_policy.h` brings
+  `thrust::system_error` along, as CUDA's backend does;
+  `system/cuda/detail/cuda4cpu.h` is the CUDA system's names on OpenMP's
+  (`thrust::cuda::par` with `.on(stream)`, `vector`, `cuda_category`, ...),
+  which `system/cuda/*.h`, `device_vector.h` and `execution_policy.h`
+  include. Every overlay passes through to the next header with rocThrust
+  (`ROCTHRUST_VERSION`) or another device system. `cuda/std/type_traits`
+  and `cuda/cmath` defer to CCCL's (`__has_include_next`).
+  `include/hip/amd_detail/host_defines.h` stands in for AMD's, and
+  `defines.hpp` defines its guard, which rocThrust tests.
 - `include/cuda/async_copy.hpp` (`cuda/pipeline`, `cuda/barrier`) and
   `include/cooperative_groups/memcpy_async.h`: libcu++'s asynchronous
   copies and cooperative groups'. A copy is done when `memcpy_async`
@@ -318,9 +346,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - rewrites `HIP_DYNAMIC_SHARED(T, name)` like `extern __shared__ T name[];`,
     and drops the cast in `hipLaunchKernel`/`hipLaunchCooperativeKernel`
 
-  The rewritten `.cu` file starts by defining `__CUDACC__`, as nvcc does.
-  `--language hip` (the default for `.hip` files) also defines `__HIPCC__` and
-  `__HIP_PLATFORM_NVIDIA__`. It uses Python 3, standard library only.
+  The rewritten `.cu` file starts by defining `__CUDACC__`, `__NVCC__` and
+  nvcc's version (`NVCC_MACROS`, 12.0.140), as nvcc's host pass sees them:
+  CCCL checks that the compiler's version matches `CUDART_VERSION`, and
+  takes its host paths only for nvcc. `--language hip` (the default for
+  `.hip` files) also defines `__HIPCC__` and `__HIP_PLATFORM_NVIDIA__`; on
+  HIP's AMD platform (`__HIP_PLATFORM_AMD__` from the driver), `__HIP__` and
+  not `__CUDACC__` or `__NVCC__`, as AMD's hipcc: rocThrust picks its HIP
+  backend by them. It uses Python 3, standard library only.
   The drivers pass it the compile's include directories (`include_dirs`:
   `-I`, `-iquote`, `-isystem`, without cuda4cpu's and `/usr/include`), and
   it follows `#include <...>` (and quote includes not found next to the
@@ -330,7 +363,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   next to the including header, which a shadowed copy points to the original
   path (`redirects`, applied after `changed` is computed, or every header
   above it would be shadowed too). rocPRIM's device algorithms launch kernels
-  in headers.
+  in headers. The driver puts each include directory's shadow mirror
+  (`<shadow dir><abs dir>`) on the include path before it, so that lookups
+  the rewriter couldn't follow (`#include MACRO`, rocThrust's) find the
+  shadow copy too: finding both defined a header twice. NVIDIA's CCCL
+  (`is_cccl`: `thrust/version.h`, `cub/version.cuh` or `cuda/std/version`,
+  but not rocThrust's `thrust/rocthrust_version.hpp`) isn't passed to the
+  rewriter: on Thrust's OpenMP backend it launches nothing, and the rewriter
+  would shadow most of it (loop_tick in its `__host__ __device__` loops).
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template
@@ -462,7 +502,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   with another host compiler (from the driver's `--version`), it's skipped
   as unavailable, which keeps its baseline status. CI's
   `compatibility-clang` job builds cuda4cpu with Clang 18 and runs them
-  (`--filter '*/roc[pw]*_*'`, rocPRIM's and rocWMMA's). `run.py`
+  (`--filter '*/roc[ptw]*_*' --filter '*/hipcub_*'`: rocPRIM's, rocThrust's,
+  hipCUB's and rocWMMA's; `--filter` repeats). cuda-samples' Thrust programs
+  take NVIDIA's CCCL as a dependency. `run.py`
   fetches the suites, builds each program with `cuda4cpu-c++`, or
   `cuda4cpu-hipcc` for suites with `"driver": "hipcc"` (`.c` files with the
   C compiler), runs it, and reports. `baseline.json` holds the expected status of each
@@ -577,6 +619,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     around the macros, qualified `::coalesced_threads()`,
     `cuda4cpu::__activemask()` and `::cudaLaunchKernel`)
   - `runtime`: error codes and the last error, launch limits, allocation,
+    texture objects of linear memory (`tex1Dfetch`, normalized reads),
     copies, memset, symbols, events, device queries and intrinsics, through
     `cuda_runtime.h` only. It and `hip_memory` run with
     `CUDA4CPU_MEMCPY_DIRECTION=error`, to check the errors of copies in the
@@ -603,6 +646,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     Every value, midpoint and their neighbors, from double, float, half and
     bfloat16, E8M0 in both rounding modes, the classes, pairs and
     quadruples, and conversions in a kernel.
+  - `thrust_{c++,nvcc}` (`thrust.cu`, with `CUDA4CPU_CCCL_DIR`, a CCCL
+    repository or a toolkit's include directory, which CI fetches): NVIDIA's
+    Thrust through each driver, `thrust::cuda::par.on(stream)` and the CUDA
+    system's other names, `device_vector` and `device_malloc` memory as
+    device memory (and `universal_vector`'s as managed), host-to-device
+    copies into it under `CUDA4CPU_MEMCPY_DIRECTION=error`, a kernel on it,
+    and `thrust::system_error`.
   - `curand` (`curand.cu`): XORWOW against reference streams (values 0, 1,
     2 and 1023 of six seeds and subsequences, and offsets), Philox's rounds
     against Random123's known answers, Sobol' points against Joe and Kuo's

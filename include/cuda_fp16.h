@@ -78,7 +78,15 @@ constexpr double from_half_bits(uint16_t h)
 
 }
 
+// On HIP's AMD platform, the types are at global scope, as AMD's: libraries
+// declare them there (rocThrust's struct __half;), and find their operators
+// by argument-dependent lookup in that namespace
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__)
+#define CUDA4CPU_HALF_GLOBAL 1
+}
+#else
 inline namespace cuda_api {
+#endif
 
 struct __half_raw {
     unsigned short x;
@@ -102,29 +110,29 @@ public:
     constexpr operator __half_raw() const { return {__x}; }
 
 #ifndef __CUDA_NO_HALF_CONVERSIONS__
-    constexpr __half(float f) : __x(detail::to_half_bits(f)) {}
-    constexpr __half(double d) : __x(detail::to_half_bits(d)) {}
-    constexpr __half(short v) : __x(detail::to_half_bits(v)) {}
-    constexpr __half(unsigned short v) : __x(detail::to_half_bits(v)) {}
-    constexpr __half(int v) : __x(detail::to_half_bits(v)) {}
-    constexpr __half(unsigned int v) : __x(detail::to_half_bits(v)) {}
-    constexpr __half(long v) : __x(detail::to_half_bits(double(v))) {}
-    constexpr __half(unsigned long v) : __x(detail::to_half_bits(double(v))) {}
-    constexpr __half(long long v) : __x(detail::to_half_bits(double(v))) {}
-    constexpr __half(unsigned long long v) : __x(detail::to_half_bits(double(v))) {}
+    constexpr __half(float f) : __x(::cuda4cpu::detail::to_half_bits(f)) {}
+    constexpr __half(double d) : __x(::cuda4cpu::detail::to_half_bits(d)) {}
+    constexpr __half(short v) : __x(::cuda4cpu::detail::to_half_bits(v)) {}
+    constexpr __half(unsigned short v) : __x(::cuda4cpu::detail::to_half_bits(v)) {}
+    constexpr __half(int v) : __x(::cuda4cpu::detail::to_half_bits(v)) {}
+    constexpr __half(unsigned int v) : __x(::cuda4cpu::detail::to_half_bits(v)) {}
+    constexpr __half(long v) : __x(::cuda4cpu::detail::to_half_bits(double(v))) {}
+    constexpr __half(unsigned long v) : __x(::cuda4cpu::detail::to_half_bits(double(v))) {}
+    constexpr __half(long long v) : __x(::cuda4cpu::detail::to_half_bits(double(v))) {}
+    constexpr __half(unsigned long long v) : __x(::cuda4cpu::detail::to_half_bits(double(v))) {}
 
-    constexpr __half &operator=(float f) { __x = detail::to_half_bits(f); return *this; }
-    constexpr __half &operator=(double d) { __x = detail::to_half_bits(d); return *this; }
-    constexpr __half &operator=(short v) { __x = detail::to_half_bits(v); return *this; }
-    constexpr __half &operator=(unsigned short v) { __x = detail::to_half_bits(v); return *this; }
-    constexpr __half &operator=(int v) { __x = detail::to_half_bits(v); return *this; }
-    constexpr __half &operator=(unsigned int v) { __x = detail::to_half_bits(v); return *this; }
-    constexpr __half &operator=(long v) { __x = detail::to_half_bits(double(v)); return *this; }
-    constexpr __half &operator=(unsigned long v) { __x = detail::to_half_bits(double(v)); return *this; }
-    constexpr __half &operator=(long long v) { __x = detail::to_half_bits(double(v)); return *this; }
-    constexpr __half &operator=(unsigned long long v) { __x = detail::to_half_bits(double(v)); return *this; }
+    constexpr __half &operator=(float f) { __x = ::cuda4cpu::detail::to_half_bits(f); return *this; }
+    constexpr __half &operator=(double d) { __x = ::cuda4cpu::detail::to_half_bits(d); return *this; }
+    constexpr __half &operator=(short v) { __x = ::cuda4cpu::detail::to_half_bits(v); return *this; }
+    constexpr __half &operator=(unsigned short v) { __x = ::cuda4cpu::detail::to_half_bits(v); return *this; }
+    constexpr __half &operator=(int v) { __x = ::cuda4cpu::detail::to_half_bits(v); return *this; }
+    constexpr __half &operator=(unsigned int v) { __x = ::cuda4cpu::detail::to_half_bits(v); return *this; }
+    constexpr __half &operator=(long v) { __x = ::cuda4cpu::detail::to_half_bits(double(v)); return *this; }
+    constexpr __half &operator=(unsigned long v) { __x = ::cuda4cpu::detail::to_half_bits(double(v)); return *this; }
+    constexpr __half &operator=(long long v) { __x = ::cuda4cpu::detail::to_half_bits(double(v)); return *this; }
+    constexpr __half &operator=(unsigned long long v) { __x = ::cuda4cpu::detail::to_half_bits(double(v)); return *this; }
 
-    constexpr operator float() const { return float(detail::from_half_bits(__x)); }
+    constexpr operator float() const { return float(::cuda4cpu::detail::from_half_bits(__x)); }
 #if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_NVIDIA__) && defined(__FLT16_MANT_DIG__)
     // AMD's __half is built on _Float16, which it converts to and from exactly
     constexpr __half(_Float16 h) : __x(std::bit_cast<unsigned short>(h)) {}
@@ -147,7 +155,7 @@ private:
     template <typename I>
     I to_integer() const
     {
-        return detail::to_integer<I>(detail::from_half_bits(__x), [](double v) { return std::trunc(v); });
+        return ::cuda4cpu::detail::to_integer<I>(::cuda4cpu::detail::from_half_bits(__x), [](double v) { return std::trunc(v); });
     }
 #endif
 };
@@ -167,6 +175,15 @@ struct alignas(4) __half2 {
     }
     constexpr operator __half2_raw() const { return {__half_raw(x).x, __half_raw(y).x}; }
 };
+
+#ifdef CUDA4CPU_HALF_GLOBAL
+namespace cuda4cpu {
+inline namespace cuda_api {
+using ::__half_raw;
+using ::__half2_raw;
+using ::__half;
+using ::__half2;
+#endif
 
 using half = __half;
 using half2 = __half2;
@@ -583,3 +600,27 @@ inline __half2 atomicAdd(__half2 *address, __half2 val)
 }
 
 }
+
+#ifdef CUDA4CPU_HALF_GLOBAL
+// The operators, in the types' namespace for argument-dependent lookup,
+// which sees using-declarations (and not using-directives)
+#if !defined(__CUDA_NO_HALF_OPERATORS__) || !defined(__CUDA_NO_HALF2_OPERATORS__)
+using cuda4cpu::cuda_api::operator+;
+using cuda4cpu::cuda_api::operator-;
+using cuda4cpu::cuda_api::operator*;
+using cuda4cpu::cuda_api::operator/;
+using cuda4cpu::cuda_api::operator+=;
+using cuda4cpu::cuda_api::operator-=;
+using cuda4cpu::cuda_api::operator*=;
+using cuda4cpu::cuda_api::operator/=;
+using cuda4cpu::cuda_api::operator++;
+using cuda4cpu::cuda_api::operator--;
+using cuda4cpu::cuda_api::operator==;
+using cuda4cpu::cuda_api::operator!=;
+using cuda4cpu::cuda_api::operator<;
+using cuda4cpu::cuda_api::operator<=;
+using cuda4cpu::cuda_api::operator>;
+using cuda4cpu::cuda_api::operator>=;
+#endif
+#undef CUDA4CPU_HALF_GLOBAL
+#endif

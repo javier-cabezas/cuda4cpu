@@ -3,7 +3,7 @@
     "cuda-samples": {
       "url": "https://github.com/NVIDIA/cuda-samples.git",
       "revision": "v13.4",
-      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND, Thrust/CUB, MPI or multiple GPUs). They check their own results.",
+      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND and Thrust (from NVIDIA's CCCL, on its OpenMP backend), CUB, MPI or multiple GPUs). They check their own results.",
       "defaults": {
         "sources": [
           "*.cu",
@@ -13,6 +13,12 @@
           "Common"
         ],
         "waived_exit": 2
+      },
+      "dependencies": {
+        "cccl": {
+          "url": "https://github.com/NVIDIA/cccl.git",
+          "revision": "v3.5.0"
+        }
       },
       "programs": [
         {
@@ -153,6 +159,18 @@
           "dir": "cpp/2_Concepts_and_Techniques/interval"
         },
         {
+          "dir": "cpp/2_Concepts_and_Techniques/radixSortThrust",
+          "requires": [
+            "cccl"
+          ],
+          "include": [
+            "Common",
+            "{cccl}/thrust",
+            "{cccl}/libcudacxx/include",
+            "{cccl}/cub"
+          ]
+        },
+        {
           "dir": "cpp/2_Concepts_and_Techniques/reduction"
         },
         {
@@ -164,6 +182,18 @@
         {
           "dir": "cpp/2_Concepts_and_Techniques/scan",
           "timeout": 2400
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/segmentationTreeThrust",
+          "requires": [
+            "cccl"
+          ],
+          "include": [
+            "Common",
+            "{cccl}/thrust",
+            "{cccl}/libcudacxx/include",
+            "{cccl}/cub"
+          ]
         },
         {
           "dir": "cpp/2_Concepts_and_Techniques/shfl_scan"
@@ -488,7 +518,7 @@
     "rocm-examples": {
       "url": "https://github.com/ROCm/rocm-examples.git",
       "revision": "rocm-7.2.4",
-      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocWMMA and hipRAND or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
+      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocThrust, hipCUB, rocWMMA and hipRAND or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
       "defaults": {
         "driver": "hipcc",
         "sources": [
@@ -528,6 +558,38 @@
                 "rocwmma_VERSION_MAJOR": "2",
                 "rocwmma_VERSION_MINOR": "2",
                 "rocwmma_VERSION_PATCH": "0"
+              }
+            }
+          ]
+        },
+        "rocThrust": {
+          "url": "https://github.com/ROCm/rocThrust.git",
+          "revision": "rocm-7.2.4",
+          "configure": [
+            {
+              "input": "thrust/rocthrust_version.hpp.in",
+              "output": "thrust/rocthrust_version.hpp",
+              "values": {
+                "rocthrust_VERSION_NUMBER": "402000",
+                "rocthrust_VERSION_MAJOR": "4",
+                "rocthrust_VERSION_MINOR": "2",
+                "rocthrust_VERSION_PATCH": "0"
+              }
+            }
+          ]
+        },
+        "hipCUB": {
+          "url": "https://github.com/ROCm/hipCUB.git",
+          "revision": "rocm-7.2.4",
+          "configure": [
+            {
+              "input": "hipcub/include/hipcub/hipcub_version.hpp.in",
+              "output": "hipcub/include/hipcub/hipcub_version.hpp",
+              "values": {
+                "hipcub_VERSION_NUMBER": "402000",
+                "hipcub_VERSION_MAJOR": "4",
+                "hipcub_VERSION_MINOR": "2",
+                "hipcub_VERSION_PATCH": "0"
               }
             }
           ]
@@ -1056,6 +1118,166 @@
         {
           "dir": "Libraries/hipRAND/device_api/quasirandom_generations",
           "name": "hiprand_quasirandom_generations"
+        },
+        {
+          "dir": "Libraries/rocThrust/saxpy",
+          "name": "rocthrust_saxpy",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "By multiplication and addition  = \\[ 9, 8, 7, 6 \\][\\s\\S]*By Fused Multiply-Add operation = \\[ 9, 8, 7, 6 \\]"
+        },
+        {
+          "dir": "Libraries/rocThrust/reduce_sum",
+          "name": "rocthrust_reduce_sum",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "The sum is: 542"
+        },
+        {
+          "dir": "Libraries/rocThrust/norm",
+          "name": "rocthrust_norm",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "The Euclidean norm is: 5\\.5"
+        },
+        {
+          "dir": "Libraries/rocThrust/vectors",
+          "name": "rocthrust_vectors",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "device_vector after setting elements: \\[ 99, 88 \\]"
+        },
+        {
+          "dir": "Libraries/rocThrust/device_ptr",
+          "name": "rocthrust_device_ptr",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "The sum of values in \"wrapped_ptr\" is 66"
+        },
+        {
+          "dir": "Libraries/rocThrust/remove_points",
+          "name": "rocthrust_remove_points",
+          "requires": [
+            "rocPRIM",
+            "rocThrust"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{rocThrust}"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "verified": false
+        },
+        {
+          "dir": "Libraries/hipCUB/device_sum",
+          "name": "hipcub_device_sum",
+          "requires": [
+            "rocPRIM",
+            "hipCUB"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{hipCUB}/hipcub/include"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "Reduced summation result: 42"
+        },
+        {
+          "dir": "Libraries/hipCUB/device_radix_sort",
+          "name": "hipcub_device_radix_sort",
+          "requires": [
+            "rocPRIM",
+            "hipCUB"
+          ],
+          "compiler": "clang",
+          "include": [
+            "Common",
+            "External",
+            "{rocPRIM}/rocprim/include",
+            "{hipCUB}/hipcub/include"
+          ],
+          "flags": [
+            "--cuda4cpu-platform=amd",
+            "-D__HIP_DEVICE_COMPILE__=1"
+          ],
+          "expect": "Sorted \\(key, value\\) pairs: \\[ \\(0, 9\\), \\(1\\.1, 8\\), \\(2\\.1, 1\\), \\(2\\.2, 4\\), \\(2\\.7, 7\\), \\(3\\.6, 6\\), \\(4, 3\\), \\(5, 5\\), \\(7\\.3, 2\\), \\(9\\.3, 0\\) \\]"
         }
       ]
     }

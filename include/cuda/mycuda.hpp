@@ -24,6 +24,7 @@
 #include "error.hpp"
 #include "device.hpp"
 #include "memory.hpp"
+#include "texture.hpp"
 #include "streams.hpp"
 #include "events.hpp"
 #include "graphs.hpp"

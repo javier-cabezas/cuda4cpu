@@ -69,7 +69,20 @@ enum cudaError {
     cudaErrorStreamCaptureIsolation   = 905,
     cudaErrorStreamCaptureImplicit    = 906,
     cudaErrorGraphExecUpdateFailure   = 910,
-    cudaErrorUnknown                = 999
+    cudaErrorMissingConfiguration = 52,
+    cudaErrorMapBufferObjectFailed = 205,
+    cudaErrorUnsupportedLimit = 215,
+    cudaErrorSharedObjectSymbolNotFound = 302,
+    cudaErrorSharedObjectInitFailed = 303,
+    cudaErrorLaunchOutOfResources = 701,
+    cudaErrorLaunchTimeout = 702,
+    cudaErrorPeerAccessAlreadyEnabled = 704,
+    cudaErrorPeerAccessNotEnabled = 705,
+    cudaErrorSetOnActiveProcess = 708,
+    cudaErrorUnknown                = 999,
+    // CUDA's base of the API's internal failures: it also makes the
+    // enumeration's values reach HIP's own codes (hipErrorTbd, 1054)
+    cudaErrorApiFailureBase         = 10000
 };
 
 using cudaError_t = cudaError;

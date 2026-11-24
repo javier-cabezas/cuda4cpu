@@ -99,6 +99,17 @@ const char *cudaGetErrorName(cudaError_t error)
     case cudaErrorHostMemoryAlreadyRegistered: return "cudaErrorHostMemoryAlreadyRegistered";
     case cudaErrorHostMemoryNotRegistered: return "cudaErrorHostMemoryNotRegistered";
     case cudaErrorLaunchFailure:          return "cudaErrorLaunchFailure";
+    case cudaErrorApiFailureBase:         return "cudaErrorApiFailureBase";
+    case cudaErrorMissingConfiguration: return "cudaErrorMissingConfiguration";
+    case cudaErrorMapBufferObjectFailed: return "cudaErrorMapBufferObjectFailed";
+    case cudaErrorUnsupportedLimit: return "cudaErrorUnsupportedLimit";
+    case cudaErrorSharedObjectSymbolNotFound: return "cudaErrorSharedObjectSymbolNotFound";
+    case cudaErrorSharedObjectInitFailed: return "cudaErrorSharedObjectInitFailed";
+    case cudaErrorLaunchOutOfResources: return "cudaErrorLaunchOutOfResources";
+    case cudaErrorLaunchTimeout: return "cudaErrorLaunchTimeout";
+    case cudaErrorPeerAccessAlreadyEnabled: return "cudaErrorPeerAccessAlreadyEnabled";
+    case cudaErrorPeerAccessNotEnabled: return "cudaErrorPeerAccessNotEnabled";
+    case cudaErrorSetOnActiveProcess: return "cudaErrorSetOnActiveProcess";
     case cudaErrorCooperativeLaunchTooLarge: return "cudaErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:           return "cudaErrorNotSupported";
     case cudaErrorStreamCaptureUnsupported: return "cudaErrorStreamCaptureUnsupported";
@@ -142,6 +153,17 @@ const char *cudaGetErrorString(cudaError_t error)
     case cudaErrorHostMemoryNotRegistered:
         return "pointer does not correspond to a registered memory region";
     case cudaErrorLaunchFailure:          return "unspecified launch failure";
+    case cudaErrorApiFailureBase:         return "api failure base";
+    case cudaErrorMissingConfiguration: return "__global__ function call is not configured";
+    case cudaErrorMapBufferObjectFailed: return "mapping of buffer object failed";
+    case cudaErrorUnsupportedLimit: return "limit is not supported on this architecture";
+    case cudaErrorSharedObjectSymbolNotFound: return "shared object symbol not found";
+    case cudaErrorSharedObjectInitFailed: return "shared object initialization failed";
+    case cudaErrorLaunchOutOfResources: return "too many resources requested for launch";
+    case cudaErrorLaunchTimeout: return "the launch timed out and was terminated";
+    case cudaErrorPeerAccessAlreadyEnabled: return "peer access is already enabled";
+    case cudaErrorPeerAccessNotEnabled: return "peer access has not been enabled";
+    case cudaErrorSetOnActiveProcess: return "cannot set while device is active in this process";
     case cudaErrorCooperativeLaunchTooLarge:
         return "too many blocks in cooperative launch";
     case cudaErrorNotSupported:           return "operation not supported";

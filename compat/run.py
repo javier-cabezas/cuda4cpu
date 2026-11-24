@@ -244,7 +244,8 @@ def main(argv=None):
     parser.add_argument('--update-baseline', action='store_true', help='write the results to --baseline')
     parser.add_argument('--report', help='write a Markdown report')
     parser.add_argument('--json', help='write the results as JSON')
-    parser.add_argument('--filter', default='*', help='only programs whose suite/name match this pattern')
+    parser.add_argument('--filter', action='append',
+                        help='only programs whose suite/name match this pattern (repeatable: any of them)')
     parser.add_argument('--jobs', type=int, default=2, help='programs built and run at the same time')
     parser.add_argument('--timeout', type=float, default=300, help='seconds each program may run')
     args = parser.parse_args(argv)
@@ -254,7 +255,8 @@ def main(argv=None):
     drivers = {'c++': driver,
                'hipcc': os.path.abspath(args.hipcc or os.path.join(os.path.dirname(driver), 'cuda4cpu-hipcc'))}
     manifest, programs = load_manifest(args.manifest)
-    programs = [p for p in programs if fnmatch.fnmatch(f'{p["suite"]}/{p["name"]}', args.filter)]
+    args.filter = args.filter or ['*']
+    programs = [p for p in programs if any(fnmatch.fnmatch(f'{p["suite"]}/{p["name"]}', f) for f in args.filter)]
 
     sources = {}
     dependencies = {}

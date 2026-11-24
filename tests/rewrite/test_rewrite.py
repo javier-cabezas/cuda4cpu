@@ -436,6 +436,26 @@ class Headers(unittest.TestCase):
             self.assertIn('#define __HIPCC__', rw.PROLOGUES['hip'])
             self.assertIn('#define __CUDACC__', rw.PROLOGUES['hip'])
             self.assertNotIn('__HIPCC__', rw.PROLOGUES['cuda'])
+            # nvcc's host pass: its name and version, for CUDA and HIP on
+            # NVIDIA's platform; AMD's hipcc's __HIP__ on AMD's
+            self.assertIn('#define __NVCC__', rw.PROLOGUES['cuda'])
+            self.assertIn('#define __CUDACC_VER_MAJOR__ 12', rw.PROLOGUES['cuda'])
+            self.assertIn('#define __HIP__', rw.PROLOGUES['hip'])
+
+    def test_prologue_macros_by_platform(self):
+        """Preprocessed, the HIP prologue defines nvcc's macros on HIP's NVIDIA
+        platform, and __HIP__ without __CUDACC__ on AMD's"""
+        import shutil
+        import subprocess
+        compiler = shutil.which('c++') or shutil.which('g++')
+        if compiler is None:
+            self.skipTest('no C++ compiler')
+        probe = '#if defined(__CUDACC__)\ncuda\n#endif\n#if defined(__NVCC__)\nnvcc\n#endif\n' \
+                '#if defined(__HIP__)\nhip\n#endif\n'
+        for defines, expected in (([], {'cuda', 'nvcc'}), (['-D__HIP_PLATFORM_AMD__'], {'hip'})):
+            out = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'] + defines, input=rw.PROLOGUES['hip'] + probe,
+                                 capture_output=True, text=True, check=True).stdout
+            self.assertEqual({w for w in out.split() if w in ('cuda', 'nvcc', 'hip')}, expected, defines)
 
     def test_error_reports_file_and_line(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,6 +21,18 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/curand.h
             ${CUDA4CPU_INCLUDE_DIR}/curand_kernel.h
             ${CUDA4CPU_INCLUDE_DIR}/library_types.h
+            ${CUDA4CPU_INCLUDE_DIR}/hip/amd_detail/host_defines.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/device_vector.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/execution_policy.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/omp/memory_resource.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/omp/detail/malloc_and_free.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/omp/detail/execution_policy.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/detail/cuda4cpu.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/error.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/execution_policy.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/memory.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/pointer.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/vector.h
             ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand.h
             ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand.hpp
             ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand_kernel.h
@@ -64,6 +76,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda/graphs.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/math.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/memory.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/cuda/texture.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/mycuda.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/small_float.hpp
             ${CUDA4CPU_INCLUDE_DIR}/cuda/streams.hpp

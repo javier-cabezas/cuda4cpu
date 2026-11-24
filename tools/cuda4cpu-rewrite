@@ -81,6 +81,10 @@ only those that change or include one that does.
 The rewritten .cu file defines __CUDACC__ first, as nvcc does, so that code
 that tells CUDA compilation apart from host compilation (for instance the
 host fallbacks in the CUDA samples' helper_math.h) takes the CUDA branch.
+It also defines __NVCC__ and nvcc's version (__CUDACC_VER_MAJOR__, ...,
+12.0.140 as CUDART_VERSION), as nvcc's host pass sees them: libraries such as
+CCCL (Thrust, CUB, libcu++) check that the compiler matches the runtime's
+version, and take their host paths only for nvcc.
 
 HIP sources (.hip files, or any file with --language hip) are rewritten the
 same way. They also define __HIPCC__ and __HIP_PLATFORM_NVIDIA__, as hipcc
@@ -93,10 +97,20 @@ import os
 import re
 import sys
 
+# nvcc's macros, as its host pass sees them
+NVCC_MACROS = ('#ifndef __NVCC__\n#define __NVCC__ 1\n#endif\n'
+               '#ifndef __CUDACC_VER_MAJOR__\n#define __CUDACC_VER_MAJOR__ 12\n#define __CUDACC_VER_MINOR__ 0\n'
+               '#define __CUDACC_VER_BUILD__ 140\n#endif\n')
+
 # Prepended to the rewritten file, before its #line directive, by language
 PROLOGUES = {
-    'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n',
-    'hip': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
+    'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n' + NVCC_MACROS,
+    # On HIP's AMD platform, as with hipcc there, __HIP__ and not __CUDACC__:
+    # rocThrust picks its HIP backend by them
+    'hip': '#if !defined(__CUDACC__) && !defined(__HIP_PLATFORM_AMD__)\n#define __CUDACC__ 1\n#endif\n'
+           # hipcc is nvcc on HIP's NVIDIA platform
+           '#ifndef __HIP_PLATFORM_AMD__\n' + NVCC_MACROS + '#endif\n'
+           '#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP__)\n#define __HIP__ 1\n#endif\n'
            '#ifndef __HIPCC__\n#define __HIPCC__ 1\n#endif\n'
            '#if !defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)\n'
            '#define __HIP_PLATFORM_NVIDIA__ 1\n#endif\n',

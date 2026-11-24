@@ -416,10 +416,27 @@ def hip_platform(argv):
     return rest, defines, None
 
 
+# Files that mark a directory of NVIDIA's CCCL (Thrust, CUB, libcu++), at its
+# include root: a CUDA toolkit's include directory has all three. rocThrust
+# has a thrust/version.h too, but launches kernels, and must be rewritten.
+CCCL_MARKERS = (os.path.join('thrust', 'version.h'), os.path.join('cub', 'version.cuh'),
+                os.path.join('cuda', 'std', 'version'))
+ROCTHRUST_MARKERS = (os.path.join('thrust', 'rocthrust_version.hpp'), os.path.join('thrust', 'rocthrust_version.hpp.in'))
+
+
+def is_cccl(directory):
+    return (any(os.path.exists(os.path.join(directory, m)) for m in CCCL_MARKERS) and
+            not any(os.path.exists(os.path.join(directory, m)) for m in ROCTHRUST_MARKERS))
+
+
 def include_dirs(argv):
     """The directories the program's headers are searched in (-I, -iquote,
     -isystem), for the rewriter to rewrite the headers in them that need it,
-    such as a library's with launches. Not cuda4cpu's own, nor the system's."""
+    such as a library's with launches. Not cuda4cpu's own, nor the system's,
+    nor CCCL's: Thrust on its OpenMP backend launches no kernels, and the
+    rewriter would shadow most of its headers (it adds loop_tick() to their
+    __host__ __device__ loops), while some of their includes, computed from
+    macros, would still reach the originals."""
     dirs = []
     for i, arg in enumerate(argv):
         if arg in ('-I', '-iquote', '-isystem') and i + 1 < len(argv):
@@ -435,6 +452,8 @@ def include_dirs(argv):
     for d in dirs:
         real = os.path.realpath(d)
         if any(real == d or real.startswith(d + os.sep) for d in (own, '/usr/include')):
+            continue
+        if is_cccl(real):
             continue
         result.append(os.path.abspath(d))
     return list(dict.fromkeys(result))
@@ -774,6 +793,13 @@ def main(argv):
         # The AMD platform's macros are for HIP sources, not CUDA ones
         hip_sources = any(language == 'hip' for *_, language in renamed_languages)
         front = ['-I' + INCLUDE_DIR] + (platform_defines if hip_sources else [])
+        # The shadow copies of each include directory come before it, so
+        # that every lookup of a header the rewriter changed finds its copy,
+        # also through includes it couldn't follow (#include MACRO): finding
+        # both would define it twice
+        for d in include_dirs(argv):
+            for *_, shadow_dir in renamed:
+                front.append('-I' + shadow_dir + os.path.abspath(d))
         if not any(a.startswith('-std=') for a in args):
             front.append('-std=c++23')
         if '-fopenmp' not in args:

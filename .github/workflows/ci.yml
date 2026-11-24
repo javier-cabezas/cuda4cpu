@@ -31,7 +31,21 @@ jobs:
           packages: ninja-build libnuma-dev ${{ matrix.compiler.packages }}
           ccache-key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
 
+      # NVIDIA's CCCL, for the Thrust tests (CUDA4CPU_CCCL_DIR)
+      - name: Cache CCCL
+        id: cccl
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cccl
+          key: cccl-v3.5.0
+
+      - name: Fetch CCCL
+        if: steps.cccl.outputs.cache-hit != 'true'
+        run: git clone --quiet --depth 1 --branch v3.5.0 https://github.com/NVIDIA/cccl.git "$RUNNER_TEMP/cccl"
+
       - name: Configure, build and test
+        env:
+          CUDA4CPU_CCCL_DIR: ${{ runner.temp }}/cccl
         run: cmake --workflow --preset ${{ matrix.preset }}
 
       # Correct programs give the same results whatever the order in which the
@@ -259,12 +273,13 @@ jobs:
         with:
           key: ${{ steps.setup.outputs.ccache-key }}
 
-  # The programs of the suite that need Clang as the C++ compiler (rocPRIM's
-  # and rocWMMA's, on HIP's AMD platform), which the GCC job above skips,
+  # The programs of the suite that need Clang as the C++ compiler (rocPRIM's,
+  # rocThrust's, hipCUB's and rocWMMA's, on HIP's AMD platform), which the
+  # GCC job above skips,
   # with a cuda4cpu built by the same Clang: a program and the library share
   # OpenMP's runtime
   compatibility-clang:
-    name: clang-18 / programs that need Clang (rocPRIM, rocWMMA)
+    name: clang-18 / programs that need Clang (rocPRIM, rocThrust, hipCUB, rocWMMA)
     runs-on: ubuntu-24.04
     env:
       CXX: clang++-18
@@ -289,7 +304,8 @@ jobs:
           CUDA4CPU_CXX: clang++-18
         run: |
           python3 compat/run.py --driver build/release/tools/cuda4cpu-c++ --work "${{ runner.temp }}/compat" \
-                                --baseline compat/baseline.json --filter '*/roc[pw]*_*' --jobs 2 --timeout 600
+                                --baseline compat/baseline.json --filter '*/roc[ptw]*_*' --filter '*/hipcub_*' \
+                                --jobs 2 --timeout 600
 
       - name: Save the compiler cache
         if: always()

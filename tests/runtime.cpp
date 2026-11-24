@@ -587,6 +587,50 @@ int main()
         EXPECT(cudaProfilerStart() == cudaSuccess && cudaProfilerStop() == cudaSuccess);
         EXPECT(CUDA_VERSION == CUDART_VERSION);
         EXPECT(std::strcmp(cudaGetErrorName(cudaErrorAssert), "cudaErrorAssert") == 0);
+        EXPECT(std::strcmp(cudaGetErrorName(cudaErrorLaunchOutOfResources), "cudaErrorLaunchOutOfResources") == 0);
+        EXPECT(std::strcmp(cudaGetErrorString(cudaErrorMissingConfiguration),
+                           "__global__ function call is not configured") == 0);
+        EXPECT(int(cudaErrorPeerAccessNotEnabled) == 705 && int(cudaErrorSharedObjectSymbolNotFound) == 302);
+    }
+
+    // Texture objects of linear memory: elements by index, 0 outside, and
+    // normalized floats from 8-bit integers
+    {
+        int *ints;
+        EXPECT(cudaMalloc(&ints, 8 * sizeof(int)) == cudaSuccess);
+        for (int i = 0; i < 8; ++i)
+            ints[i] = i * 11;
+        cudaResourceDesc resource{};
+        resource.resType = cudaResourceTypeLinear;
+        resource.res.linear.devPtr = ints;
+        resource.res.linear.desc = cudaCreateChannelDesc<int>();
+        resource.res.linear.sizeInBytes = 8 * sizeof(int);
+        cudaTextureDesc description{};
+        description.readMode = cudaReadModeElementType;
+        cudaTextureObject_t texture = 0;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaSuccess && texture != 0);
+        EXPECT(tex1Dfetch<int>(texture, 3) == 33 && tex1Dfetch<int>(texture, 7) == 77);
+        EXPECT(tex1Dfetch<int>(texture, 8) == 0 && tex1Dfetch<int>(texture, -1) == 0);
+        cudaResourceDesc back{};
+        EXPECT(cudaGetTextureObjectResourceDesc(&back, texture) == cudaSuccess && back.res.linear.devPtr == ints);
+        EXPECT(cudaDestroyTextureObject(texture) == cudaSuccess);
+        cudaChannelFormatDesc vector = cudaCreateChannelDesc<uchar4>();
+        EXPECT(vector.x == 8 && vector.w == 8 && vector.f == cudaChannelFormatKindUnsigned);
+        EXPECT(cudaCreateChannelDesc<float2>().y == 32 && cudaCreateChannelDesc<float2>().z == 0);
+
+        unsigned char bytes[4] = {0, 51, 255, 102};
+        resource.res.linear.devPtr = bytes;
+        resource.res.linear.desc = cudaCreateChannelDesc<unsigned char>();
+        resource.res.linear.sizeInBytes = 4;
+        description.readMode = cudaReadModeNormalizedFloat;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaSuccess);
+        EXPECT(tex1Dfetch<float>(texture, 1) == 0.2f && tex1Dfetch<float>(texture, 2) == 1.0f);
+        cudaDestroyTextureObject(texture);
+        // CUDA arrays aren't implemented yet
+        resource.resType = cudaResourceTypeArray;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorNotSupported);
+        cudaGetLastError();
+        cudaFree(ints);
     }
 
     if (errors == 0)
