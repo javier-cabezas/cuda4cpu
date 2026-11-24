@@ -23,6 +23,7 @@
 #include <bit>
 #include <cfenv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -361,14 +362,14 @@ inline float __frsqrt_rn(float x) { return detail::rounded<FE_TONEAREST, float>(
 //! Address-space conversions and queries: the CPU has one address space, so
 //! a generic address is the address in every space. Every pointer counts as
 //! global memory, which is where cudaMalloc's are.
-inline size_t __cvta_generic_to_global(const void *ptr) { return reinterpret_cast<size_t>(ptr); }
-inline size_t __cvta_generic_to_shared(const void *ptr) { return reinterpret_cast<size_t>(ptr); }
-inline size_t __cvta_generic_to_constant(const void *ptr) { return reinterpret_cast<size_t>(ptr); }
-inline size_t __cvta_generic_to_local(const void *ptr) { return reinterpret_cast<size_t>(ptr); }
-inline void *__cvta_global_to_generic(size_t raw) { return reinterpret_cast<void *>(raw); }
-inline void *__cvta_shared_to_generic(size_t raw) { return reinterpret_cast<void *>(raw); }
-inline void *__cvta_constant_to_generic(size_t raw) { return reinterpret_cast<void *>(raw); }
-inline void *__cvta_local_to_generic(size_t raw) { return reinterpret_cast<void *>(raw); }
+inline std::size_t __cvta_generic_to_global(const void *ptr) { return reinterpret_cast<std::size_t>(ptr); }
+inline std::size_t __cvta_generic_to_shared(const void *ptr) { return reinterpret_cast<std::size_t>(ptr); }
+inline std::size_t __cvta_generic_to_constant(const void *ptr) { return reinterpret_cast<std::size_t>(ptr); }
+inline std::size_t __cvta_generic_to_local(const void *ptr) { return reinterpret_cast<std::size_t>(ptr); }
+inline void *__cvta_global_to_generic(std::size_t raw) { return reinterpret_cast<void *>(raw); }
+inline void *__cvta_shared_to_generic(std::size_t raw) { return reinterpret_cast<void *>(raw); }
+inline void *__cvta_constant_to_generic(std::size_t raw) { return reinterpret_cast<void *>(raw); }
+inline void *__cvta_local_to_generic(std::size_t raw) { return reinterpret_cast<void *>(raw); }
 inline unsigned int __isGlobal(const void *) { return 1; }
 inline unsigned int __isShared(const void *) { return 0; }
 inline unsigned int __isConstant(const void *) { return 0; }

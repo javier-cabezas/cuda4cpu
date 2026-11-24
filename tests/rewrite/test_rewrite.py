@@ -341,6 +341,28 @@ class Errors(unittest.TestCase):
 
 
 class Headers(unittest.TestCase):
+    def test_system_include_directories(self):
+        """A rewritten copy of a header from a system include directory
+        (-isystem) is a system header too, without moving its lines"""
+        with tempfile.TemporaryDirectory() as tmp:
+            for kind in ('user', 'system'):
+                lib = os.path.join(tmp, kind, 'mylib')
+                os.makedirs(lib)
+                with open(os.path.join(lib, f'{kind}.hpp'), 'w') as f:
+                    f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            src = os.path.join(tmp, 'main.cu')
+            with open(src, 'w') as f:
+                f.write('#include <mylib/user.hpp>\n#include <mylib/system.hpp>\n')
+            shadow = os.path.join(tmp, 'shadow')
+            system = os.path.join(tmp, 'system')
+            rw.Rewriter(shadow, [os.path.join(tmp, 'user'), system], [system]).rewrite_file(src)
+            for kind, pragma in (('user', False), ('system', True)):
+                path = os.path.join(tmp, kind, 'mylib', f'{kind}.hpp')
+                with open(os.path.join(shadow, path.lstrip(os.sep))) as f:
+                    copy = f.read()
+                self.assertEqual(copy.startswith('#pragma GCC system_header\n#line 1 '), pragma, kind)
+                self.assertTrue(copy.split('\n', 2 if pragma else 1)[-1].startswith('#define LAUNCH'), kind)
+
     def test_include_directories(self):
         """Headers that -I finds are rewritten if they, or headers they
         include, have something to rewrite; the others stay where they are"""

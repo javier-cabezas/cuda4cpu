@@ -166,11 +166,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   their textures aren't implemented. rocPRIM's texture cache iterator, which
   rocThrust includes, needs the types and functions.
 - `include/thrust/`: cuda4cpu's overlay of NVIDIA's Thrust (CCCL), before it
-  on the include path, for its OpenMP backend, which `cuda_runtime.h`
+  on the include path, for its OpenMP backend, which `cuda/cccl.hpp`
   selects (`THRUST_DEVICE_SYSTEM`, with `CCCL_DISABLE_NVTX` and
   `CCCL_DISABLE_FP16_SUPPORT`: CCCL declares `struct __half;` and the other
   extended types at global scope, which collide with cuda4cpu's in
-  `cuda_api`). `system/omp/memory_resource.h` replaces CCCL's with
+  `cuda_api`). `cuda_runtime.h` includes it, and so does the overlay's
+  `detail/config.h`, which every Thrust header includes first, for sources
+  that include Thrust before `cuda_runtime.h` (CCCL 2.8 then took its CUDA
+  backend). `system/omp/memory_resource.h` replaces CCCL's with
   `cudaMalloc`/`cudaMallocManaged` resources, and
   `system/omp/detail/malloc_and_free.h` adds OpenMP overloads of `malloc`
   and `free` on `cudaMalloc`, so that Thrust's memory is device memory to
@@ -179,7 +182,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `system/cuda/detail/cuda4cpu.h` is the CUDA system's names on OpenMP's
   (`thrust::cuda::par` with `.on(stream)`, `vector`, `cuda_category`, ...),
   which `system/cuda/*.h`, `device_vector.h` and `execution_policy.h`
-  include. Every overlay passes through to the next header with rocThrust
+  include. `thrust::cuda`, `cuda_cub` and `system::cuda` are aliases of
+  `cuda4cpu_cuda_system`, so every top-level `system/cuda/` header of CCCL
+  needs an overlay: CCCL's would reopen them as namespaces. Every overlay passes through to the next header with rocThrust
   (`ROCTHRUST_VERSION`) or another device system. `cuda/std/type_traits`
   and `cuda/cmath` defer to CCCL's (`__has_include_next`).
   `include/hip/amd_detail/host_defines.h` stands in for AMD's, and
@@ -364,13 +369,18 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   path (`redirects`, applied after `changed` is computed, or every header
   above it would be shadowed too). rocPRIM's device algorithms launch kernels
   in headers. The driver puts each include directory's shadow mirror
-  (`<shadow dir><abs dir>`) on the include path before it, so that lookups
+  (`<shadow dir><abs dir>`) on the include path right before it, with the
+  same option (`with_shadow_mirrors`), so that lookups
   the rewriter couldn't follow (`#include MACRO`, rocThrust's) find the
   shadow copy too: finding both defined a header twice. NVIDIA's CCCL
   (`is_cccl`: `thrust/version.h`, `cub/version.cuh` or `cuda/std/version`,
   but not rocThrust's `thrust/rocthrust_version.hpp`) isn't passed to the
   rewriter: on Thrust's OpenMP backend it launches nothing, and the rewriter
   would shadow most of it (loop_tick in its `__host__ __device__` loops).
+  `-isystem` directories go to the rewriter as `--system-include-dir`: their
+  headers' copies start with `#pragma GCC system_header` (before the
+  `#line`), since the copy is included by its path, and a library's
+  warnings would otherwise fail `-Werror`.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template
@@ -646,6 +656,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     Every value, midpoint and their neighbors, from double, float, half and
     bfloat16, E8M0 in both rounding modes, the classes, pairs and
     quadruples, and conversions in a kernel.
+  - `thrust_host` (`thrust_host.cpp`): Thrust in a C++ source that includes
+    it before `cuda_runtime.h` takes the OpenMP backend too.
   - `thrust_{c++,nvcc}` (`thrust.cu`, with `CUDA4CPU_CCCL_DIR`, a CCCL
     repository or a toolkit's include directory, which CI fetches): NVIDIA's
     Thrust through each driver, `thrust::cuda::par.on(stream)` and the CUDA
@@ -716,7 +728,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     the fiber started, listing the block's threads (`cuda4cpu threads`), and
     switching to a suspended CUDA thread (`cuda4cpu thread`)
   - `rewrite_unit` (`rewrite/test_rewrite.py`): exact rewriter output, the
-    syntax that must stay untouched, errors, and shadow headers with depfiles.
+    syntax that must stay untouched, errors, and shadow headers with depfiles
+    (system headers' copies too).
   - `driver`: builds `samples/vector_add.cu` with the build-tree
     `cuda4cpu-c++`, in one step and with separate compile and link, with its
     default compiler and `CXX` set to the driver itself, and to `-o /dev/null`. `driver_hipcc` and
@@ -750,7 +763,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     HIP's AMD platform: the switch and the environment variable, the GPU
     `--offload-arch` names, NVIDIA's by default, and the errors (another
     GPU, two, wave64, an unknown platform), RDNA4's names, and a launch in a header that
-    `-I` finds.
+    `-I` finds, and in one that `-isystem` and a computed include find (it
+    stays a system header under `-Werror`).
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes

@@ -55,6 +55,9 @@ inline cudaError_t hipErrorToCudaError(cudaError_t error) { return error; }
 //! HIP's names for CUDA's error codes
 inline const char *hipGetErrorName(cudaError_t error)
 {
+    // HIP's own code, outside cudaError_t's enumerators (-Wswitch)
+    if (error == hipErrorTbd)
+        return "hipErrorTbd";
     switch (error) {
     case cudaSuccess:                        return "hipSuccess";
     case cudaErrorInvalidValue:              return "hipErrorInvalidValue";
@@ -86,7 +89,6 @@ inline const char *hipGetErrorName(cudaError_t error)
     case cudaErrorPeerAccessAlreadyEnabled: return "hipErrorPeerAccessAlreadyEnabled";
     case cudaErrorPeerAccessNotEnabled: return "hipErrorPeerAccessNotEnabled";
     case cudaErrorSetOnActiveProcess: return "hipErrorSetOnActiveProcess";
-    case hipErrorTbd:                        return "hipErrorTbd";
     case cudaErrorApiFailureBase:            return "hipErrorApiFailureBase";
     case cudaErrorCooperativeLaunchTooLarge: return "hipErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:              return "hipErrorNotSupported";

@@ -626,6 +626,20 @@ int main()
         EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaSuccess);
         EXPECT(tex1Dfetch<float>(texture, 1) == 0.2f && tex1Dfetch<float>(texture, 2) == 1.0f);
         cudaDestroyTextureObject(texture);
+        // Components of different widths, each normalized by its own
+        unsigned char mixed[3] = {51, 0x33, 0x33};
+        resource.res.linear.devPtr = mixed;
+        resource.res.linear.desc = cudaCreateChannelDesc(8, 16, 0, 0, cudaChannelFormatKindUnsigned);
+        resource.res.linear.sizeInBytes = 3;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaSuccess);
+        const float2 pair = tex1Dfetch<float2>(texture, 0);
+        EXPECT(pair.x == 0.2f && pair.y == 0.2f);
+        cudaDestroyTextureObject(texture);
+        // No memory, and no texture
+        resource.res.linear.devPtr = nullptr;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorInvalidValue);
+        cudaGetLastError();
+        EXPECT(tex1Dfetch<int>(cudaTextureObject_t(0), 0) == 0);
         // CUDA arrays aren't implemented yet
         resource.resType = cudaResourceTypeArray;
         EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorNotSupported);

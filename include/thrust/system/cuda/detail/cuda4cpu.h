@@ -34,6 +34,8 @@
 #include <thrust/system/omp/vector.h>
 #include <thrust/system_error.h>
 
+#include <string>
+
 #include <cuda_runtime.h>
 
 THRUST_NAMESPACE_BEGIN
@@ -66,10 +68,30 @@ using thrust::system::omp::universal_pointer;
 using thrust::system::omp::malloc;
 using thrust::system::omp::free;
 
-//! CUDA's error category: the system's, since errors are cudaError_t
+namespace detail
+{
+//! CUDA's error category, as CCCL's: errors are cudaError_t, by their name
+//! and message
+class cuda_error_category : public thrust::system::error_category
+{
+public:
+  const char* name() const override
+  {
+    return "cuda";
+  }
+
+  std::string message(int ev) const override
+  {
+    return std::string(::cudaGetErrorName(static_cast<cudaError_t>(ev))) + ": "
+         + ::cudaGetErrorString(static_cast<cudaError_t>(ev));
+  }
+};
+} // namespace detail
+
 inline const thrust::system::error_category& cuda_category()
 {
-  return thrust::system::system_category();
+  static const detail::cuda_error_category category;
+  return category;
 }
 
 } // namespace cuda4cpu_cuda_system

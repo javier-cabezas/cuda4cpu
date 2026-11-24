@@ -202,7 +202,8 @@ add_test(NAME async_copy COMMAND async_copy)
 
 # NVIDIA's Thrust (CCCL), from CUDA4CPU_CCCL_DIR: a CCCL repository (thrust/,
 # cub/, libcudacxx/) or a CUDA toolkit's include directory, through each
-# driver, with copies in the wrong direction as errors
+# driver, with copies in the wrong direction as errors; and in a C++ source
+# that includes it before cuda_runtime.h
 set(CUDA4CPU_CCCL_DIR "$ENV{CUDA4CPU_CCCL_DIR}" CACHE PATH "NVIDIA's CCCL, for the Thrust tests")
 if(CUDA4CPU_CCCL_DIR)
     if(EXISTS "${CUDA4CPU_CCCL_DIR}/thrust/thrust/version.h")
@@ -219,6 +220,13 @@ if(CUDA4CPU_CCCL_DIR)
         set_tests_properties(thrust_${driver} PROPERTIES
                              ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER};CUDA4CPU_MEMCPY_DIRECTION=error")
     endforeach()
+    add_test(NAME thrust_host
+             COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++
+                     -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/thrust_host.cpp "-DFLAGS=${cccl_flags}"
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/thrust_host
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
+    set_tests_properties(thrust_host PROPERTIES
+                         ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER};CUDA4CPU_MEMCPY_DIRECTION=error")
 endif()
 
 # cuRAND against CUDA's XORWOW, Random123's Philox and Joe and Kuo's Sobol'

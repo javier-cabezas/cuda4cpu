@@ -37,11 +37,13 @@
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/system/cuda/execution_policy.h>
+#include <thrust/system/cuda/memory_resource.h>
 #include <thrust/system/cuda/vector.h>
 #include <thrust/transform.h>
 #include <thrust/universal_vector.h>
 
 #include <cstdio>
+#include <string>
 
 static int failures = 0;
 
@@ -105,10 +107,19 @@ int main()
 
     // thrust::system_error, which the CUDA system's headers bring along
     try {
-        throw thrust::system_error(1, thrust::system::cuda_category(), "test");
+        throw thrust::system_error(cudaErrorMemoryAllocation, thrust::system::cuda_category(), "test");
     } catch (const thrust::system_error &e) {
-        EXPECT(e.code().value() == 1);
+        EXPECT(e.code().value() == cudaErrorMemoryAllocation);
+        // CUDA's name and message, as CCCL's category gives them
+        EXPECT(std::string(e.what()).find("cudaErrorMemoryAllocation") != std::string::npos);
+        EXPECT(std::string(thrust::system::cuda_category().name()) == "cuda");
     }
+
+    // The CUDA system's memory resources are cudaMalloc's
+    thrust::system::cuda::memory_resource resource;
+    void *block = thrust::raw_pointer_cast(resource.allocate(64));
+    EXPECT(memory_type(block) == cudaMemoryTypeDevice);
+    resource.deallocate(thrust::system::cuda::memory_resource::pointer(block), 64);
 
     if (failures == 0)
         std::printf("thrust: all passed\n");

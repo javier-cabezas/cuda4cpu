@@ -206,6 +206,10 @@ inline cudaError_t cudaCreateTextureObject(cudaTextureObject_t *texture, const c
         return detail::record_error(cudaErrorInvalidValue);
     if (resource->resType != cudaResourceTypeLinear && resource->resType != cudaResourceTypePitch2D)
         return detail::record_error(cudaErrorNotSupported);
+    const void *memory = resource->resType == cudaResourceTypeLinear ? resource->res.linear.devPtr
+                                                                     : resource->res.pitch2D.devPtr;
+    if (memory == nullptr)
+        return detail::record_error(cudaErrorInvalidValue);
     *texture = reinterpret_cast<cudaTextureObject_t>(new detail::texture_object{*resource, *description});
     return cudaSuccess;
 }
@@ -232,31 +236,42 @@ inline cudaError_t cudaGetTextureObjectTextureDesc(cudaTextureDesc *description,
     return cudaSuccess;
 }
 
-//! Element x of a texture of linear memory, as T; 0 outside it, as on a GPU.
-//! With cudaReadModeNormalizedFloat, 8- and 16-bit integers become floats in
-//! [0, 1] (unsigned) or [-1, 1] (signed).
+//! Element x of a texture of linear memory, as T; 0 outside it, as on a GPU
+//! (and 0 from a texture that isn't of linear memory). With
+//! cudaReadModeNormalizedFloat, components of 8- and 16-bit integers become
+//! floats in [0, 1] (unsigned) or [-1, 1] (signed).
 template <typename T>
 inline T tex1Dfetch(cudaTextureObject_t texture, int x)
 {
+    T value{};
+    if (texture == 0)
+        return value;
     const detail::texture_object &t = *detail::texture_of(texture);
+    if (t.resource.resType != cudaResourceTypeLinear)
+        return value;
     const auto &linear = t.resource.res.linear;
     const cudaChannelFormatDesc &c = linear.desc;
-    const int components = (c.x > 0) + (c.y > 0) + (c.z > 0) + (c.w > 0);
+    const int widths[4] = {c.x, c.y, c.z, c.w};
     const size_t element = size_t(c.x + c.y + c.z + c.w) / 8;
-    T value{};
     if (x < 0 || element == 0 || size_t(x) >= linear.sizeInBytes / element)
         return value;
     const unsigned char *at = static_cast<const unsigned char *>(linear.devPtr) + size_t(x) * element;
-    const bool normalize = t.texture.readMode == cudaReadModeNormalizedFloat && c.f != cudaChannelFormatKindFloat &&
-                           (c.x == 8 || c.x == 16);
+    bool normalize = t.texture.readMode == cudaReadModeNormalizedFloat && c.f != cudaChannelFormatKindFloat;
+    for (int width : widths)
+        normalize = normalize && (width == 0 || width == 8 || width == 16);
     if (!normalize) {
         std::memcpy(&value, at, std::min(sizeof(T), element));
         return value;
     }
     float out[4] = {};
-    for (int i = 0; i < components; ++i) {
-        const unsigned char *p = at + size_t(i) * size_t(c.x / 8);
-        if (c.x == 8)
+    int components = 0;
+    for (int width : widths) {
+        if (width == 0)
+            continue;
+        const unsigned char *p = at;
+        at += width / 8;
+        const int i = components++;
+        if (width == 8)
             out[i] = c.f == cudaChannelFormatKindSigned ? std::max(float(*reinterpret_cast<const signed char *>(p)) / 127.0f, -1.0f)
                                                         : float(*p) / 255.0f;
         else {

@@ -215,6 +215,28 @@ class AmdPlatform(unittest.TestCase):
             run = subprocess.run([os.path.join(work, 'main')], capture_output=True, text=True)
             self.assertEqual(run.stdout.strip(), '14', run.stderr)
 
+    def test_launch_in_a_system_header(self):
+        """A library header that -isystem finds, and that a computed include
+        (#include MACRO, which the rewriter can't follow) reaches too: both
+        lookups find the rewritten copy, which stays a system header (its
+        warnings don't fail -Werror)"""
+        with tempfile.TemporaryDirectory() as work:
+            library = os.path.join(work, 'include', 'lib')
+            os.makedirs(library)
+            with open(os.path.join(library, 'fill.hpp'), 'w') as f:
+                f.write('#pragma once\ninline int unused_in_library() { int unused; return 1; }\n'
+                        '__global__ void fill(int *out) { out[threadIdx.x] = 7; }\n'
+                        '#define FILL(out) fill<<<1, 4>>>(out)\n')
+            with open(os.path.join(work, 'main.hip'), 'w') as f:
+                f.write('#include <hip/hip_runtime.h>\n#include <lib/fill.hpp>\n#define FILL_HEADER <lib/fill.hpp>\n'
+                        '#include FILL_HEADER\n#include <cstdio>\n'
+                        'int main() { int out[4] = {}; FILL(out); std::printf("%d\\n", out[0] + out[3]); }\n')
+            result = tool('hipcc', '-Wall', '-Werror', '-isystem', os.path.join(work, 'include'), '-o', 'main',
+                          'main.hip', cwd=work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run = subprocess.run([os.path.join(work, 'main')], capture_output=True, text=True)
+            self.assertEqual(run.stdout.strip(), '14', run.stderr)
+
     def test_errors(self):
         cases = [(['--cuda4cpu-platform=amd', '--offload-arch=gfx90a'], 'emulates RDNA3 and RDNA4 GPUs'),
                  (['--cuda4cpu-platform=amd', '--offload-arch=gfx1100', '--offload-arch=gfx1101'], 'one AMD GPU'),
