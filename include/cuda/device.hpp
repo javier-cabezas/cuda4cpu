@@ -309,15 +309,20 @@ inline std::atomic<unsigned int> device_flags{0};
 
 inline namespace cuda_api {
 
+//! Work runs when it's issued: only a failed assert() in a kernel (a sticky
+//! error) is left to report
 static inline
 cudaError_t cudaDeviceSynchronize()
 {
-    return cudaSuccess;
+    return detail::check_sticky_error();
 }
 
+//! Clears a sticky error, as resetting a GPU does
 static inline
 cudaError_t cudaDeviceReset()
 {
+    detail::reset_sticky_error();
+    detail::last_error = cudaSuccess;
     return cudaSuccess;
 }
 
@@ -325,13 +330,13 @@ cudaError_t cudaDeviceReset()
 static inline
 cudaError_t cudaThreadSynchronize()
 {
-    return cudaSuccess;
+    return cudaDeviceSynchronize();
 }
 
 static inline
 cudaError_t cudaThreadExit()
 {
-    return cudaSuccess;
+    return cudaDeviceReset();
 }
 
 static inline

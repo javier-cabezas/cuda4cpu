@@ -490,10 +490,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     arguments)
   - `crash` (`crash.cu`, `crash_test.cmake`): kernels that crash (invalid
     accesses in direct and fiber mode, a stack overflow, a division by
-    zero, a failed `assert` launched with `cudaLaunchKernel`, a program
+    zero, an `abort()` launched with `cudaLaunchKernel`, a program
     with its own `SIGSEGV` handler), each reported once with its CUDA
     thread, block and launch line, and a crash in host code, not reported.
     It passes under AddressSanitizer and UBSan too.
+  - `device_assert` (and `device_assert_random`, in random order):
+    a failed `assert()` in a kernel prints CUDA's message for each failing
+    thread, the others go on (between barriers too), `cudaErrorAssert` is
+    sticky (synchronizing calls, queries, copies, memsets, launches that
+    don't run) until `cudaDeviceReset()`, later blocks of a grid don't run,
+    and a host `assert` still aborts (in a forked child).
   - `memory_checks` (`memory_checks.cu`, `memory_checks_test.cmake`):
     `CUDA4CPU_INIT_MEMORY` fills every kind of allocation (graph allocations
     on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
@@ -1029,6 +1035,17 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   the stack of `order_[0]` (`direct_stack`), never stack 0, because a thread
   that hasn't started yet must not start on the stack the promoted thread is
   still using.
+- A failed `assert()` calls glibc's `__assert_fail`, which the library
+  defines too (`lib/cuda4cpu.cpp`): programs and their libraries find it
+  before libc's, since libcuda4cpu comes first among their dependencies (or
+  is linked in statically). Outside a kernel, it calls libc's
+  (`dlsym(RTLD_NEXT)`). In one, `crash_report::failed_assert` prints CUDA's
+  message (the MCP server's `DEVICE_ASSERT` pattern reads it), sets the
+  sticky error (`detail::sticky_error()`, in the library) and ends the CUDA
+  thread as a return does (`promote()` in direct mode, then
+  `finish_current()`), abandoning its frames. `run_grid`,
+  `run_grid_cooperative`, `execute()` and the runtime calls that report
+  asynchronous errors check the sticky error; `cudaDeviceReset` clears it.
 - Crash reports (`detail::crash_report`): the first `thread_block::acquire`
   of a process installs handlers for `SIGSEGV`, `SIGBUS`, `SIGFPE`,
   `SIGILL` and `SIGABRT` (`SA_ONSTACK`, chaining to the handlers before

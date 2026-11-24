@@ -40,11 +40,15 @@
 - **Errors follow CUDA where the CPU can detect them.** Invalid arguments,
   failed allocations, and launches outside CUDA's limits (more than 1024
   threads per block, zero sizes, grids too large) return or record the CUDA
-  error code, and rejected launches don't run. There are no
-  device-side errors: an invalid access or a failed `assert()` in a kernel
-  ends the program, with a report of the CUDA thread, its block and the
-  kernel's launch, instead of making later calls return `cudaErrorAssert`
-  or `cudaErrorIllegalAddress`.
+  error code, and rejected launches don't run. A failed `assert()` in a
+  kernel is CUDA's: each thread that fails it prints CUDA's message and
+  ends, and `cudaErrorAssert` is sticky until `cudaDeviceReset()`. The
+  synchronizing calls, 1D copies and memsets, launches and
+  `cudaGetLastError` return it, and launches and blocks that haven't started
+  don't run; other calls still work, where CUDA's would fail. Other
+  device-side errors end the program: an invalid access is reported with
+  the CUDA thread, its block and the kernel's launch, instead of making
+  later calls return `cudaErrorIllegalAddress`.
 - **Warp functions approximate convergence.** cuda4cpu can't see which lanes
   are in the same branch. A warp function waits for every lane in its mask
   that hasn't returned and isn't waiting at `__syncthreads()`. Lanes in

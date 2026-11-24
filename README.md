@@ -1,7 +1,7 @@
 ![cuda4cpu](https://raw.githubusercontent.com/javier-cabezas/cuda4cpu/main/docs/images/wordmark.svg)
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
-[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-140%20of%20166%20pass-brightgreen)](docs/compatibility.md)
+[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-141%20of%20166%20pass-brightgreen)](docs/compatibility.md)
 [![MCP server](https://img.shields.io/badge/MCP-kernel%20checks%20for%20AI%20agents-8A2BE2)](#use-it-from-an-ai-agent-mcp)
 [![javier-cabezas/cuda4cpu MCP server](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu/badges/score.svg)](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](docs/usage.md#requirements)
@@ -30,7 +30,7 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - **Catch the bugs a GPU hides:** missing `__syncthreads()`, threads of a
   block that reach different barriers, reads of memory never written, and
   allocations never freed.
-- **Real code works:** 140 of 166 programs from NVIDIA's cuda-samples,
+- **Real code works:** 141 of 166 programs from NVIDIA's cuda-samples,
   Rodinia and AMD's rocm-examples build unmodified and pass, and CI checks
   that they keep passing.
 - **The CUDA you write today:** shared memory, warp shuffles and votes,

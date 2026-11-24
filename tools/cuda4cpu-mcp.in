@@ -357,6 +357,10 @@ FRAME = re.compile(r'^\s*#\d+ 0x[0-9a-f]+ in (?P<function>.+?) (?P<file>/[^\s:]+
 LOCATION = re.compile(r'(?P<file>[^\s,]+):(?P<line>\d+)')
 # The site of a leak, whose path may have spaces
 LEAK_SITE = re.compile(r'made at (?P<file>.+):(?P<line>\d+), (?:was|were) never freed')
+# A failed assert() in a kernel, in CUDA's words (lib/cuda4cpu.cpp's
+# crash_report::failed_assert)
+DEVICE_ASSERT = re.compile(r'^(?P<file>[^\n]+?):(?P<line>\d+): (?P<function>[^\n]*?): block: \[(?P<block>\d+,\d+,\d+)\], '
+                           r'thread: \[(?P<thread>\d+,\d+,\d+)\] Assertion `(?P<assertion>.*)` failed\.$', re.MULTILINE)
 # cuda4cpu's report of a crash in a kernel, or of the CUDA thread that made
 # the error a sanitizer reports
 KERNEL_CRASH = re.compile(r'^(?P<thread>(?:a )?CUDA thread (?:\(\d+, \d+, \d+\) )?of block \(\d+, \d+, \d+\))')
@@ -429,6 +433,22 @@ def findings_of(run, program):
     if any(f['kind'].startswith('AddressSanitizer') for f in findings):
         # The sanitizer's report has the line, and its finding the thread
         findings = [f for f in findings if f['kind'] != 'crash in a kernel']
+    # One finding per assert, however many threads fail it
+    asserts = {}
+    for m in DEVICE_ASSERT.finditer(stderr):
+        key = (m['file'], m['line'], m['assertion'])
+        if key in asserts:
+            asserts[key]['threads'] += 1
+            continue
+        path = os.path.realpath(m['file']) if os.path.isabs(m['file']) else m['file']
+        asserts[key] = {'kind': 'failed assert in a kernel',
+                        'message': f'assert({m["assertion"]}) failed in {m["function"]}',
+                        'first_thread': f'({m["thread"].replace(",", ", ")}) of block ({m["block"].replace(",", ", ")})',
+                        'threads': 1,
+                        'locations': [{'file': program.display(path), 'line': int(m['line'])}],
+                        'meaning': "the kernel's own check failed. CUDA reports it as cudaErrorAssert from the next "
+                                   'synchronizing call, and later launches do not run.'}
+    findings += asserts.values()
     for m in UBSAN.finditer(stderr):
         findings.append({'kind': 'undefined behavior', 'message': m['message'],
                          'locations': [{'file': program.display(os.path.realpath(m['file'])), 'line': int(m['line'])}]})
@@ -506,7 +526,9 @@ FINDING_SCHEMA = {'type': 'object', 'description': 'A problem found', 'propertie
     'run': {'type': 'string', 'description': 'The run that found it'},
     'orders': {'type': 'array', 'items': {'type': 'string'}, 'description': 'The thread orders that change the '
                                                                             'result'},
-    'first_difference': {'type': 'object', 'description': 'The first line of output that differs'}}}
+    'first_difference': {'type': 'object', 'description': 'The first line of output that differs'},
+    'threads': {'type': 'integer', 'description': 'How many CUDA threads failed an assert, in its run'},
+    'first_thread': {'type': 'string', 'description': 'The first CUDA thread that failed an assert'}}}
 COMPILE_OUTPUT = {
     'compiled': {'type': 'boolean'},
     'language': {'type': 'string', 'enum': ['cuda', 'hip']},

@@ -308,6 +308,8 @@ bool check_copy_direction(const void *dst, const void *src, cudaMemcpyKind kind)
 
 inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind kind)
 {
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     if (kind < cudaMemcpyHostToHost || kind > cudaMemcpyDefault)
         return record_error(cudaErrorInvalidMemcpyDirection);
     if (count == 0)
@@ -788,6 +790,8 @@ cudaError_t cudaMalloc3D(cudaPitchedPtr *pitchedDevPtr, cudaExtent extent)
 static inline
 cudaError_t cudaMemset(void *devPtr, int value, size_t count)
 {
+    if (const cudaError_t sticky = detail::check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     if (count > 0 && devPtr == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
 

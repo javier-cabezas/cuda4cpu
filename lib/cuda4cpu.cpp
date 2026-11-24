@@ -40,6 +40,8 @@
 #include <tuple>
 #include <utility>
 
+#include <assert.h>
+#include <dlfcn.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -156,6 +158,9 @@ constexpr size_t shared_alignment = 64;
 //! Set once a crash in a kernel is reported, so that the crash handler
 //! doesn't report again an abort after one of cuda4cpu's own errors
 std::atomic<bool> crash_reported{false};
+
+//! The error of a failed assert() in a kernel (see detail::sticky_error)
+std::atomic<cudaError_t> sticky{cudaSuccess};
 
 //! A block of this OS thread that crashed in direct mode, run once more to
 //! find the CUDA thread (see detail::crash_report)
@@ -903,7 +908,7 @@ thread_block::~thread_block() = default;
 namespace detail {
 
 //! Reports a crash in a kernel (an invalid memory access, a stack overflow,
-//! a division by zero, an abort such as a failed assert) with the CUDA
+//! a division by zero, an abort) with the CUDA
 //! thread and block it happened in and where the kernel was launched, then
 //! hands the signal to the handler installed before (AddressSanitizer's, for
 //! instance), or to the default action: the program still dies of it.
@@ -1045,7 +1050,7 @@ struct crash_report {
         } else if (sig == SIGILL) {
             m << " executed an illegal instruction";
         } else {
-            m << " aborted (a failed assert(), or a call to abort())";
+            m << " aborted (a call to abort(), or an uncaught exception)";
         }
         const std::source_location &site = block->kernel_->site;
         if (site.file_name()[0] != '\0')
@@ -1059,6 +1064,34 @@ struct crash_report {
         m << ".\n";
         ssize_t written = write(STDERR_FILENO, m.text, m.size);
         (void)written;
+    }
+
+    //! A failed assert() in a kernel, as CUDA's: its message, with the
+    //! block and thread, then the CUDA thread ends, as if it returned, and
+    //! the error is sticky (sticky_error). The block's other threads go on
+    //! (those that fail print too, as on a GPU), and blocks that haven't
+    //! started don't run. The thread's frames are abandoned: an assert is a
+    //! call to a [[noreturn]] function, before which AddressSanitizer
+    //! unpoisons the stack, and threadIdx is stored.
+    //! Returns outside kernels
+    static void failed_assert(const char *assertion, const char *file, unsigned line, const char *function)
+    {
+        thread_block *current = thread_block::Current_;
+        if (current == nullptr || crash_rerun.running)
+            return;
+        thread_block &block = *current;
+        const auto &t = thread_block::Vars_.thread_idx, &b = thread_block::Vars_.block_idx;
+        char text[1024];
+        const int size = std::snprintf(text, sizeof(text), "%s:%u: %s: block: [%u,%u,%u], thread: [%u,%u,%u] "
+                                       "Assertion `%s` failed.\n", file, line, function, b.x, b.y, b.z,
+                                       t.x, t.y, t.z, assertion);
+        ssize_t written = write(STDERR_FILENO, text, size_t(std::min(size, int(sizeof(text)) - 1)));
+        (void)written;
+        sticky.store(cudaErrorAssert);
+        if (block.direct_)
+            block.promote();
+        block.finish_current();
+        __builtin_unreachable();
     }
 
     //! The sanitizers' reports of a kernel's errors come from calls in the
@@ -1139,6 +1172,34 @@ struct crash_report {
     }
 };
 
+cudaError_t sticky_error() noexcept
+{
+    return sticky.load(std::memory_order_relaxed);
+}
+
+void reset_sticky_error() noexcept
+{
+    sticky.store(cudaSuccess);
+}
+
+}
+
+//! Every assert() that fails calls this: glibc's assert.h declares it. In a
+//! kernel, it is CUDA's device-side assert; elsewhere, glibc's, which aborts.
+//! The program's executable and libraries find this one first, since
+//! libcuda4cpu comes before libc among their dependencies.
+extern "C" void __assert_fail(const char *assertion, const char *file, unsigned int line,
+                              const char *function) noexcept
+{
+    detail::crash_report::failed_assert(assertion, file, line, function ? function : "?");
+    using assert_function = void (*)(const char *, const char *, unsigned int, const char *);
+    static const auto next = reinterpret_cast<assert_function>(dlsym(RTLD_NEXT, "__assert_fail"));
+    if (next != nullptr)
+        next(assertion, file, line, function);
+    // A static program, without the dynamic linker: glibc's message
+    std::fprintf(stderr, "%s: %s:%u: %s%sAssertion `%s' failed.\n", program_invocation_short_name, file, line,
+                 function ? function : "", function ? ": " : "", assertion);
+    std::abort();
 }
 
 thread_block &
@@ -1319,6 +1380,9 @@ void end_trial(const tuner_trial &t, bool timed)
 
 void thread_block::execute(const detail::kernel_closure &kernel, dim3 block_id)
 {
+    // The blocks after a failed assert() don't run
+    if (sticky.load(std::memory_order_relaxed) != cudaSuccess) [[unlikely]]
+        return;
     kernel_   = &kernel;
     block_id_ = block_id;
     direct_   = true;

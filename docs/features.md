@@ -111,7 +111,7 @@
 
 | Area | Functions |
 |---|---|
-| Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes |
+| Errors | `cudaGetLastError`, `cudaPeekAtLastError`, `cudaGetErrorName`, `cudaGetErrorString`, and `cudaError_t` with CUDA's codes; a failed `assert()` in a kernel prints CUDA's message and is a sticky `cudaErrorAssert` until `cudaDeviceReset()` |
 | Device | `cudaGetDeviceCount`, `cudaSetDevice`, `cudaGetDevice`, `cudaSetDeviceFlags`, `cudaGetDeviceFlags`, `cudaGetDeviceProperties`, `cudaDeviceGetAttribute`, `cudaDriverGetVersion`, `cudaRuntimeGetVersion`, `cudaDeviceSynchronize`, `cudaDeviceReset`, `cudaDeviceSetLimit`, `cudaDeviceGetLimit` (`cudaLimitStackSize` only), `cudaDeviceGetStreamPriorityRange`, `cudaDeviceCanAccessPeer`, and the deprecated `cudaThreadSynchronize` and `cudaThreadExit` |
 | Memory | `cudaMalloc`, `cudaMallocHost`, `cudaHostAlloc`, `cudaMallocManaged` (with typed overloads, as in CUDA), `cudaFree`, `cudaFreeHost` (both reject pointers that they didn't allocate), `cudaPointerGetAttributes`, `cudaMemGetInfo` (the host's available and physical memory), `cudaMemcpy`, `cudaMemcpyAsync`, `cudaMemset`, `cudaMemsetAsync`, `cudaMemcpyToSymbol`, `cudaMemcpyFromSymbol`, `cudaGetSymbolAddress`, `cudaGetSymbolSize` |
 | 2D and 3D memory | `cudaMallocPitch`, `cudaMalloc3D`, `cudaMemcpy2D`, `cudaMemcpy2DAsync`, `cudaMemcpy3D`, `cudaMemcpy3DAsync`, `cudaMemset2D`, `cudaMemset2DAsync`, `cudaMemset3D`, `cudaMemcpyToSymbolAsync`, `cudaMemcpyFromSymbolAsync`; CUDA arrays aren't implemented |

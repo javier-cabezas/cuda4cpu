@@ -132,7 +132,8 @@ cudaError_t cudaStreamGetPriority(cudaStream_t stream, int *priority)
 static inline
 cudaError_t cudaStreamQuery(cudaStream_t stream)
 {
-    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported) : cudaSuccess;
+    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported)
+                                     : detail::check_sticky_error();
 }
 
 //! Work runs when it's issued, so there is nothing to wait for. A stream being
@@ -140,7 +141,8 @@ cudaError_t cudaStreamQuery(cudaStream_t stream)
 static inline
 cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
-    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported) : cudaSuccess;
+    return detail::capturing(stream) ? detail::record_error(cudaErrorStreamCaptureUnsupported)
+                                     : detail::check_sticky_error();
 }
 
 }
