@@ -3,6 +3,7 @@
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
 [![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-140%20of%20166%20pass-brightgreen)](docs/compatibility.md)
 [![MCP server](https://img.shields.io/badge/MCP-kernel%20checks%20for%20AI%20agents-8A2BE2)](#use-it-from-an-ai-agent-mcp)
+[![javier-cabezas/cuda4cpu MCP server](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu/badges/score.svg)](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](docs/usage.md#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -179,7 +180,8 @@ Other clients take the same command, for example in Cursor's `mcp.json` or
 Claude Desktop's configuration: `{"mcpServers": {"cuda4cpu": {"command":
 "cuda4cpu-mcp"}}}`. The server speaks MCP over stdio, and is listed in the
 [MCP Registry](https://registry.modelcontextprotocol.io) as
-`io.github.javier-cabezas/cuda4cpu`. In Docker, it sees only the
+`io.github.javier-cabezas/cuda4cpu`, and in
+[Glama's directory](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu). In Docker, it sees only the
 directories you mount (`-v "$PWD:$PWD"` above): sources given inline need
 none.
 
