@@ -117,6 +117,32 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `float2`/`double2`, with CUDA's formulas (scaled division and absolute
   value, `cuCfmaf`'s order of additions). The HIP names are macros for the
   CUDA ones, except `hipCsqabsf`/`hipCsqabs`.
+- `include/curand.h`, `include/curand_kernel.h` and `lib/curand.cpp`:
+  cuRAND, at global scope with C linkage as CUDA's. The device API is in the
+  header, except the tables in the library (`detail::rand::xorwow_jump`,
+  `mrg32k3a_jump`): XORWOW's jumps are 160 x 160 matrices over GF(2) in
+  base-16 digits (16 levels of 15 powers, for values and for subsequences of
+  2^67), built once. XORWOW's seeding is cuRAND's (constants 0xaad26b49,
+  1099087573, ...; public in Apache-2.0 reimplementations), and Philox's
+  rounds Random123's, so their integers and uniforms are CUDA's; doubles,
+  normals, Poisson values and MRG32k3a's seeding follow rocRAND's methods
+  (MIT), not cuRAND's, which aren't public. NVIDIA's own headers are
+  proprietary: nothing comes from them. The host API's generators make
+  their results from lanes of device-API states, as cuRAND documents its
+  orderings: result m from lane `(m / group) % lanes` (XORWOW 4096 lanes of
+  1, Philox 65536 of 4, MRG32k3a 81920), each lane a subsequence, so XORWOW's
+  and Philox's host results are CUDA's too; lanes run in parallel and keep
+  their states between calls. Sobol' direction vectors come from Joe and
+  Kuo's direction numbers, packed into `lib/sobol_directions.inc` by
+  `lib/make-sobol-directions.py` (BSD: `THIRD_PARTY_NOTICES.md`, installed
+  with `LICENSE`); the scrambled sets and constants are cuda4cpu's (a random
+  linear scrambling), as cuRAND's own are unknown. `curand.h` and
+  `curand_kernel.h` define cuRAND's include guards (`CURAND_H_`), which the
+  samples' `helper_cuda.h` tests. `include/hiprand/` is hipRAND on top:
+  macros for the C API's names, typedefs, `hiprand()` as a function, the
+  const scramble-constant overloads, and the C++ API (`hiprand.hpp`).
+  `include/library_types.h` is CUDA's (`libraryPropertyType`,
+  `cudaDataType`).
 - `include/mma.h`: CUDA's warp matrix functions (`nvcuda::wmma`), for half,
   bfloat16, tf32, double and 8-bit integers. Lane l holds elements
   `l * num_elements ...` of the tile, modulo its size, in the order of the
@@ -350,9 +376,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`build/<preset>/toolkit`, installed as `<libdir>/cuda4cpu/toolkit`), for
   build systems written for nvcc: `bin/nvcc` links to `cuda4cpu-nvcc`,
   `include` to the headers, and `lib64` has `libcudart.so`,
-  `libcudart_static.a` and `libcuda.so` as linker scripts
-  (`INPUT(-lcuda4cpu <OpenMP>)`, so they resolve through `-L` wherever it's
-  installed), next to links to libcuda4cpu and its soname, and an empty
+  `libcudart_static.a`, `libcuda.so`, `libcurand.so` and
+  `libcurand_static.a` as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
+  they resolve through `-L` wherever it's installed, for libraries named
+  by path, as CMake's `CUDA::curand`; every driver drops `-l` of the
+  libraries libcuda4cpu provides, `PROVIDED_LIBRARIES` (`cudart`, `curand`,
+  `amdhip64`, `hiprand`, ...), so that a real one a `-L` finds isn't linked,
+  and links with `-L` the toolkit's `lib64` and `lib` before libcuda4cpu's
+  directory), next to links to libcuda4cpu and its soname, and an empty
   `libcudadevrt.a`. `nvvm/libdevice` is empty: CMake checks it exists.
   `bin/cuda4cpu-c++` and `cuda4cpu.cmake` (from
   `cmake/cuda4cpu-toolchain.cmake`) are a toolchain file for projects with
@@ -572,6 +603,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     Every value, midpoint and their neighbors, from double, float, half and
     bfloat16, E8M0 in both rounding modes, the classes, pairs and
     quadruples, and conversions in a kernel.
+  - `curand` (`curand.cu`): XORWOW against reference streams (values 0, 1,
+    2 and 1023 of six seeds and subsequences, and offsets), Philox's rounds
+    against Random123's known answers, Sobol' points against Joe and Kuo's
+    first ten in three dimensions and the last dimension's vectors, skipping
+    ahead against stepping (values and subsequences, every generator), the
+    host API's results against the device API's in the documented
+    orderings, the moments of every distribution of every generator (device
+    and host), equidistribution of Sobol' points (plain and scrambled), the
+    errors, and per-thread states in kernels.
   - `complex` (`complex.cu`): cuComplex.h against `long double` arithmetic
     on random operands, the overflow and underflow its formulas avoid, and a
     DFT in a kernel
@@ -664,7 +704,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
-    `cuda_runtime.h`) and HIP language, configured with the toolkit's
+    `cuda_runtime.h`, a program linked with `CUDA::curand`) and HIP language, configured with the toolkit's
     toolchain file, built and run. A second build must do nothing, and
     touching a local header (`saxpy.cuh`) must recompile its source.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):

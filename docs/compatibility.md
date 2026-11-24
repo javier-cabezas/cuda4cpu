@@ -4,15 +4,16 @@
 and HIP programs with `cuda4cpu-hipcc`:
 
 - **cuda-samples:** a curated set of NVIDIA's CUDA samples, those that use
-  only the runtime API and the kernel language. Samples that need graphics
-  interop, the driver API, NVRTC, the CUDA libraries, Thrust/CUB, MPI or
-  several GPUs are excluded. These samples check their own results.
+  only the runtime API, the kernel language and cuRAND. Samples that need
+  graphics interop, the driver API, NVRTC, the other CUDA libraries,
+  Thrust/CUB, MPI or several GPUs are excluded. These samples check their own results.
 - **Rodinia:** the Rodinia benchmarks that generate their own inputs. Except
   `lud`, they don't check their results, so for them "passing" means they run
   to completion.
 - **rocm-examples:** AMD's HIP examples: HIP-Basic, the examples of the HIP
-  documentation, and the reduction tutorial, excluding those that need
-  graphics interop, the module API, HIPRTC, ROCm libraries or several GPUs,
+  documentation, the reduction tutorial and the hipRAND examples, excluding
+  those that need graphics interop, the module API, HIPRTC, other ROCm
+  libraries or several GPUs,
   and two of the rocPRIM examples and three of the rocWMMA ones (those in
   half precision), on [HIP's AMD platform](hip.md#hips-amd-platform), with
   the libraries fetched at a pinned release, as RDNA3 GPUs, and one of
@@ -27,9 +28,9 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 47 of 66 (1 more waives itself, and 5 are skipped as too slow) | 13 |
+| cuda-samples | 53 of 72 (1 more waives itself, and 5 are skipped as too slow) | 13 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
-| rocm-examples | 84 of 89 | 5 |
+| rocm-examples | 87 of 92 | 5 |
 
 Most of what's missing is a few features:
 

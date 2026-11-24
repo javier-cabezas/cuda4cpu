@@ -3,7 +3,7 @@
     "cuda-samples": {
       "url": "https://github.com/NVIDIA/cuda-samples.git",
       "revision": "v13.4",
-      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries, Thrust/CUB, MPI or multiple GPUs). They check their own results.",
+      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND, Thrust/CUB, MPI or multiple GPUs). They check their own results.",
       "defaults": {
         "sources": [
           "*.cu",
@@ -78,6 +78,61 @@
         },
         {
           "dir": "cpp/1_Utilities/deviceQuery"
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/MC_EstimatePiInlineP",
+          "sources": [
+            "src/*.cu",
+            "src/*.cpp"
+          ],
+          "include": [
+            "Common",
+            "cpp/2_Concepts_and_Techniques/MC_EstimatePiInlineP/inc"
+          ]
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/MC_EstimatePiInlineQ",
+          "sources": [
+            "src/*.cu",
+            "src/*.cpp"
+          ],
+          "include": [
+            "Common",
+            "cpp/2_Concepts_and_Techniques/MC_EstimatePiInlineQ/inc"
+          ]
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/MC_EstimatePiP",
+          "sources": [
+            "src/*.cu",
+            "src/*.cpp"
+          ],
+          "include": [
+            "Common",
+            "cpp/2_Concepts_and_Techniques/MC_EstimatePiP/inc"
+          ]
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/MC_EstimatePiQ",
+          "sources": [
+            "src/*.cu",
+            "src/*.cpp"
+          ],
+          "include": [
+            "Common",
+            "cpp/2_Concepts_and_Techniques/MC_EstimatePiQ/inc"
+          ]
+        },
+        {
+          "dir": "cpp/2_Concepts_and_Techniques/MC_SingleAsianOptionP",
+          "sources": [
+            "src/*.cu",
+            "src/*.cpp"
+          ],
+          "include": [
+            "Common",
+            "cpp/2_Concepts_and_Techniques/MC_SingleAsianOptionP/inc"
+          ]
         },
         {
           "dir": "cpp/2_Concepts_and_Techniques/convolutionSeparable"
@@ -216,6 +271,9 @@
         },
         {
           "dir": "cpp/5_Domain_Specific/HSOpticalFlow"
+        },
+        {
+          "dir": "cpp/5_Domain_Specific/MonteCarloMultiGPU"
         },
         {
           "dir": "cpp/5_Domain_Specific/SobolQRNG"
@@ -430,7 +488,7 @@
     "rocm-examples": {
       "url": "https://github.com/ROCm/rocm-examples.git",
       "revision": "rocm-7.2.4",
-      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
+      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocWMMA and hipRAND or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
       "defaults": {
         "driver": "hipcc",
         "sources": [
@@ -985,6 +1043,19 @@
           "include": [
             "Tutorials/reduction/include"
           ]
+        },
+        {
+          "dir": "Libraries/hipRAND/c_cpp_api/simple_distributions_cpp",
+          "name": "hiprand_simple_distributions_cpp",
+          "verified": false
+        },
+        {
+          "dir": "Libraries/hipRAND/device_api/pseudorandom_generations",
+          "name": "hiprand_pseudorandom_generations"
+        },
+        {
+          "dir": "Libraries/hipRAND/device_api/quasirandom_generations",
+          "name": "hiprand_quasirandom_generations"
         }
       ]
     }

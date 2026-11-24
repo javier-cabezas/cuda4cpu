@@ -83,6 +83,10 @@ works too, with HIP's NVIDIA platform and the toolkit's toolchain file. See
     largest finite value overflows, even if it would round down to it, and
     an infinity stays infinite in E5M2 and becomes NaN in the other formats,
     even when saturating.
+- **hipRAND:** `hiprand/hiprand.h`, `hiprand/hiprand_kernel.h` and the C++ API
+  of `hiprand/hiprand.hpp` (`hiprand_cpp`'s engines and distributions), on
+  cuda4cpu's cuRAND (see [features](features.md#libraries)), and `-lhiprand`.
+  rocRAND's own API (`rocrand_*`) isn't provided.
 - **Not implemented:** what CUDA lacks here too (textures, ...), and what
   needs
   device code compiled or loaded at run time: HIPRTC and the module API

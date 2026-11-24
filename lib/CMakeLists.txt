@@ -1,4 +1,4 @@
-add_library(cuda4cpu cuda4cpu.cpp graphs.cpp memory.cpp)
+add_library(cuda4cpu cuda4cpu.cpp curand.cpp graphs.cpp memory.cpp)
 add_library(cuda4cpu::cuda4cpu ALIAS cuda4cpu)
 
 set(CUDA4CPU_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
@@ -18,6 +18,12 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp8.h
+            ${CUDA4CPU_INCLUDE_DIR}/curand.h
+            ${CUDA4CPU_INCLUDE_DIR}/curand_kernel.h
+            ${CUDA4CPU_INCLUDE_DIR}/library_types.h
+            ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand.h
+            ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand.hpp
+            ${CUDA4CPU_INCLUDE_DIR}/hiprand/hiprand_kernel.h
             ${CUDA4CPU_INCLUDE_DIR}/mma.h
             ${CUDA4CPU_INCLUDE_DIR}/nvToolsExt.h
             ${CUDA4CPU_INCLUDE_DIR}/nvtx3/nvToolsExt.h

@@ -272,7 +272,7 @@ short summary first.
   for HIP (by default when a source is a `.hip` file). It returns the
   compiler's diagnostics at the sources' own lines, and names the features
   they use that cuda4cpu doesn't implement (textures, inline PTX, libcu++,
-  the CUDA libraries, the driver API, ...).
+  the CUDA libraries other than cuRAND, the driver API, ...).
 - **`run`** builds and runs the program: exit code, output (up to 16 KB of
   each), and the problems cuda4cpu reports along the way.
 - **`check`** looks for bugs, and returns a verdict and findings:
