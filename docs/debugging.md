@@ -171,6 +171,63 @@ to make `cudaMalloc` return `cudaErrorMemoryAllocation` instead.
 registers its fiber stacks with Valgrind. Otherwise Valgrind reports false
 errors in the context switch.
 
+## All the checks in one command: `cuda4cpu-check`
+
+`cuda4cpu-check` runs a program the way the MCP server's `check` tool does,
+below, and prints what it finds:
+1. built with AddressSanitizer and UBSan;
+2. twice in the default order;
+3. with new memory filled with `0xff` bytes;
+4. with the threads of each block in reverse, warp-reverse and random
+   orders.
+
+Give it the sources, which it builds with `cuda4cpu-nvcc` (or
+`cuda4cpu-hipcc` for `.hip` files), and the program's arguments after `--`:
+
+```console
+$ cuda4cpu-check missing_barrier.cu
+cuda4cpu-check: problems found (11 runs, 0.1 s)
+  [depends on the thread order] running the threads of each block in reverse order (reverse) ends with exit code 1 instead of exit code 0; 8 of 8 other orders change the result
+    a thread reads data that another thread of its block writes without a __syncthreads() between them (or, within a warp, a __syncwarp()), or threads race on the same data. On a GPU, such code works or fails depending on timing.
+$ cuda4cpu-check -X '-I include -DN=1024' scan.cu main.cpp -- --size 4096
+```
+
+It can also check a program your build system made with cuda4cpu, as
+`compute-sanitizer` runs a program. There's no sanitizer build then, but a
+program built with `-g -fsanitize=address,undefined` is one: its first run
+stops `check` if the sanitizers find an error, as the sanitizer build does.
+
+```console
+$ cuda4cpu-check build/tests/scan --size 4096
+```
+
+The program should check its results or print them: a run counts as
+different when its exit code or output changes. Output that varies between
+two runs in the default order (timings) is compared by exit code only,
+unless `--ignore REGEX` leaves out the lines that vary.
+
+| Option | |
+| --- | --- |
+| `-x cuda`, `-x hip` | the sources' language (hip by default for `.hip` files) |
+| `-X OPTIONS` | the compiler's options, as nvcc's or hipcc's (default `-O2 -g`) |
+| `--seeds 1,2,3` | the seeds of the random orders |
+| `--no-sanitizers` | skip the sanitizer build |
+| `--ignore REGEX` | output lines to leave out of the comparisons |
+| `-e NAME=VALUE`, `--stdin FILE`, `-C DIR`, `--timeout SECONDS` | the program's environment, input, directory and time limit per run (60 s) |
+| `--format text`, `json`, `github` | the findings as text, as check's JSON result, or as text plus GitHub Actions annotations |
+| `-v` | list every run and how it ended |
+
+It exits with 0 when it finds nothing, 1 when it finds a problem, and 2 when
+the program can't be checked: it doesn't compile, or doesn't exist. The
+GitHub Action runs it with its `check` input, which annotates the findings
+at their lines:
+
+```yaml
+      - uses: javier-cabezas/cuda4cpu@v0.6.1
+        with:
+          check: src/scan.cu src/main.cpp -- --size 4096
+```
+
 ## Checking kernels from an AI agent (MCP)
 
 `cuda4cpu-mcp` is an MCP server (Model Context Protocol, over stdio) that

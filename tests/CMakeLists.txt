@@ -301,6 +301,14 @@ add_test(NAME mcp_server
                  ${PROJECT_SOURCE_DIR}/examples/bugs)
 set_tests_properties(mcp_server PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}" TIMEOUT 900)
 
+# cuda4cpu-check, check's command line, on sources and on programs built
+# already, in each output format
+add_test(NAME check_command
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/check/test_check.py
+                 ${PROJECT_BINARY_DIR}/tools/cuda4cpu-check ${PROJECT_SOURCE_DIR}/examples/bugs
+                 ${CMAKE_CURRENT_SOURCE_DIR}/samples)
+set_tests_properties(check_command PROPERTIES ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}" TIMEOUT 900)
+
 # The toolkit as a HIP installation: hipconfig, hipcc's environment and
 # --version, and a program linked with ROCm's -lamdhip64
 add_test(NAME driver_hipcc_tools

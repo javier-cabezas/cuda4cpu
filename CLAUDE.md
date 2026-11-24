@@ -387,6 +387,15 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `@X@` would be replaced by `configure_file`. `capabilities` reads
   `features.md` and `limitations.md` from the docs, which are installed to
   `<datadir>/doc/cuda4cpu` for it.
+  The same template is configured as `cuda4cpu-check` (`TOOL` is `check`,
+  from `CUDA4CPU_TOOL`): `check_main` is `check`'s command line, on sources
+  (`Program`) or a program built already (`Prebuilt`, which warns if the
+  file doesn't name cuda4cpu; built with the sanitizers, which it finds by
+  their symbols, it is its own sanitizer build, and every run gets their
+  environment, `run_environment`), printing
+  `summary_lines`, the JSON result, or GitHub annotations and a job summary
+  (`--format github`, which the action's `check` input uses). It exits with
+  0, 1 when it finds something, or 2 when the program can't be checked.
 - `cmake/cuda4cpu-cuda.cmake`: `cuda4cpu_add_cuda_sources()` and
   `cuda4cpu_add_hip_sources()` (any extension), used in-tree and installed
   with the package config. It finds the rewriter through the
@@ -457,8 +466,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   other fields follow listed servers. `action.yml` at the
   root makes the repository an action that installs an archive.
   `packaging/smoke-test.sh <prefix>` checks an installation: the drivers,
-  the CMake package, the toolchain file (CMake 4.1+), and the MCP server's
-  `check` and `test_kernel`. Pull requests build the archive, install it with
+  the CMake package, the toolchain file (CMake 4.1+), the MCP server's
+  `check` and `test_kernel`, and `cuda4cpu-check`. The action's `check`
+  input runs `cuda4cpu-check --format github` with the input's words. Pull requests build the archive, install it with
   the action and test it, and build and test the image; a published release
   uploads the archive, pushes the image and publishes `server.json`.
 - `benchmarks/microbench.cpp`: micro-benchmarks. Use them to back any
@@ -607,6 +617,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     a correct program; and `test_kernel` on correct and wrong kernels
     (mismatches by index, an order-dependent kernel, an overflow inside an
     allocation's rounding, templates, HIP, invalid requests).
+  - `check_command` (`check/test_check.py`): `cuda4cpu-check` on the
+    `examples/bugs` programs and a correct sample, from sources and built
+    already, the program's arguments after `--`, compiler options, the JSON
+    and GitHub formats (annotations at the line, the job summary), a program
+    not built with cuda4cpu, and the usage errors and exit codes.
   - `driver_hipcc_tools` (`driver/test_hipcc.py`): `hipconfig`'s answers,
     `hipcc --version`, the `HIPCC_*` variables, `--emit-static-lib`, a
     program the host compiler links with `-L<toolkit>/lib -lamdhip64`, and
