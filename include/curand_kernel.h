@@ -68,16 +68,18 @@ inline float uniform(unsigned int x)
     return float(x) * 0x1p-32f + 0x1p-33f;
 }
 
-//! A uniform double of 53 bits from two values: (0, 1)
+//! A uniform double of 53 bits: (0, 1). The largest, 1 - 2^-54, would round
+//! to 1, so it is the double below 1 instead.
+inline double uniform_double(unsigned long long x)
+{
+    return std::min(double(x >> 11) * 0x1p-53 + 0x1p-54, 0x1.fffffffffffffp-1);
+}
+
+//! From two values
 inline double uniform_double(unsigned int x, unsigned int y)
 {
     const unsigned long long z = (unsigned long long)x ^ ((unsigned long long)y << 21);
-    return double(z & ((1ull << 53) - 1)) * 0x1p-53 + 0x1p-54;
-}
-
-inline double uniform_double(unsigned long long x)
-{
-    return double(x >> 11) * 0x1p-53 + 0x1p-54;
+    return uniform_double((z & ((1ull << 53) - 1)) << 11);
 }
 
 //! The Box-Muller transform of two values: two independent standard normals
@@ -165,22 +167,38 @@ inline unsigned int poisson(double lambda, Next next)
 }
 
 //! A Poisson value of mean lambda from one uniform u, by inversion: for the
-//! quasirandom generators, whose dimensions must take one value each
+//! quasirandom generators, whose dimensions must take one value each. The
+//! search starts at the mode, whose probability doesn't underflow, and goes
+//! down or up the distribution from there.
 inline unsigned int poisson_quantile(double lambda, double u)
 {
     if (!(lambda > 0))
         return 0;
-    if (lambda >= 1000) {
-        const double k = std::floor(lambda + std::sqrt(lambda) * normal_quantile(u) + 0.5);
-        return k < 0 ? 0u : (unsigned int)k;
-    }
-    double p = std::exp(-lambda), cdf = p;
-    unsigned int k = 0;
-    while (cdf < u && k < 100000) {
-        p *= lambda / ++k;
+    const double mode = std::floor(lambda);
+    const double p_mode = std::exp(mode * std::log(lambda) - lambda - std::lgamma(mode + 1));
+    // P(X <= mode), summed down from the mode until the terms vanish
+    double cdf = p_mode, p = p_mode;
+    for (double k = mode; k > 0 && p > 1e-17 * cdf; --k) {
+        p *= k / lambda;
         cdf += p;
     }
-    return k;
+    double k = mode;
+    p = p_mode;
+    if (u <= cdf) {
+        while (k > 0 && cdf - p >= u) {             // P(X <= k - 1) still reaches u
+            cdf -= p;
+            p *= k / lambda;
+            --k;
+        }
+    } else {
+        const double last = mode + 40 * std::sqrt(lambda) + 100;
+        while (cdf < u && k < last) {
+            ++k;
+            p *= lambda / k;
+            cdf += p;
+        }
+    }
+    return k > 4294967295.0 ? 4294967295u : (unsigned int)k;
 }
 
 //! Philox4x32-10 (Random123): ten rounds of the counter under the key
@@ -366,6 +384,11 @@ inline void curand_init(unsigned long long seed, unsigned long long subsequence,
     state->s2[0] = unsigned(y * s % mrg_m2);
     state->s2[1] = unsigned(x * s % mrg_m2);
     state->s2[2] = unsigned(y * s % mrg_m2);
+    // A component that is all zeros would stay so: start it as seed 12345's
+    if ((state->s1[0] | state->s1[1] | state->s1[2]) == 0)
+        state->s1[0] = state->s1[1] = state->s1[2] = 12345;
+    if ((state->s2[0] | state->s2[1] | state->s2[2]) == 0)
+        state->s2[0] = state->s2[1] = state->s2[2] = 12345;
     mrg32k3a_jump(state->s1, state->s2, subsequence, true);
     mrg32k3a_jump(state->s1, state->s2, offset, false);
     state->boxmuller_flag = state->boxmuller_flag_double = 0;
@@ -500,8 +523,13 @@ template <typename S> requires cuda4cpu::detail::rand::quasi<S>
 inline decltype(S::x) curand(S *state)
 {
     const auto value = state->x;
-    // Gray code: the vector of the lowest zero bit of the index
-    state->x ^= state->direction_vectors[std::countr_one(state->i)];
+    // Gray code: the vector of the lowest zero bit of the index. After the
+    // last point, the sequence starts again.
+    const int k = std::countr_one(state->i);
+    if (k < int(sizeof(state->x) * 8))
+        state->x ^= state->direction_vectors[k];
+    else
+        state->x = state->c;
     ++state->i;
     return value;
 }

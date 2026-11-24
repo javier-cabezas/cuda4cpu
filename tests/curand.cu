@@ -32,6 +32,7 @@
 
 #include <curand.h>
 #include <curand_kernel.h>
+#include <hiprand/hiprand.hpp>
 
 #include <cmath>
 #include <cstdio>
@@ -255,6 +256,87 @@ static void distributions(const char *name)
     curandDestroyDistribution(poisson);
 }
 
+//! The ends of ranges: the last Sobol' point, uniforms below 1, large means,
+//! seeds that zero a component, offsets near 2^64
+static void edges()
+{
+    curandDirectionVectors32_t *vectors;
+    curandGetDirectionVectors32(&vectors, CURAND_DIRECTION_VECTORS_32_JOEKUO6);
+    curandStateSobol32_t last;
+    curand_init(vectors[3], 0xffffffffu, &last);
+    curand(&last);
+    EXPECT(curand(&last) == 0);                      // the sequence starts again
+    curandDirectionVectors64_t *wide;
+    curandGetDirectionVectors64(&wide, CURAND_DIRECTION_VECTORS_64_JOEKUO6);
+    curandStateSobol64_t last64;
+    curand_init(wide[3], ~0ull, &last64);
+    curand(&last64);
+    EXPECT(curand(&last64) == 0);
+
+    using cuda4cpu::detail::rand::uniform_double;
+    EXPECT(uniform_double(~0ull) < 1 && uniform_double(~0u, ~0u) < 1 && uniform_double(0ull) > 0);
+    EXPECT(std::isfinite(cuda4cpu::detail::rand::normal_quantile(uniform_double(~0ull))));
+    EXPECT(std::isfinite(cuda4cpu::detail::rand::normal_quantile(uniform_double(0ull))));
+
+    // Quasirandom Poisson values of any mean: by inversion from the mode
+    for (double lambda : {0.3, 12.0, 800.0, 5000.0, 2e6}) {
+        curandStateSobol64_t q;
+        curand_init(wide[1], 0ull, &q);
+        double sum = 0;
+        const int n = 4096;
+        for (int i = 0; i < n; ++i)
+            sum += curand_poisson(&q, lambda);
+        EXPECT(std::fabs(sum / n - lambda) < 0.01 * lambda + 0.01);
+        curand_init(wide[2], 0ull, &q);
+        for (int i = 0; i < 64; ++i)
+            EXPECT(std::isfinite(curand_normal_double(&q)) && std::isfinite(curand_log_normal(&q, 0.0f, 1.0f)));
+    }
+
+    // Seeds whose terms are all zero in a component still give a sequence
+    for (unsigned long long seed : {0xAAAAAAAA55555555ull, 18446585346252035941ull}) {
+        curandStateMRG32k3a_t m;
+        curand_init(seed, 0, 0, &m);
+        const unsigned a = curand(&m), b = curand(&m), c = curand(&m);
+        EXPECT(!(a == b && b == c));
+    }
+
+    curandGenerator_t g;
+    curandCreateGenerator(&g, CURAND_RNG_PSEUDO_XORWOW);
+    std::vector<unsigned> k(8);
+    EXPECT(curandGeneratePoisson(g, k.data(), 8, 5e9) == CURAND_STATUS_OUT_OF_RANGE);
+    EXPECT(curandGeneratePoisson(g, k.data(), 8, 1e8) == CURAND_STATUS_SUCCESS);
+    // 17 results before 2^64, and some after: result m is still lane m % 4096's
+    EXPECT(curandSetGeneratorOffset(g, ~0ull - 16) == CURAND_STATUS_SUCCESS);
+    std::vector<unsigned> late(40);
+    EXPECT(curandGenerate(g, late.data(), late.size()) == CURAND_STATUS_SUCCESS);
+    for (int i : {0, 16, 17, 39}) {
+        const unsigned __int128 m = (unsigned __int128)(~0ull - 16) + i;
+        curandState s;
+        curand_init(0, (unsigned long long)(m % 4096), (unsigned long long)(m / 4096), &s);
+        EXPECT(late[i] == curand(&s));
+    }
+    curandDestroyGenerator(g);
+    // cuRAND can't skip ahead in Mersenne twisters
+    curandCreateGenerator(&g, CURAND_RNG_PSEUDO_MT19937);
+    EXPECT(curandSetGeneratorOffset(g, 10) == CURAND_STATUS_TYPE_ERROR);
+    curandDestroyGenerator(g);
+
+    // hipRAND's C++ API, with a 64-bit engine
+    hiprand_cpp::sobol64 engine;
+    hiprand_cpp::uniform_int_distribution<unsigned long long> integers;
+    std::vector<unsigned long long> points(4);
+    integers(engine, points.data(), points.size());
+    EXPECT(points[0] == 0 && points[1] == 1ull << 63 && points[2] == 3ull << 62 && points[3] == 1ull << 62);
+    hiprand_cpp::default_random_engine pseudo(1234);
+    hiprand_cpp::normal_distribution<double> normal(1.0, 2.0);
+    std::vector<double> values(10000);
+    normal(pseudo, values.data(), values.size());
+    double sum = 0;
+    for (double v : values)
+        sum += v;
+    EXPECT(std::fabs(sum / values.size() - 1) < 0.1);
+}
+
 //! The host API's results are the device API's, in cuRAND's orderings
 static void host_orderings()
 {
@@ -414,6 +496,7 @@ int main()
     distributions<curandStatePhilox4_32_10_t>("Philox4_32_10");
     distributions<curandStateMRG32k3a_t>("MRG32k3a");
     host_orderings();
+    edges();
     kernels();
     if (failures == 0)
         std::printf("curand: all passed\n");

@@ -423,7 +423,9 @@ struct curandGenerator_st {
     {
         if (xorwow.empty() && philox.empty() && mrg.empty() && !mt)
             start();
-        const unsigned long long first = offset + position, g = group(), l = lanes();
+        // Results past 2^64 don't wrap around the index
+        using index = unsigned __int128;
+        const index first = index(offset) + position, g = group(), l = lanes();
         if (mt) {
             for (size_t i = 0; i < n; ++i)
                 out[i] = unsigned((*mt)());
@@ -431,12 +433,12 @@ struct curandGenerator_st {
             // Each lane makes its results in order: lanes run in parallel
             #pragma omp parallel for schedule(static)
             for (size_t k = 0; k < l; ++k) {
-                const unsigned long long round = g * l;
+                const index round = g * l;
                 // The first block of lane k at or after the first result
-                unsigned long long base = first / round * round + k * g;
+                index base = first / round * round + k * g;
                 for (; base < first + n; base += round) {
-                    for (unsigned long long m = std::max(base, first); m < base + g && m < first + n; ++m) {
-                        unsigned int &value = out[m - first];
+                    for (index m = std::max(base, first); m < base + g && m < first + n; ++m) {
+                        unsigned int &value = out[size_t(m - first)];
                         if (!xorwow.empty())
                             value = curand(&xorwow[k]);
                         else if (!philox.empty())
@@ -550,16 +552,21 @@ curandStatus_t create(curandGenerator_t *generator, curandRngType_t type, bool h
     return CURAND_STATUS_SUCCESS;
 }
 
+//! The largest mean of a Poisson distribution whose values (to 20 standard
+//! deviations) fit in 32 bits
+constexpr double max_poisson_lambda = 4.29e9;
+
 //! Fills the cumulative distribution of a Poisson distribution of mean lambda
-//! from the first value whose probability isn't negligible
+//! (at most max_poisson_lambda) from the first value whose probability isn't
+//! negligible
 void poisson_table(double lambda, std::vector<double> &cdf, unsigned int &shift)
 {
     const double spread = 20 * std::sqrt(lambda) + 20;
     shift = unsigned(std::max(0.0, std::floor(lambda - spread)));
-    const unsigned int last = unsigned(std::ceil(lambda + spread));
+    const double last = std::min(std::ceil(lambda + spread), 4294967295.0);
     cdf.clear();
     double total = 0;
-    for (unsigned int k = shift; k <= last; ++k) {
+    for (double k = shift; k <= last; ++k) {
         total += std::exp(k * std::log(lambda) - lambda - std::lgamma(k + 1.0));
         cdf.push_back(total);
     }
@@ -634,6 +641,9 @@ curandStatus_t curandSetGeneratorOffset(curandGenerator_t generator, unsigned lo
 {
     if (generator == nullptr)
         return CURAND_STATUS_NOT_INITIALIZED;
+    // As in cuRAND, which can't skip ahead in these
+    if (generator->type == CURAND_RNG_PSEUDO_MTGP32 || generator->type == CURAND_RNG_PSEUDO_MT19937)
+        return CURAND_STATUS_TYPE_ERROR;
     generator->offset = offset;
     generator->reset();
     return CURAND_STATUS_SUCCESS;
@@ -756,7 +766,6 @@ static curandStatus_t normals(curandGenerator_t generator, T *out, size_t n, T m
     }
     if (n % 2 != 0)
         return CURAND_STATUS_LENGTH_NOT_MULTIPLE;
-    std::vector<double> u(n);
     if constexpr (std::is_same_v<T, float>) {
         if (generator->type != CURAND_RNG_PSEUDO_MRG32K3A) {
             std::vector<unsigned int> raw(n);
@@ -769,6 +778,7 @@ static curandStatus_t normals(curandGenerator_t generator, T *out, size_t n, T m
             return CURAND_STATUS_SUCCESS;
         }
     }
+    std::vector<double> u(n);
     uniform_doubles(generator, n, u.data());
     for (size_t i = 0; i < n; i += 2) {
         const double s = std::sqrt(-2.0 * std::log(u[i])), v = 2 * std::numbers::pi * u[i + 1];
@@ -808,7 +818,7 @@ curandStatus_t curandGeneratePoisson(curandGenerator_t generator, unsigned int *
 {
     if (generator == nullptr)
         return CURAND_STATUS_NOT_INITIALIZED;
-    if (!(lambda > 0))
+    if (!(lambda > 0 && lambda <= max_poisson_lambda))
         return CURAND_STATUS_OUT_OF_RANGE;
     std::vector<double> cdf;
     unsigned int shift;
@@ -903,7 +913,7 @@ curandStatus_t curandGetScrambleConstants64(unsigned long long **constants)
 
 curandStatus_t curandCreatePoissonDistribution(double lambda, curandDiscreteDistribution_t *discrete_distribution)
 {
-    if (discrete_distribution == nullptr || !(lambda > 0))
+    if (discrete_distribution == nullptr || !(lambda > 0 && lambda <= max_poisson_lambda))
         return CURAND_STATUS_OUT_OF_RANGE;
     std::vector<double> cdf;
     unsigned int shift;

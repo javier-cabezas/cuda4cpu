@@ -73,10 +73,10 @@ inline void check(hiprandStatus_t status)
 }
 
 //! An engine: a generator of the C API, of type Type
-template <hiprandRngType_t Type, unsigned long long DefaultSeed, bool Quasi>
+template <hiprandRngType_t Type, unsigned long long DefaultSeed, bool Quasi, typename Result = unsigned int>
 class engine {
 public:
-    using result_type = unsigned int;
+    using result_type = Result;
     using seed_type = unsigned long long;
     using offset_type = unsigned long long;
     using dimensions_num_type = unsigned int;
@@ -120,10 +120,16 @@ public:
     }
 
     //! Fills output with size values
-    void operator()(result_type *output, size_t size) { check(hiprandGenerate(generator_, output, size)); }
+    void operator()(result_type *output, size_t size)
+    {
+        if constexpr (std::is_same_v<Result, unsigned long long>)
+            check(hiprandGenerateLongLong(generator_, output, size));
+        else
+            check(hiprandGenerate(generator_, output, size));
+    }
 
     static constexpr result_type min() { return 0; }
-    static constexpr result_type max() { return ~0u; }
+    static constexpr result_type max() { return ~result_type(0); }
 
     hiprandGenerator_t generator_ = nullptr;
 };
@@ -144,6 +150,11 @@ template <unsigned int DefaultNumDimensions = 1>
 using sobol32_engine = detail::engine<HIPRAND_RNG_QUASI_SOBOL32, DefaultNumDimensions, true>;
 template <unsigned int DefaultNumDimensions = 1>
 using scrambled_sobol32_engine = detail::engine<HIPRAND_RNG_QUASI_SCRAMBLED_SOBOL32, DefaultNumDimensions, true>;
+template <unsigned int DefaultNumDimensions = 1>
+using sobol64_engine = detail::engine<HIPRAND_RNG_QUASI_SOBOL64, DefaultNumDimensions, true, unsigned long long>;
+template <unsigned int DefaultNumDimensions = 1>
+using scrambled_sobol64_engine =
+    detail::engine<HIPRAND_RNG_QUASI_SCRAMBLED_SOBOL64, DefaultNumDimensions, true, unsigned long long>;
 
 using xorwow = xorwow_engine<>;
 using philox4x32_10 = philox4x32_10_engine<>;
@@ -152,12 +163,16 @@ using mtgp32 = mtgp32_engine<>;
 using mt19937 = mt19937_engine<>;
 using sobol32 = sobol32_engine<>;
 using scrambled_sobol32 = scrambled_sobol32_engine<>;
+using sobol64 = sobol64_engine<>;
+using scrambled_sobol64 = scrambled_sobol64_engine<>;
 using default_random_engine = xorwow;
 
-//! Unsigned integers over their whole range
+//! Unsigned integers over their whole range: 32 bits, or 64 from the 64-bit
+//! Sobol' engines
 template <typename IntType = unsigned int>
 class uniform_int_distribution {
-    static_assert(std::is_same_v<IntType, unsigned int>, "cuda4cpu: hipRAND's uniform integers are unsigned int");
+    static_assert(std::is_same_v<IntType, unsigned int> || std::is_same_v<IntType, unsigned long long>,
+                  "cuda4cpu: hipRAND's uniform integers are unsigned int or unsigned long long");
 
 public:
     using result_type = IntType;
@@ -168,7 +183,10 @@ public:
     template <typename Generator>
     void operator()(Generator &g, IntType *output, size_t size)
     {
-        detail::check(hiprandGenerate(g.generator_, output, size));
+        if constexpr (std::is_same_v<IntType, unsigned long long>)
+            detail::check(hiprandGenerateLongLong(g.generator_, output, size));
+        else
+            detail::check(hiprandGenerate(g.generator_, output, size));
     }
 };
 

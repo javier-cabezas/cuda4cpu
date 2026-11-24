@@ -173,6 +173,9 @@ NVCC_OPTIONS = {
 
 # Libraries that libcuda4cpu provides
 NVCC_PROVIDED_LIBRARIES = {'cudart', 'cudart_static', 'cuda', 'cudadevrt', 'nvToolsExt', 'nvtx3interop'}
+# What libcuda4cpu is, for every driver: -l of one is dropped, so that a real
+# CUDA or ROCm library that a -L finds isn't linked instead
+PROVIDED_LIBRARIES = NVCC_PROVIDED_LIBRARIES | {'curand', 'curand_static', 'amdhip64', 'hiprand'}
 
 # nvcc's warning kinds, the value of its -Werror
 NVCC_WARNING_KINDS = {'cross-execution-space-call', 'reorder', 'default-stream-launch', 'missing-launch-bounds',
@@ -727,6 +730,12 @@ def main(argv):
                 continue
             if arg.startswith('-std='):
                 arg = raise_standard(arg)
+            if arg == '-l' and i + 1 < len(argv) and argv[i + 1] in PROVIDED_LIBRARIES:
+                i += 2
+                continue
+            if arg.startswith('-l') and arg[2:] in PROVIDED_LIBRARIES:
+                i += 1
+                continue
             if arg == '-x' and i + 1 < len(argv) or arg.startswith('-x') and len(arg) > 2:
                 value = argv[i + 1] if arg == '-x' else arg[2:]
                 i += 2 if arg == '-x' else 1
@@ -788,9 +797,9 @@ def main(argv):
 
         back = []
         if links:
-            # The toolkit's libraries (-lcudart, -lcurand, -lamdhip64, ...)
-            # are linker scripts for libcuda4cpu
-            back = ['-L' + LIBRARY_DIR, '-L' + os.path.join(TOOLKIT, 'lib64'), '-L' + os.path.join(TOOLKIT, 'lib'),
+            # The toolkit's libraries are linker scripts for libcuda4cpu, for
+            # those named by path (CMake's CUDA::curand)
+            back = ['-L' + os.path.join(TOOLKIT, 'lib64'), '-L' + os.path.join(TOOLKIT, 'lib'), '-L' + LIBRARY_DIR,
                     '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
 
         return compile_sources([compiler] + front + args + back, request, dict(os.environ, **{RUNNING: '1'}), args,

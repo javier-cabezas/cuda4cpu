@@ -378,9 +378,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `include` to the headers, and `lib64` has `libcudart.so`,
   `libcudart_static.a`, `libcuda.so`, `libcurand.so` and
   `libcurand_static.a` as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
-  they resolve through `-L` wherever it's installed; every driver links
-  with `-L` the toolkit's `lib64` and `lib`, so `-lcudart`, `-lcurand`,
-  `-lamdhip64` and `-lhiprand` work), next to links to libcuda4cpu and its soname, and an empty
+  they resolve through `-L` wherever it's installed, for libraries named
+  by path, as CMake's `CUDA::curand`; every driver drops `-l` of the
+  libraries libcuda4cpu provides, `PROVIDED_LIBRARIES` (`cudart`, `curand`,
+  `amdhip64`, `hiprand`, ...), so that a real one a `-L` finds isn't linked,
+  and links with `-L` the toolkit's `lib64` and `lib` before libcuda4cpu's
+  directory), next to links to libcuda4cpu and its soname, and an empty
   `libcudadevrt.a`. `nvvm/libdevice` is empty: CMake checks it exists.
   `bin/cuda4cpu-c++` and `cuda4cpu.cmake` (from
   `cmake/cuda4cpu-toolchain.cmake`) are a toolchain file for projects with
