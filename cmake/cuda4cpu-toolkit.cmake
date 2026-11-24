@@ -20,7 +20,8 @@
 # A directory laid out like a CUDA toolkit, for build systems written for
 # nvcc, which find it through CUDA_PATH, CUDA_HOME or their own variable
 # (Rodinia's CUDA_DIR): bin/nvcc is cuda4cpu-nvcc, include has cuda4cpu's
-# headers, and lib64's libcudart, libcudart_static and libcuda are linker
+# headers, and lib64's libcudart, libcudart_static, libcuda, libcurand and
+# libcurand_static (and lib's libamdhip64 and libhiprand) are linker
 # scripts that link libcuda4cpu (-lcuda4cpu, through a link to it in lib64,
 # which -L<toolkit>/lib64 finds wherever cuda4cpu is installed) and its
 # OpenMP runtime, for programs linked by the host compiler. Those find
@@ -75,7 +76,8 @@ function(cuda4cpu_toolkit directory nvcc include libdir)
         list(APPEND inputs ${NUMA_LIBRARY})
     endif()
     list(JOIN inputs " " inputs)
-    foreach(name IN ITEMS lib64/libcudart.so lib64/libcudart_static.a lib64/libcuda.so lib/libamdhip64.so)
+    foreach(name IN ITEMS lib64/libcudart.so lib64/libcudart_static.a lib64/libcuda.so lib64/libcurand.so
+                          lib64/libcurand_static.a lib/libamdhip64.so lib/libhiprand.so)
         file(WRITE ${directory}/${name} "/* cuda4cpu: the CUDA and HIP runtime is libcuda4cpu */\nINPUT(${inputs})\n")
     endforeach()
 

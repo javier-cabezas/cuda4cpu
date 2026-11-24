@@ -788,7 +788,10 @@ def main(argv):
 
         back = []
         if links:
-            back = ['-L' + LIBRARY_DIR, '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
+            # The toolkit's libraries (-lcudart, -lcurand, -lamdhip64, ...)
+            # are linker scripts for libcuda4cpu
+            back = ['-L' + LIBRARY_DIR, '-L' + os.path.join(TOOLKIT, 'lib64'), '-L' + os.path.join(TOOLKIT, 'lib'),
+                    '-Wl,-rpath,' + LIBRARY_DIR, '-lcuda4cpu']
 
         return compile_sources([compiler] + front + args + back, request, dict(os.environ, **{RUNNING: '1'}), args,
                                renamed)

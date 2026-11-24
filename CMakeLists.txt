@@ -105,6 +105,8 @@ install(FILES tools/cuda4cpu-gdb.py DESTINATION ${CMAKE_INSTALL_DATADIR}/cuda4cp
 # The reference, which cuda4cpu-mcp's capabilities tool reads
 file(GLOB cuda4cpu_docs ${PROJECT_SOURCE_DIR}/docs/*.md)
 install(FILES ${cuda4cpu_docs} DESTINATION ${CMAKE_INSTALL_DOCDIR})
+# The licenses: cuda4cpu's, and those of what it includes
+install(FILES LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 install(TARGETS cuda4cpu
         EXPORT cuda4cpu-targets

@@ -88,8 +88,13 @@
   not 64-lane wavefronts (CDNA) and their builtins, and the matrix
   operations only with Clang. See
   [HIP](hip.md#hips-amd-platform).
+- **cuRAND gives CUDA's numbers only for XORWOW and Philox4_32_10**, as
+  integers and uniform floats. Its other generators and distributions are
+  distributed as CUDA's, but their values differ. MTGP32's device API isn't
+  provided, and its host generator is `std::mt19937`. See
+  [features](features.md#libraries).
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
-  the sub-byte types of `wmma::experimental`, inline PTX, and the driver
-  API. [Compatibility with real CUDA and HIP
+  the sub-byte types of `wmma::experimental`, inline PTX, the driver API,
+  and CUDA's libraries other than cuRAND (cuBLAS, cuFFT, Thrust, CUB, ...). [Compatibility with real CUDA and HIP
   code](compatibility.md) shows which programs each
   one blocks.

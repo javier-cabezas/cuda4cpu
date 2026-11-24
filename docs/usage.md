@@ -158,7 +158,7 @@ In the build tree, it's `build/<preset>/toolkit/cuda4cpu.cmake`. It makes
 include path), and programs get an rpath to libcuda4cpu. CMake's CUDA
 architectures, separable compilation (`CUDA_SEPARABLE_COMPILATION`, device
 linking), `CUDA_STANDARD` and the toolkit's runtime target
-(`CUDA::cudart`) work; libraries that cuda4cpu doesn't
+(`CUDA::cudart`, and `CUDA::curand`) work; libraries that cuda4cpu doesn't
 implement (cuBLAS, ...) aren't found. With it, all 43 of NVIDIA's samples that
 pass in the compatibility suite build with their own `CMakeLists.txt` and
 pass.

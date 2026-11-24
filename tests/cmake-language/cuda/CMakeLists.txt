@@ -40,3 +40,7 @@ set_target_properties(host PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
 add_executable(single single.cu)
 target_compile_features(single PRIVATE cuda_std_17)
+
+# cuRAND, as CMake finds CUDA's libraries
+add_executable(random random.cu)
+target_link_libraries(random PRIVATE CUDA::curand)

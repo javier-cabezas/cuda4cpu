@@ -239,9 +239,10 @@ UNSUPPORTED = [
      r'(>|: No such file)',
      'of libcu++ (<cuda/...>, cuda::std), only <cuda/barrier>, <cuda/pipeline>, <cuda/cmath> and '
      '<cuda/std/type_traits> are provided'),
-    (r'cublas|cufft|curand|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|thrust/|cub/|hipblas|hipfft|rocblas|'
-     r'hiprand|rocrand|hipcub',
-     'the CUDA and ROCm libraries (cuBLAS, cuFFT, cuRAND, Thrust, CUB, ...) are not provided'),
+    (r'cublas|cufft|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|thrust/|cub/|hipblas|hipfft|rocblas|'
+     r'rocrand|hipcub|curand_mtgp32',
+     'of the CUDA and ROCm libraries, only cuRAND and hipRAND are provided (not cuBLAS, cuFFT, Thrust, CUB, '
+     'rocRAND\'s own API, or MTGP32\'s device API, ...)'),
     (r'cuda_pipeline(_primitives)?\.h|__pipeline_(memcpy_async|commit|wait_prior)',
      'the __pipeline_* primitives (cuda_pipeline.h) are not '
      'implemented: use cuda::memcpy_async with a cuda::pipeline'),
