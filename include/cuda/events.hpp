@@ -74,7 +74,7 @@ cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end)
 static inline
 cudaError_t cudaEventQuery(cudaEvent_t /* event */)
 {
-    return cudaSuccess;
+    return detail::check_sticky_error();
 }
 
 }
@@ -124,7 +124,7 @@ cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned
 static inline
 cudaError_t cudaEventSynchronize(cudaEvent_t /* event */)
 {
-    return cudaSuccess;
+    return detail::check_sticky_error();
 }
 
 }

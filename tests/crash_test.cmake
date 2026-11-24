@@ -30,7 +30,7 @@ set(cases
     "after_barrier|CUDA thread \\(5, 1, 0\\) of block \\(1, 2, 0\\) made an invalid memory access at address 0x[0-9a-f]+"
     "overflow|CUDA thread \\(5, 0, 0\\) of block \\(0, 0, 0\\) overflowed its stack of [0-9]+ bytes"
     "divide|CUDA thread \\(2, 0, 0\\) of block \\(0, 0, 0\\) divided an integer by zero"
-    "assert|CUDA thread \\(9, 0, 0\\) of block \\(0, 0, 0\\) aborted \\(a failed assert\\(\\), or a call to abort\\(\\)\\)"
+    "abort|CUDA thread \\(9, 0, 0\\) of block \\(0, 0, 0\\) aborted \\(a call to abort\\(\\), or an uncaught exception\\)"
     "own_handler|CUDA thread \\(17, 0, 0\\) of block \\(3, 0, 0\\) made an invalid memory access at address 0x[0-9a-f]+")
 
 foreach(case IN LISTS cases)

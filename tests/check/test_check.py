@@ -78,6 +78,17 @@ class Sources(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn('[fails in the default order]', result.stdout)
 
+    def test_failed_assert(self):
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'asserts.cu'), 'w') as f:
+                f.write('#include <cassert>\n'
+                        '__global__ void k(int n) { assert(int(threadIdx.x) < n); }\n'
+                        'int main() { k<<<1, 8>>>(6); return 0; }\n')
+            result = check('--no-sanitizers', 'asserts.cu', cwd=work)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('[failed assert in a kernel] assert(int(threadIdx.x) < n) failed in void k(int) at '
+                          'asserts.cu:2', result.stdout)
+
     def test_compiler_options_and_relative_paths(self):
         with tempfile.TemporaryDirectory() as work:
             with open(os.path.join(work, 'size.cu'), 'w') as f:

@@ -27,7 +27,7 @@ passing. Today:
 
 | Suite | Pass | Doesn't pass yet |
 |---|---|---|
-| cuda-samples | 46 of 66 (1 more waives itself, and 5 are skipped as too slow) | 14 |
+| cuda-samples | 47 of 66 (1 more waives itself, and 5 are skipped as too slow) | 13 |
 | Rodinia | 10 of 11 | 1 (needs OpenGL) |
 | rocm-examples | 84 of 89 | 5 |
 
@@ -38,7 +38,7 @@ Most of what's missing is a few features:
 | 10 | Textures and surfaces |
 | 2 | Dynamic parallelism (kernels that launch kernels) |
 | 2 | Inline PTX |
-| 1 each | green contexts, device-side `assert` reported as an error, OpenGL |
+| 1 each | green contexts, OpenGL |
 
 `low_precision_float_fp8` builds, but converts only on AMD's gfx94x GPUs:
 it reads the device's `gcnArchName`, and on any other device prints that it

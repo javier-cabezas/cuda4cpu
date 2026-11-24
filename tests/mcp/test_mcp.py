@@ -464,6 +464,22 @@ __global__ void kernel(int *d)
         self.assertIn('overflow', finding['message'])
         self.assertEqual(finding['locations'][0], {'file': 'overflow.cu', 'line': 7})
 
+    def test_failed_assert(self):
+        kernel = '''#include <cassert>
+__global__ void kernel(int *d)
+{
+    assert(d[blockIdx.x * 64 + threadIdx.x] != 70);
+}
+'''
+        body = 'if (cudaDeviceSynchronize() != cudaErrorAssert) return 3;'
+        content = self.check(files={'asserts.cu': kernel_program(body, kernel)}, sanitizers=False)
+        finding = [f for f in content['findings'] if f['kind'] == 'failed assert in a kernel'][0]
+        self.assertEqual(finding['locations'], [{'file': 'asserts.cu', 'line': 6}])
+        self.assertEqual(finding['first_thread'], '(6, 0, 0) of block (1, 0, 0)')
+        self.assertEqual(finding['threads'], 1)
+        self.assertIn('d[blockIdx.x * 64 + threadIdx.x] != 70', finding['message'])
+        self.assertEqual(content['verdict'], 'problems found')
+
     def test_failure_in_every_order(self):
         content = self.check(files={'fails.cu': CORRECT.replace('63 - i % 64', '62 - i % 64')}, sanitizers=False)
         self.assertEqual(self.kinds(content), ['fails in the default order'])

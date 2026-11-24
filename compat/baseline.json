@@ -42,7 +42,7 @@
   "cuda-samples/scalarProd": "passed",
   "cuda-samples/scan": "passed",
   "cuda-samples/shfl_scan": "passed",
-  "cuda-samples/simpleAssert": "crashed",
+  "cuda-samples/simpleAssert": "passed",
   "cuda-samples/simpleAttributes": "waived",
   "cuda-samples/simpleCallback": "passed",
   "cuda-samples/simpleCooperativeGroups": "passed",

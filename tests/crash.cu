@@ -24,7 +24,7 @@
 // the signal (or exits in its own handler).
 
 #undef NDEBUG
-#include <cassert>
+#include <cstdlib>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -66,9 +66,10 @@ __global__ void divide(int *p, int divisor)
         p[0] = 7 / divisor;
 }
 
-__global__ void asserts(int *p)
+__global__ void aborts(int *p)
 {
-    assert(threadIdx.x != 9);
+    if (threadIdx.x == 9)
+        std::abort();
     p[threadIdx.x] = 1;
 }
 
@@ -96,9 +97,9 @@ int main(int argc, char **argv)
         LAUNCH_LINE(); overflow<<<1, 32>>>(p, depth);
     } else if (std::strcmp(what, "divide") == 0) {
         LAUNCH_LINE(); divide<<<1, 32>>>(p, zero);
-    } else if (std::strcmp(what, "assert") == 0) {
+    } else if (std::strcmp(what, "abort") == 0) {
         void *args[] = {&p};
-        LAUNCH_LINE(); cudaLaunchKernel(asserts, dim3(1), dim3(32), args);
+        LAUNCH_LINE(); cudaLaunchKernel(aborts, dim3(1), dim3(32), args);
     } else if (std::strcmp(what, "own_handler") == 0) {
         std::signal(SIGSEGV, own_handler);
         LAUNCH_LINE(); invalid_access<<<4, 32>>>(p);

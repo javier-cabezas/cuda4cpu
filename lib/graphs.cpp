@@ -556,7 +556,10 @@ cudaError_t run(cudaGraphExec__ &exec)
         cudaError_t err = cudaSuccess;
         switch (n.type) {
         case cudaGraphNodeTypeKernel:
-            n.kernel->run(n.conf, n.cooperative);
+            // A failed assert() in it stops the graph (a sticky error)
+            err = n.kernel->run(n.conf, n.cooperative);
+            if (err == cudaSuccess)
+                err = detail::sticky_error();
             break;
         case cudaGraphNodeTypeMemcpy:
             err = detail::copy_3d(n.copy);
@@ -1354,6 +1357,8 @@ cudaError_t cudaGraphLaunch(cudaGraphExec_t graphExec, cudaStream_t stream)
         return detail::record_error(cudaErrorInvalidValue);
     if (detail::capturing(stream))
         return detail::record_error(cudaErrorStreamCaptureUnsupported);
+    if (cudaError_t sticky = detail::check_sticky_error())
+        return sticky;
     for (const auto &c : graphExec->conditions) {
         if (c->assign_default)
             c->value.store(c->default_value, std::memory_order_relaxed);

@@ -617,8 +617,11 @@ inline size_t thread_stack_size(const kernel_closure &kernel)
 
 //! Runs every block of a launch whose configuration is valid. Only the OS
 //! threads that get blocks acquire (and, the first time, create) fibers.
-inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
+inline cudaError_t run_grid(const launch_conf &conf, const kernel_closure &kernel)
 {
+    // After a failed assert() in a kernel, nothing runs (a sticky error)
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     const size_t nblocks = conf.nblocks();
     const size_t stack_size = thread_stack_size(kernel);
 
@@ -627,7 +630,7 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
     // fewer blocks than OS threads wake only as many as they have blocks.
     if (nblocks == 1) {
         thread_block::acquire(conf, stack_size).execute(kernel, conf.block_id(0));
-        return;
+        return cudaSuccess;
     }
     const size_t threads = std::min(nblocks, size_t(omp_get_max_threads()));
     const size_t chunk = chunk_size(nblocks, threads, kernel.block_time->load(std::memory_order_relaxed));
@@ -646,6 +649,7 @@ inline void run_grid(const launch_conf &conf, const kernel_closure &kernel)
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
     kernel.block_time->store(uint64_t(elapsed.count()) * threads / nblocks, std::memory_order_relaxed);
+    return cudaSuccess;
 }
 
 //! Most blocks a cooperative launch can have: one per multiprocessor, which
@@ -659,8 +663,10 @@ inline size_t max_cooperative_blocks()
 
 //! Runs every block of a cooperative launch at the same time, each one on its
 //! own OS thread, so that grid_group::sync() can wait for all of them
-inline void run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel)
+inline cudaError_t run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel)
 {
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     const size_t nblocks = conf.nblocks();
     const size_t stack_size = thread_stack_size(kernel);
     std::barrier<> grid{std::ptrdiff_t(nblocks)};
@@ -684,6 +690,7 @@ inline void run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel
             threads.emplace_back(run_block, i);
     }
     kernel.grid = nullptr;   // a graph node may run the same kernel without a cooperative launch
+    return cudaSuccess;
 }
 
 //
@@ -694,7 +701,7 @@ inline void run_grid_cooperative(const launch_conf &conf, kernel_closure &kernel
 
 struct bound_kernel {
     virtual ~bound_kernel() = default;
-    virtual void run(const launch_conf &conf, bool cooperative) = 0;
+    virtual cudaError_t run(const launch_conf &conf, bool cooperative) = 0;
     //! Pointers to the copies of the arguments, as cudaKernelNodeParams::kernelParams
     virtual void **params() = 0;
     //! The launch it runs
@@ -714,12 +721,9 @@ struct bound_kernel_impl final : bound_kernel {
         }, call.args);
     }
 
-    void run(const launch_conf &conf, bool cooperative) override
+    cudaError_t run(const launch_conf &conf, bool cooperative) override
     {
-        if (cooperative)
-            run_grid_cooperative(conf, call);
-        else
-            run_grid(conf, call);
+        return cooperative ? run_grid_cooperative(conf, call) : run_grid(conf, call);
     }
 
     void **params() override
@@ -764,8 +768,7 @@ inline cudaError_t launch_bound(std::unique_ptr<bound_kernel> kernel, const laun
 {
     if (capturing(stream))
         return capture_kernel(stream, conf, std::move(kernel), cooperative);
-    kernel->run(conf, cooperative);
-    return cudaSuccess;
+    return kernel->run(conf, cooperative);
 }
 
 }
@@ -900,6 +903,8 @@ cudaError_t launch_with_argument_array(void (*func)(Args...), dim3 grid, dim3 bl
 {
     if (!valid_launch(launch_conf{grid, block, shared_mem}))
         return record_error(cudaErrorInvalidConfiguration);
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
 
     launch(*func, grid, block, shared_mem, stream, site)
         .call(*static_cast<std::remove_reference_t<Args> *>(args[I])...);
@@ -915,6 +920,8 @@ inline cudaError_t launch_registered(const void *func, dim3 grid, dim3 block, vo
         return record_error(cudaErrorInvalidConfiguration);
     if (cooperative && conf.nblocks() > max_cooperative_blocks())
         return record_error(cudaErrorCooperativeLaunchTooLarge);
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     const kernel_binder bind = find_kernel(func);
     if (bind == nullptr)
         return record_error(cudaErrorInvalidDeviceFunction);
@@ -987,6 +994,8 @@ cudaError_t cuda4cpu_cudaLaunchCooperativeKernel(std::source_location site, void
             return detail::record_error(cudaErrorInvalidConfiguration);
         if (conf.nblocks() > detail::max_cooperative_blocks())
             return detail::record_error(cudaErrorCooperativeLaunchTooLarge);
+        if (const cudaError_t sticky = detail::check_sticky_error(); sticky != cudaSuccess)
+            return sticky;
         if (detail::capturing(stream)) {
             auto bound = detail::bind_arguments<Args...>(reinterpret_cast<const void *>(func), args);
             if (bound != nullptr)
@@ -997,8 +1006,7 @@ cudaError_t cuda4cpu_cudaLaunchCooperativeKernel(std::source_location site, void
         detail::kernel_call<void (*)(Args...), std::decay_t<Args>...>
             kernel(func, *static_cast<std::remove_reference_t<Args> *>(args[I])...);
         kernel.site = site;
-        detail::run_grid_cooperative(conf, kernel);
-        return cudaSuccess;
+        return detail::run_grid_cooperative(conf, kernel);
     }(std::index_sequence_for<Args...>{});
 }
 

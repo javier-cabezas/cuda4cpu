@@ -48,14 +48,30 @@ to find the access.
 ```
 
 Invalid memory accesses, stack overflows (with the stack's size and how to
-raise it), integer divisions by zero, illegal instructions and aborts, such
-as a failed `assert()`, are reported. The program then dies of the signal as
+raise it), integer divisions by zero, illegal instructions and calls to
+`abort()` are reported. The program then dies of the signal as
 it would without cuda4cpu (a core dump, or the program's own handler), and a
 debugger stops at the fault before the report. In optimized code, a CUDA
 thread's index may still be in a register when it crashes before a barrier,
 so cuda4cpu runs its block once more, each thread on its own, to find the
 thread. Under AddressSanitizer, the report of an error the sanitizer finds
 follows the sanitizer's, which has the line.
+
+**A failed `assert()` in a kernel** is CUDA's device-side assert. Each CUDA
+thread that fails it prints CUDA's message, and ends as if it returned. The
+block's other threads go on:
+
+```
+scan.cu:31: void scan(float*, int): block: [3,0,0], thread: [17,0,0] Assertion `i < n` failed.
+```
+
+The error is sticky, as on a GPU. The synchronizing calls
+(`cudaDeviceSynchronize`, `cudaStreamSynchronize`, ...), copies, memsets,
+launches, graph launches and `cudaGetLastError` return `cudaErrorAssert` until
+`cudaDeviceReset()`, and blocks and launches that haven't started don't
+run. A failed `assert()` in host code aborts, as always. `cuda4cpu-check`
+and the MCP server's `check` report it as a finding at the assert's line,
+whatever the program does next.
 
 **Missing `__syncthreads()`: `CUDA4CPU_SCHEDULE`.** Between barriers, the
 threads of a block run one after another, in index order by default. A missing

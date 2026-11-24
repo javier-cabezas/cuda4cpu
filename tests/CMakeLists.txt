@@ -81,6 +81,15 @@ cuda4cpu_add_cuda_sources(crash crash.cu)
 add_test(NAME crash
          COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:crash> -P ${CMAKE_CURRENT_SOURCE_DIR}/crash_test.cmake)
 
+# A failed assert() in a kernel: CUDA's message, and a sticky cudaErrorAssert.
+# In every order, since the failing thread ends wherever it is.
+add_executable(device_assert)
+set_target_properties(device_assert PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(device_assert device_assert.cu)
+add_test(NAME device_assert COMMAND device_assert)
+add_test(NAME device_assert_random COMMAND device_assert)
+set_tests_properties(device_assert_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:7")
+
 add_executable(memory_checks)
 set_target_properties(memory_checks PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(memory_checks memory_checks.cu)

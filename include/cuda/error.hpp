@@ -38,6 +38,19 @@ inline cudaError_t record_error(cudaError_t err)
     return err;
 }
 
+//! The error of a failed assert() in a kernel (cudaErrorAssert), or
+//! cudaSuccess. As CUDA's sticky errors, it stays until cudaDeviceReset():
+//! launches don't run, and the synchronizing calls, copies, memsets and
+//! cudaGetLastError return it. Defined in the library, with the assert.
+cudaError_t sticky_error() noexcept;
+void reset_sticky_error() noexcept;
+
+//! The sticky error, recorded as the last error, or cudaSuccess
+inline cudaError_t check_sticky_error()
+{
+    return record_error(sticky_error());
+}
+
 }
 
 inline namespace cuda_api {
@@ -49,14 +62,17 @@ cudaError_t cudaGetLastError()
 {
     cudaError_t err = detail::last_error;
     detail::last_error = cudaSuccess;
-    return err;
+    // A sticky error stays
+    const cudaError_t sticky = detail::sticky_error();
+    return sticky != cudaSuccess ? sticky : err;
 }
 
 //! Returns the last error produced by a runtime call on this thread
 static inline
 cudaError_t cudaPeekAtLastError()
 {
-    return detail::last_error;
+    const cudaError_t sticky = detail::sticky_error();
+    return sticky != cudaSuccess ? sticky : detail::last_error;
 }
 
 static inline
