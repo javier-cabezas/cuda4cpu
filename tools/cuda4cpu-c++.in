@@ -460,6 +460,20 @@ def include_dirs(argv, system=False):
     return list(dict.fromkeys(result))
 
 
+def without_trailing_x_none(args):
+    """args without the last -x none if no input file follows it: Clang
+    warns that it has no effect (an error with -Werror), and each rewritten
+    source is followed by one"""
+    last = max((i for i in range(len(args) - 1) if args[i] == '-x' and args[i + 1] == 'none'), default=None)
+    if last is None:
+        return args
+    for i in range(last + 2, len(args)):
+        value = i > 0 and (args[i - 1] in OPTIONS_WITH_VALUE or args[i - 1] == '-x')
+        if not args[i].startswith('-') and not value:
+            return args
+    return args[:last] + args[last + 2:]
+
+
 def with_shadow_mirrors(args, shadow_dirs):
     """args with the shadow copies of each include directory right before
     it, with the same option (-I, -iquote, -isystem), so that every lookup
@@ -825,6 +839,7 @@ def main(argv):
         # The AMD platform's macros are for HIP sources, not CUDA ones
         hip_sources = any(language == 'hip' for *_, language in renamed_languages)
         front = ['-I' + INCLUDE_DIR] + (platform_defines if hip_sources else [])
+        args = without_trailing_x_none(args)
         args = with_shadow_mirrors(args, [shadow_dir for *_, shadow_dir in renamed])
         if not any(a.startswith('-std=') for a in args):
             front.append('-std=c++23')

@@ -166,9 +166,13 @@ class Translation(unittest.TestCase):
         self.assertIn('-Werror', compile_command('-Werror', '-c', PROGRAM))
 
     def test_c_sources_stay_c(self):
+        # The language ends with the file, before the next one; after the
+        # last one, Clang warns that -x none has no effect
+        command = compile_command('-c', 'helper.c', 'other.cpp')
+        self.assertEqual(command[command.index('helper.c') - 2:command.index('helper.c') + 4],
+                         ['-x', 'c', 'helper.c', '-x', 'none', 'other.cpp'])
         command = compile_command('-c', 'helper.c')
-        self.assertEqual(command[command.index('helper.c') - 2:command.index('helper.c') + 3],
-                         ['-x', 'c', 'helper.c', '-x', 'none'])
+        self.assertEqual(command[command.index('helper.c') - 2:], ['-x', 'c', 'helper.c'])
 
     def test_steps(self):
         link = commands('-dlink', '-arch=sm_80', '-Xcompiler', '-fPIC', 'a.o', 'b.o', '-o', 'dlink.o')
