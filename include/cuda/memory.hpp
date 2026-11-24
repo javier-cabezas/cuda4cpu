@@ -326,6 +326,8 @@ inline cudaError_t copy(void *dst, const void *src, size_t count, cudaMemcpyKind
 //! A copy between pitched memory, as described by a cudaMemcpy3DParms
 inline cudaError_t copy_3d(const cudaMemcpy3DParms &p)
 {
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     if (p.srcArray != nullptr || p.dstArray != nullptr)
         return record_error(cudaErrorNotSupported);
     if (p.kind < cudaMemcpyHostToHost || p.kind > cudaMemcpyDefault)
@@ -353,6 +355,8 @@ inline cudaError_t copy_3d(const cudaMemcpy3DParms &p)
 //! A memset of rows of elements of 1, 2 or 4 bytes, as described by a cudaMemsetParams
 inline cudaError_t fill(const cudaMemsetParams &p)
 {
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     if (p.elementSize != 1 && p.elementSize != 2 && p.elementSize != 4)
         return record_error(cudaErrorInvalidValue);
     if (p.width == 0 || p.height == 0)

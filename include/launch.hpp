@@ -920,6 +920,8 @@ inline cudaError_t launch_registered(const void *func, dim3 grid, dim3 block, vo
         return record_error(cudaErrorInvalidConfiguration);
     if (cooperative && conf.nblocks() > max_cooperative_blocks())
         return record_error(cudaErrorCooperativeLaunchTooLarge);
+    if (const cudaError_t sticky = check_sticky_error(); sticky != cudaSuccess)
+        return sticky;
     const kernel_binder bind = find_kernel(func);
     if (bind == nullptr)
         return record_error(cudaErrorInvalidDeviceFunction);
@@ -992,6 +994,8 @@ cudaError_t cuda4cpu_cudaLaunchCooperativeKernel(std::source_location site, void
             return detail::record_error(cudaErrorInvalidConfiguration);
         if (conf.nblocks() > detail::max_cooperative_blocks())
             return detail::record_error(cudaErrorCooperativeLaunchTooLarge);
+        if (const cudaError_t sticky = detail::check_sticky_error(); sticky != cudaSuccess)
+            return sticky;
         if (detail::capturing(stream)) {
             auto bound = detail::bind_arguments<Args...>(reinterpret_cast<const void *>(func), args);
             if (bound != nullptr)

@@ -498,8 +498,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     a failed `assert()` in a kernel prints CUDA's message for each failing
     thread, the others go on (between barriers too), `cudaErrorAssert` is
     sticky (synchronizing calls, queries, copies, memsets, launches that
-    don't run) until `cudaDeviceReset()`, later blocks of a grid don't run,
-    and a host `assert` still aborts (in a forked child).
+    don't run) until `cudaDeviceReset()`, later blocks of a grid don't run
+    (on one OS thread), a graph stops at the kernel that fails and doesn't
+    run again, a message longer than 1 KB keeps its end, and a host
+    `assert` still aborts (in a forked child). It `#undef`s `NDEBUG`, and
+    matches the function name whichever way the compiler spells it.
   - `memory_checks` (`memory_checks.cu`, `memory_checks_test.cmake`):
     `CUDA4CPU_INIT_MEMORY` fills every kind of allocation (graph allocations
     on each launch), and `CUDA4CPU_LEAK_CHECK=warn` reports exactly the
@@ -1044,8 +1047,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   sticky error (`detail::sticky_error()`, in the library) and ends the CUDA
   thread as a return does (`promote()` in direct mode, then
   `finish_current()`), abandoning its frames. `run_grid`,
-  `run_grid_cooperative`, `execute()` and the runtime calls that report
+  `run_grid_cooperative`, `execute()`, graph launches (and their kernel
+  nodes), copies and memsets, and the runtime calls that report
   asynchronous errors check the sticky error; `cudaDeviceReset` clears it.
+  In a crash rerun, a failed assert ends its thread without a second
+  message.
 - Crash reports (`detail::crash_report`): the first `thread_block::acquire`
   of a process installs handlers for `SIGSEGV`, `SIGBUS`, `SIGFPE`,
   `SIGILL` and `SIGABRT` (`SA_ONSTACK`, chaining to the handlers before

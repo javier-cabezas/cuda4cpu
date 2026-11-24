@@ -43,9 +43,14 @@
   error code, and rejected launches don't run. A failed `assert()` in a
   kernel is CUDA's: each thread that fails it prints CUDA's message and
   ends, and `cudaErrorAssert` is sticky until `cudaDeviceReset()`. The
-  synchronizing calls, 1D copies and memsets, launches and
+  synchronizing calls, copies, memsets, launches (graphs too) and
   `cudaGetLastError` return it, and launches and blocks that haven't started
-  don't run; other calls still work, where CUDA's would fail. Other
+  don't run; other calls still work, where CUDA's would fail. cuda4cpu
+  catches the assert through glibc's `__assert_fail`, which programs that
+  link cuda4cpu find first: code in a library that a program without it
+  loads with `dlopen` aborts instead, and so does a fully static program
+  (`-static`) that also uses glibc's `__assert_perror_fail`, which doesn't
+  link. Other
   device-side errors end the program: an invalid access is reported with
   the CUDA thread, its block and the kernel's launch, instead of making
   later calls return `cudaErrorIllegalAddress`.

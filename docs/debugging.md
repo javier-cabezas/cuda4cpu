@@ -67,7 +67,7 @@ scan.cu:31: void scan(float*, int): block: [3,0,0], thread: [17,0,0] Assertion `
 
 The error is sticky, as on a GPU. The synchronizing calls
 (`cudaDeviceSynchronize`, `cudaStreamSynchronize`, ...), copies, memsets,
-launches and `cudaGetLastError` return `cudaErrorAssert` until
+launches, graph launches and `cudaGetLastError` return `cudaErrorAssert` until
 `cudaDeviceReset()`, and blocks and launches that haven't started don't
 run. A failed `assert()` in host code aborts, as always. `cuda4cpu-check`
 and the MCP server's `check` report it as a finding at the assert's line,

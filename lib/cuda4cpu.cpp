@@ -1073,20 +1073,25 @@ struct crash_report {
     //! started don't run. The thread's frames are abandoned: an assert is a
     //! call to a [[noreturn]] function, before which AddressSanitizer
     //! unpoisons the stack, and threadIdx is stored.
-    //! Returns outside kernels
+    //! Returns outside kernels. In a block that runs again to find the
+    //! thread of a crash, the thread ends without a second message.
     static void failed_assert(const char *assertion, const char *file, unsigned line, const char *function)
     {
         thread_block *current = thread_block::Current_;
-        if (current == nullptr || crash_rerun.running)
+        if (current == nullptr)
             return;
         thread_block &block = *current;
-        const auto &t = thread_block::Vars_.thread_idx, &b = thread_block::Vars_.block_idx;
-        char text[1024];
-        const int size = std::snprintf(text, sizeof(text), "%s:%u: %s: block: [%u,%u,%u], thread: [%u,%u,%u] "
-                                       "Assertion `%s` failed.\n", file, line, function, b.x, b.y, b.z,
-                                       t.x, t.y, t.z, assertion);
-        ssize_t written = write(STDERR_FILENO, text, size_t(std::min(size, int(sizeof(text)) - 1)));
-        (void)written;
+        if (!crash_rerun.running) {
+            // One write, so that the lines of threads on other OS threads
+            // don't mix, however long the kernel's name is
+            const auto &t = thread_block::Vars_.thread_idx, &b = thread_block::Vars_.block_idx;
+            std::string text = std::string(file) + ":" + std::to_string(line) + ": " + function + ": block: [" +
+                               std::to_string(b.x) + "," + std::to_string(b.y) + "," + std::to_string(b.z) +
+                               "], thread: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," +
+                               std::to_string(t.z) + "] Assertion `" + assertion + "` failed.\n";
+            ssize_t written = write(STDERR_FILENO, text.data(), text.size());
+            (void)written;
+        }
         sticky.store(cudaErrorAssert);
         if (block.direct_)
             block.promote();
