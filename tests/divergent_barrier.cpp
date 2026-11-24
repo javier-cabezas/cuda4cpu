@@ -90,6 +90,15 @@ __global__ void divergent_warp(int *out)
         out[threadIdx.x] = int(__ballot_sync(0xffffffff, 1));
 }
 
+// Lanes at different reductions, with the same mask
+__global__ void divergent_reduction(int *out)
+{
+    if (threadIdx.x % 32 < 16)
+        out[threadIdx.x] = __reduce_add_sync(0xffffffff, int(threadIdx.x));
+    else
+        out[threadIdx.x] = __reduce_max_sync(0xffffffff, int(threadIdx.x));
+}
+
 // A lane that calls a warp operation with a mask that omits its own lane bit
 __global__ void missing_self_mask(int *out)
 {
@@ -107,6 +116,8 @@ int main(int argc, char **argv)
         launch(divergent_group, 4, 64).call(out);
     else if (argc > 1 && std::strcmp(argv[1], "warp") == 0)
         launch(divergent_warp, 4, 64).call(out);
+    else if (argc > 1 && std::strcmp(argv[1], "reduction") == 0)
+        launch(divergent_reduction, 4, 64).call(out);
     else if (argc > 1 && std::strcmp(argv[1], "warp_mask") == 0)
         launch(missing_self_mask, 4, 64).call(out);
     else

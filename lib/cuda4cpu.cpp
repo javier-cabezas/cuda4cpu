@@ -417,6 +417,16 @@ struct thread_block::fibers {
         op_ballot,
         op_match_any,
         op_match_all,
+        // __reduce_*_sync, one kind per thread_block::reduction, in its order,
+        // so that lanes at different reductions are divergent
+        op_reduce_add,
+        op_reduce_min_unsigned,
+        op_reduce_max_unsigned,
+        op_reduce_min_signed,
+        op_reduce_max_signed,
+        op_reduce_and,
+        op_reduce_or,
+        op_reduce_xor,
         op_converge
     };
 
@@ -429,6 +439,14 @@ struct thread_block::fibers {
         case op_ballot:    return "warp vote";
         case op_match_any: return "__match_any_sync";
         case op_match_all: return "__match_all_sync";
+        case op_reduce_add:          return "__reduce_add_sync";
+        case op_reduce_min_unsigned: return "__reduce_min_sync(unsigned)";
+        case op_reduce_max_unsigned: return "__reduce_max_sync(unsigned)";
+        case op_reduce_min_signed:   return "__reduce_min_sync(int)";
+        case op_reduce_max_signed:   return "__reduce_max_sync(int)";
+        case op_reduce_and:          return "__reduce_and_sync";
+        case op_reduce_or:           return "__reduce_or_sync";
+        case op_reduce_xor:          return "__reduce_xor_sync";
         default:           return "__activemask";
         }
     }
@@ -692,6 +710,34 @@ struct thread_block::fibers {
             for (uint32_t m = lanes; m != 0; m &= m - 1)
                 warp_result[base + unsigned(std::countr_zero(m))] = equal ? lanes : 0;
         }
+    }
+
+    //! Result of the __reduce_*_sync that thread tid waits at, over lanes:
+    //! the same for every lane
+    [[gnu::noinline]] void compute_reduction(size_t tid, uint32_t lanes)
+    {
+        const size_t base = tid / warp_size * warp_size;
+        const auto operation = thread_block::reduction(warp_kind[tid] - op_reduce_add);
+        uint32_t result = uint32_t(warp_value[base + unsigned(std::countr_zero(lanes))]);
+        for (uint32_t m = lanes & (lanes - 1); m != 0; m &= m - 1) {
+            const uint32_t v = uint32_t(warp_value[base + unsigned(std::countr_zero(m))]);
+            switch (operation) {
+            case thread_block::reduction::add:          result += v; break;
+            case thread_block::reduction::min_unsigned: result = std::min(result, v); break;
+            case thread_block::reduction::max_unsigned: result = std::max(result, v); break;
+            case thread_block::reduction::min_signed:
+                result = uint32_t(std::min(int32_t(result), int32_t(v)));
+                break;
+            case thread_block::reduction::max_signed:
+                result = uint32_t(std::max(int32_t(result), int32_t(v)));
+                break;
+            case thread_block::reduction::bit_and:      result &= v; break;
+            case thread_block::reduction::bit_or:       result |= v; break;
+            case thread_block::reduction::bit_xor:      result ^= v; break;
+            }
+        }
+        for (uint32_t m = lanes; m != 0; m &= m - 1)
+            warp_result[base + unsigned(std::countr_zero(m))] = result;
     }
 
     //! Whether the __activemask() call that lane a waits at runs before lane
@@ -1692,6 +1738,11 @@ uint64_t thread_block::warp_ballot(unsigned mask, bool predicate)
     return Current_->warp_op(fibers::op_ballot, mask, predicate ? 1 : 0, 0);
 }
 
+uint32_t thread_block::warp_reduce(unsigned mask, uint32_t value, reduction operation)
+{
+    return uint32_t(Current_->warp_op((unsigned char)(fibers::op_reduce_add + unsigned(operation)), mask, value, 0));
+}
+
 unsigned thread_block::warp_active_mask(uint64_t site)
 {
     return unsigned(Current_->warp_op(fibers::op_converge, ~0u, site, 0));
@@ -1873,6 +1924,16 @@ void thread_block::try_release_warp(size_t tid)
     case fibers::op_match_any:
     case fibers::op_match_all:
         f.compute_match(tid, lanes);
+        break;
+    case fibers::op_reduce_add:
+    case fibers::op_reduce_min_unsigned:
+    case fibers::op_reduce_max_unsigned:
+    case fibers::op_reduce_min_signed:
+    case fibers::op_reduce_max_signed:
+    case fibers::op_reduce_and:
+    case fibers::op_reduce_or:
+    case fibers::op_reduce_xor:
+        f.compute_reduction(tid, lanes);
         break;
     default:
         break;

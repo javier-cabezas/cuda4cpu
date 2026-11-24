@@ -56,6 +56,8 @@ struct counters {
     unsigned cas_winners;
     int cas_flag;
     unsigned exch;
+    alignas(4) unsigned short halves[2];
+    unsigned short half_flag;
 };
 
 // Every thread of every block updates the same counters, so blocks running in
@@ -81,6 +83,12 @@ __global__ void update(counters *c)
     if (atomicCAS(&c->cas_flag, 0, 1) == 0)
         atomicAdd(&c->cas_winners, 1);
     atomicExch(&c->exch, t);
+    // 16-bit compare-and-swap, on neighbors in one 32-bit word: an increment
+    // of one must not undo the other's
+    unsigned short *slot = &c->halves[t % 2];
+    for (unsigned short old = atomicCAS(slot, 0, 0), seen; (seen = atomicCAS(slot, old, old + 1)) != old;)
+        old = seen;
+    atomicCAS_block(&c->half_flag, 0, 7);
     __threadfence();
 }
 
@@ -123,6 +131,9 @@ int main()
     expect("atomicXor", c.xor_bits, 0u);    // each bit flipped n / 2 times, an even number
     expect("atomicCAS winners", c.cas_winners, 1u);
     expect("atomicExch", c.exch < n, true);
+    expect("atomicCAS(unsigned short) [0]", unsigned(c.halves[0]), (n / 2) % 65536);
+    expect("atomicCAS(unsigned short) [1]", unsigned(c.halves[1]), (n / 2) % 65536);
+    expect("atomicCAS_block(unsigned short)", unsigned(c.half_flag), 7u);
 
     std::vector<unsigned> hist(4, 0);
     launch(block_histogram, blocks, threads).call(hist.data());

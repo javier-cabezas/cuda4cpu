@@ -234,13 +234,17 @@ UNSUPPORTED = [
      'implemented'),
     (r'no such instruction|unknown pseudo-op|invalid instruction suffix|%laneid|%tid\b|\bptx\b',
      'inline PTX (asm(...) with PTX instructions) is not supported: it is GPU assembly'),
-    (r'cuda/(std|atomic|barrier|pipeline|cmath|ptx|annotated_ptr|memory_resource)|<cuda/',
-     'libcu++ headers (<cuda/...>, cuda::std) are not provided'),
+    # An include of one (not cuda4cpu's own include/cuda/*.hpp, in notes)
+    (r'cuda/(atomic|ptx|annotated_ptr|memory_resource|functional|stream_ref|std/(?!type_traits)\w+)'
+     r'(>|: No such file)',
+     'of libcu++ (<cuda/...>, cuda::std), only <cuda/barrier>, <cuda/pipeline>, <cuda/cmath> and '
+     '<cuda/std/type_traits> are provided'),
     (r'cublas|cufft|curand|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|thrust/|cub/|hipblas|hipfft|rocblas|'
      r'hiprand|rocrand|hipcub',
      'the CUDA and ROCm libraries (cuBLAS, cuFFT, cuRAND, Thrust, CUB, ...) are not provided'),
-    (r'__reduce_(add|min|max|and|or|xor)_sync', '__reduce_*_sync is not implemented yet'),
-    (r'memcpy_async|cuda::pipeline|__pipeline_', 'memcpy_async and pipelines are not implemented yet'),
+    (r'cuda_pipeline(_primitives)?\.h|__pipeline_(memcpy_async|commit|wait_prior)',
+     'the __pipeline_* primitives (cuda_pipeline.h) are not '
+     'implemented: use cuda::memcpy_async with a cuda::pipeline'),
     (r'GL/gl|glew|glut|cudaGraphicsGL|cudaGraphicsResource|EGL', 'graphics interop is out of scope'),
     (r"\bcu(Init|Device\w*|Ctx\w*|Module\w*|Mem\w*|Launch\w*|Stream\w*|Event\w*|Func\w*)\b.*(not declared|"
      r'was not declared|undeclared)',

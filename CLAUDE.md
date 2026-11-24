@@ -37,9 +37,14 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`launch_conf`, `system`, `thread_block`, `grid_launcher`, `launch()`,
   `dynamic_shared<T>()`). It holds only the launcher template and the inline
   built-in variable getters.
-- `include/warp.hpp`: `warpSize`, shuffles, votes, matches, `__activemask`
-  and `__syncwarp`, built on `thread_block::warp_shuffle`/`warp_ballot`/
-  `warp_match`/`warp_active_mask`/`syncwarp`.
+- `include/warp.hpp`: `warpSize`, shuffles, votes, reductions, matches,
+  `__activemask` and `__syncwarp`, built on
+  `thread_block::warp_shuffle`/`warp_ballot`/`warp_reduce`/`warp_match`/
+  `warp_active_mask`/`syncwarp`. Each `__reduce_*_sync` is a warp
+  operation of its own kind (`op_reduce_add`..., in the order of
+  `thread_block::reduction`), so that lanes at different ones are
+  divergent: the lane that releases it reduces the participating lanes'
+  values (`fibers::compute_reduction`).
 - `include/cooperative_groups.h` (+ `cooperative_groups/reduce.h`, `scan.h`):
   CUDA's cooperative groups, in the global namespace `cooperative_groups` as
   in CUDA, with helpers in `cuda4cpu::detail::cg`. `thread_group` is the
@@ -132,8 +137,19 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   since a tile of a partial warp has fewer threads than its size),
   so pipelines of a thread do nothing, and `cg::wait` syncs the group.
   `cuda::barrier` counts arrivals in atomics and waits with
-  `thread_block::interleave()`, so the block's other threads run. Only
-  thread-scope pipelines. `cuda/cmath` (`ceil_div`, `round_up`,
+  `thread_block::interleave()`, so the block's other threads run. A
+  pipeline that a group shares (`pipeline<thread_scope_block>`) has a
+  `detail::stage_barrier` pair per stage in `pipeline_shared_state`:
+  producers arrive at `produced_` when they commit and wait at `consumed_`
+  for the stage's last use to end; consumers the other way round. Each
+  thread counts its own commits and releases (`head_`, `tail_`), so `quit()`
+  (and the destructor) leaves each stage without arriving twice in one
+  phase; a second `quit()`, or one on a moved-from pipeline, does nothing.
+  `make_pipeline` (`detail::pipeline_maker`) syncs the group three times to
+  count producers and consumers, or once with a count of producers (as
+  libcu++'s, any threads: a thread's role is that of the calls it makes).
+  Only block scope: the stage barriers rely on the block's threads taking
+  turns on one OS thread. `cuda/cmath` (`ceil_div`, `round_up`,
   `round_down`) and `cuda/std/type_traits` (`cuda::std`, a using-directive
   of `::std`) are libcu++'s too; code in namespace `cuda` writes `::std::`.
 - `include/hip/`: HIP, on top of the CUDA API.
@@ -511,9 +527,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     without `-g`, and by offset without a symbolizer, with `llvm-symbolizer`
     alone (under a versioned name) and `addr2line` alone, and not memory
     that a static destructor or a destructor function frees
-  - `warp`: every shuffle and vote variant (widths, partial warps), exited
-    lanes, and lanes that branch to `__syncthreads()` (once, and in a loop)
-  - `atomics`: every atomic function, racing across blocks
+  - `warp`: every shuffle and vote variant (widths, partial warps), every
+    `__reduce_*_sync` (all lanes, and the odd lanes alone, in full and
+    partial warps), exited lanes, and lanes that branch to
+    `__syncthreads()` (once, and in a loop)
+  - `atomics`: every atomic function, racing across blocks (16-bit
+    `atomicCAS` on neighbors in one word)
   - `graphs` (`graphs.cu`, through the rewriter): stream capture with fork
     and join, explicit graphs with every node type, `cudaGraphExecUpdate`,
     conditional nodes, graph memory (reallocated at the same address after
@@ -560,7 +579,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     thread's pipeline, a block and its tiles (`cg::memcpy_async`), and a
     block's `cuda::barrier`, read by other threads after the wait; a barrier
     of half the block's threads with a completion function, over several
-    phases, with a thread that drops out; `<cuda/cmath>` and `cuda::std`.
+    phases, with a thread that drops out; double buffering through a
+    pipeline the block shares (each thread's copy and the block's), and a
+    warp of producers for the other threads, by count and by role, with
+    `quit()` (`async_copy_random` runs it in random order); `<cuda/cmath>`
+    and `cuda::std`.
   - `wmma` (`wmma.cu`): every type, shape and layout of A, B, C and D of
     `mma.h` against an exact host reference (small integers, and tf32
     inputs with low bits that must be ignored), fragments changed element by
@@ -592,7 +615,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     kernels with a missing `__syncthreads()` or `__syncwarp()` that the
     default order hides and the others expose
   - `divergent_barrier_{warn,ignore,error}` and
-    `divergent_warp_{warn,mask,ignore}`: the divergent barrier and warp
+    `divergent_warp_{warn,mask,ignore,reduction}`: the divergent barrier and warp
     operation checks in each mode (error mode must abort with a single
     report). `divergent_barrier_later`: one thread diverges after every thread
     has started, and the report must name its line numbers.

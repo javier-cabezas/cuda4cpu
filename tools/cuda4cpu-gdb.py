@@ -54,6 +54,14 @@ WARP_OP_NAMES = {
     'op_ballot': 'warp vote',
     'op_match_any': '__match_any_sync',
     'op_match_all': '__match_all_sync',
+    'op_reduce_add': '__reduce_add_sync',
+    'op_reduce_min_unsigned': '__reduce_min_sync',
+    'op_reduce_max_unsigned': '__reduce_max_sync',
+    'op_reduce_min_signed': '__reduce_min_sync',
+    'op_reduce_max_signed': '__reduce_max_sync',
+    'op_reduce_and': '__reduce_and_sync',
+    'op_reduce_or': '__reduce_or_sync',
+    'op_reduce_xor': '__reduce_xor_sync',
     'op_converge': '__activemask',
 }
 

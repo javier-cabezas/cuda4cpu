@@ -115,8 +115,9 @@ inline unsigned int atomicDec(unsigned int *address, unsigned int val)
     });
 }
 
-//! Stores (old == compare ? val : old) and returns old
-template <detail::atomic_arith T>
+//! Stores (old == compare ? val : old) and returns old. 16-bit too, as on
+//! GPUs of compute capability 7.0 and later.
+template <typename T> requires detail::atomic_arith<T> || std::is_same_v<T, unsigned short int>
 inline T atomicCAS(T *address, std::type_identity_t<T> compare, std::type_identity_t<T> val)
 {
     detail::atomic(address).compare_exchange_strong(compare, val, std::memory_order_relaxed);

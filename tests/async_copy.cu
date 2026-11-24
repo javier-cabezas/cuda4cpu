@@ -171,6 +171,70 @@ __global__ void even_threads(int *phases, int *seen)
         *phases = counter;
 }
 
+//! Double buffering through a pipeline that the block shares: the block
+//! copies batch b + 1 into one stage while its threads read batch b from
+//! the other, each a value another thread copied
+constexpr int batches = 6, stages = 2;
+
+__global__ void through_shared_pipeline(const float *in, float *out)
+{
+    __shared__ float tile[stages][threads];
+    __shared__ cuda::pipeline_shared_state<cuda::thread_scope_block, stages> state;
+    const auto block = cg::this_thread_block();
+    auto pipe = cuda::make_pipeline(block, &state);
+    const unsigned t = threadIdx.x;
+    auto copy = [&](int b) {
+        pipe.producer_acquire();
+        // Each thread copies its own float, and the block copies its batch
+        // again, which the block's first thread makes
+        cuda::memcpy_async(&tile[b % stages][t], &in[b * threads + t], sizeof(float), pipe);
+        cuda::memcpy_async(block, tile[b % stages], &in[b * threads], sizeof(float) * threads, pipe);
+        pipe.producer_commit();
+    };
+    copy(0);
+    for (int b = 0; b < batches; ++b) {
+        if (b + 1 < batches)
+            copy(b + 1);
+        pipe.consumer_wait();
+        out[blockIdx.x * batches * threads + b * threads + t] = tile[b % stages][(t + 5 * b + 1) % threads];
+        pipe.consumer_release();
+    }
+}
+
+//! How many threads were the last to quit a pipeline
+__device__ int last_to_quit = 0;
+
+//! A pipeline whose producers (every fourth thread: a count of them, or the
+//! threads that say so) copy every batch, which the other threads read
+template <bool by_role>
+__global__ void producers_and_consumers(const float *in, float *out)
+{
+    __shared__ float tile[stages][threads];
+    __shared__ cuda::pipeline_shared_state<cuda::thread_scope_block, stages> state;
+    const auto block = cg::this_thread_block();
+    const unsigned t = threadIdx.x;
+    const bool producer = t % 4 == 0;
+    auto made = by_role ? cuda::make_pipeline(block, &state, producer ? cuda::pipeline_role::producer
+                                                                      : cuda::pipeline_role::consumer)
+                        : cuda::make_pipeline(block, &state, size_t(threads / 4));
+    auto pipe = std::move(made);        // a moved-from pipeline doesn't quit
+    for (int b = 0; b < batches; ++b) {
+        if (producer) {
+            pipe.producer_acquire();
+            for (unsigned i = t / 4; i < threads; i += threads / 4)
+                cuda::memcpy_async(&tile[b % stages][i], &in[b * threads + i], sizeof(float), pipe);
+            pipe.producer_commit();
+        } else {
+            pipe.consumer_wait();
+            out[b * threads + t] = tile[b % stages][(t * 7 + b) % threads];
+            pipe.consumer_release();
+        }
+    }
+    if (pipe.quit())
+        atomicAdd(&last_to_quit, 1);
+    EXPECT(!pipe.quit() && !made.quit());       // once only
+}
+
 int main()
 {
     std::vector<float> in(threads * 4), out(threads * 4);
@@ -222,6 +286,34 @@ int main()
         for (int round = 0; round < 3; ++round)
             wrong += t == 2 && round > 0 ? seen[t * 3 + round] != -1 : seen[t * 3 + round] != 1;
     EXPECT(wrong == 0);
+
+    {
+        std::vector<float> batch_in(batches * threads), batch_out(2 * batches * threads, -1.0f);
+        for (int i = 0; i < batches * threads; ++i)
+            batch_in[i] = float(i * 3 + 1);
+        through_shared_pipeline<<<2, threads>>>(batch_in.data(), batch_out.data());
+        wrong = 0;
+        for (int block = 0; block < 2; ++block)
+            for (int b = 0; b < batches; ++b)
+                for (int t = 0; t < threads; ++t)
+                    wrong += batch_out[block * batches * threads + b * threads + t] !=
+                             batch_in[b * threads + (t + 5 * b + 1) % threads];
+        EXPECT(wrong == 0);
+
+        for (bool by_role : {false, true}) {
+            std::fill(batch_out.begin(), batch_out.end(), -1.0f);
+            if (by_role)
+                producers_and_consumers<true><<<1, threads>>>(batch_in.data(), batch_out.data());
+            else
+                producers_and_consumers<false><<<1, threads>>>(batch_in.data(), batch_out.data());
+            wrong = 0;
+            for (int b = 0; b < batches; ++b)
+                for (int t = 0; t < threads; ++t)
+                    wrong += t % 4 != 0 && batch_out[b * threads + t] != batch_in[b * threads + (t * 7 + b) % threads];
+            EXPECT(wrong == 0);
+        }
+        EXPECT(last_to_quit == 2);
+    }
 
     if (errors == 0)
         std::printf("async_copy: PASS\n");
