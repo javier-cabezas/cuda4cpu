@@ -242,7 +242,8 @@ UNSUPPORTED = [
     (r'cublas|cufft|curand|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|thrust/|cub/|hipblas|hipfft|rocblas|'
      r'hiprand|rocrand|hipcub',
      'the CUDA and ROCm libraries (cuBLAS, cuFFT, cuRAND, Thrust, CUB, ...) are not provided'),
-    (r'__pipeline_(memcpy_async|commit|wait_prior)', 'the __pipeline_* primitives (cuda_pipeline.h) are not '
+    (r'cuda_pipeline(_primitives)?\.h|__pipeline_(memcpy_async|commit|wait_prior)',
+     'the __pipeline_* primitives (cuda_pipeline.h) are not '
      'implemented: use cuda::memcpy_async with a cuda::pipeline'),
     (r'GL/gl|glew|glut|cudaGraphicsGL|cudaGraphicsResource|EGL', 'graphics interop is out of scope'),
     (r"\bcu(Init|Device\w*|Ctx\w*|Module\w*|Mem\w*|Launch\w*|Stream\w*|Event\w*|Func\w*)\b.*(not declared|"

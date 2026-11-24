@@ -204,8 +204,8 @@ __global__ void through_shared_pipeline(const float *in, float *out)
 //! How many threads were the last to quit a pipeline
 __device__ int last_to_quit = 0;
 
-//! A pipeline whose producers (the first warp, or the threads that say so)
-//! copy every batch, which the other threads read
+//! A pipeline whose producers (every fourth thread: a count of them, or the
+//! threads that say so) copy every batch, which the other threads read
 template <bool by_role>
 __global__ void producers_and_consumers(const float *in, float *out)
 {
@@ -213,14 +213,15 @@ __global__ void producers_and_consumers(const float *in, float *out)
     __shared__ cuda::pipeline_shared_state<cuda::thread_scope_block, stages> state;
     const auto block = cg::this_thread_block();
     const unsigned t = threadIdx.x;
-    const bool producer = t < 32;
-    auto pipe = by_role ? cuda::make_pipeline(block, &state, producer ? cuda::pipeline_role::producer
+    const bool producer = t % 4 == 0;
+    auto made = by_role ? cuda::make_pipeline(block, &state, producer ? cuda::pipeline_role::producer
                                                                       : cuda::pipeline_role::consumer)
-                        : cuda::make_pipeline(block, &state, size_t(32));
+                        : cuda::make_pipeline(block, &state, size_t(threads / 4));
+    auto pipe = std::move(made);        // a moved-from pipeline doesn't quit
     for (int b = 0; b < batches; ++b) {
         if (producer) {
             pipe.producer_acquire();
-            for (unsigned i = t; i < threads; i += 32)
+            for (unsigned i = t / 4; i < threads; i += threads / 4)
                 cuda::memcpy_async(&tile[b % stages][i], &in[b * threads + i], sizeof(float), pipe);
             pipe.producer_commit();
         } else {
@@ -231,6 +232,7 @@ __global__ void producers_and_consumers(const float *in, float *out)
     }
     if (pipe.quit())
         atomicAdd(&last_to_quit, 1);
+    EXPECT(!pipe.quit() && !made.quit());       // once only
 }
 
 int main()
@@ -306,8 +308,8 @@ int main()
                 producers_and_consumers<false><<<1, threads>>>(batch_in.data(), batch_out.data());
             wrong = 0;
             for (int b = 0; b < batches; ++b)
-                for (int t = 32; t < threads; ++t)
-                    wrong += batch_out[b * threads + t] != batch_in[b * threads + (t * 7 + b) % threads];
+                for (int t = 0; t < threads; ++t)
+                    wrong += t % 4 != 0 && batch_out[b * threads + t] != batch_in[b * threads + (t * 7 + b) % threads];
             EXPECT(wrong == 0);
         }
         EXPECT(last_to_quit == 2);

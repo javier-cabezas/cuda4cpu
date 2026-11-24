@@ -158,6 +158,8 @@ static bool odd_warp(unsigned t)
 __global__ void reductions(int *out, unsigned *uout)
 {
     const unsigned t = threadIdx.x;
+    out += blockIdx.x * blockDim.x * nreductions;
+    uout += blockIdx.x * blockDim.x * nreductions;
     if (odd_warp(t) && t % 2 == 0)
         return;
     const unsigned mask = odd_warp(t) ? 0xaaaaaaaau : full;
@@ -219,10 +221,13 @@ int main()
 {
     // Full and partial warps
     for (unsigned nthreads : {128u, 100u, 7u}) {
-        std::vector<int> out(nthreads * nreductions, -1), expected;
-        std::vector<unsigned> uout(nthreads * nreductions, ~0u), uexpected;
+        std::vector<int> out(2 * nthreads * nreductions, -1), expected;
+        std::vector<unsigned> uout(2 * nthreads * nreductions, ~0u), uexpected;
         launch(reductions, 2, nthreads).call(out.data(), uout.data());
         expected_reductions(nthreads, expected, uexpected);
+        // Both blocks
+        expected.insert(expected.end(), expected.begin(), expected.end());
+        uexpected.insert(uexpected.end(), uexpected.begin(), uexpected.end());
         check("reductions (int)", out, expected);
         check("reductions (unsigned)", uout, uexpected);
     }

@@ -40,10 +40,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `include/warp.hpp`: `warpSize`, shuffles, votes, reductions, matches,
   `__activemask` and `__syncwarp`, built on
   `thread_block::warp_shuffle`/`warp_ballot`/`warp_reduce`/`warp_match`/
-  `warp_active_mask`/`syncwarp`. `__reduce_*_sync` is the `op_reduce` warp
-  operation, with the `thread_block::reduction` in `warp_src`: the lane
-  that releases it reduces the participating lanes' values
-  (`fibers::compute_reduction`).
+  `warp_active_mask`/`syncwarp`. Each `__reduce_*_sync` is a warp
+  operation of its own kind (`op_reduce_add`..., in the order of
+  `thread_block::reduction`), so that lanes at different ones are
+  divergent: the lane that releases it reduces the participating lanes'
+  values (`fibers::compute_reduction`).
 - `include/cooperative_groups.h` (+ `cooperative_groups/reduce.h`, `scan.h`):
   CUDA's cooperative groups, in the global namespace `cooperative_groups` as
   in CUDA, with helpers in `cuda4cpu::detail::cg`. `thread_group` is the
@@ -143,8 +144,12 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   for the stage's last use to end; consumers the other way round. Each
   thread counts its own commits and releases (`head_`, `tail_`), so `quit()`
   (and the destructor) leaves each stage without arriving twice in one
-  phase. `make_pipeline` (`detail::pipeline_maker`) syncs the group three
-  times to count producers and consumers. `cuda/cmath` (`ceil_div`, `round_up`,
+  phase; a second `quit()`, or one on a moved-from pipeline, does nothing.
+  `make_pipeline` (`detail::pipeline_maker`) syncs the group three times to
+  count producers and consumers, or once with a count of producers (as
+  libcu++'s, any threads: a thread's role is that of the calls it makes).
+  Only block scope: the stage barriers rely on the block's threads taking
+  turns on one OS thread. `cuda/cmath` (`ceil_div`, `round_up`,
   `round_down`) and `cuda/std/type_traits` (`cuda::std`, a using-directive
   of `::std`) are libcu++'s too; code in namespace `cuda` writes `::std::`.
 - `include/hip/`: HIP, on top of the CUDA API.
@@ -610,7 +615,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     kernels with a missing `__syncthreads()` or `__syncwarp()` that the
     default order hides and the others expose
   - `divergent_barrier_{warn,ignore,error}` and
-    `divergent_warp_{warn,mask,ignore}`: the divergent barrier and warp
+    `divergent_warp_{warn,mask,ignore,reduction}`: the divergent barrier and warp
     operation checks in each mode (error mode must abort with a single
     report). `divergent_barrier_later`: one thread diverges after every thread
     has started, and the report must name its line numbers.

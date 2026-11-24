@@ -86,9 +86,9 @@ __global__ void update(counters *c)
     // 16-bit compare-and-swap, on neighbors in one 32-bit word: an increment
     // of one must not undo the other's
     unsigned short *slot = &c->halves[t % 2];
-    for (unsigned short old = *slot, seen; (seen = atomicCAS(slot, old, (unsigned short)(old + 1))) != old;)
+    for (unsigned short old = atomicCAS(slot, 0, 0), seen; (seen = atomicCAS(slot, old, old + 1)) != old;)
         old = seen;
-    atomicCAS_block(&c->half_flag, (unsigned short)0, (unsigned short)7);
+    atomicCAS_block(&c->half_flag, 0, 7);
     __threadfence();
 }
 
