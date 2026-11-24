@@ -389,8 +389,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   `<datadir>/doc/cuda4cpu` for it.
   The same template is configured as `cuda4cpu-check` (`TOOL` is `check`,
   from `CUDA4CPU_TOOL`): `check_main` is `check`'s command line, on sources
-  (`Program`) or a program built already (`Prebuilt`, which skips the
-  sanitizer build and warns if the file doesn't name cuda4cpu), printing
+  (`Program`) or a program built already (`Prebuilt`, which warns if the
+  file doesn't name cuda4cpu; built with the sanitizers, which it finds by
+  their symbols, it is its own sanitizer build, and every run gets their
+  environment, `run_environment`), printing
   `summary_lines`, the JSON result, or GitHub annotations and a job summary
   (`--format github`, which the action's `check` input uses). It exits with
   0, 1 when it finds something, or 2 when the program can't be checked.

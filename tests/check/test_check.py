@@ -111,7 +111,7 @@ class Prebuilt(unittest.TestCase):
         self.assertIn('[depends on the thread order]', result.stdout)
         self.assertIn('(10 runs', result.stdout)                # no sanitizer build
         self.assertIn('run reverse: exit code 1', result.stdout)
-        self.assertIn('without the sanitizer build', result.stdout)
+        self.assertIn('built without AddressSanitizer and UBSan', result.stdout)
         self.assertNotIn('warning', result.stderr)
 
     def test_json(self):
@@ -131,6 +131,26 @@ class Prebuilt(unittest.TestCase):
             with open(summary) as f:
                 self.assertIn('### cuda4cpu-check: problems found', f.read())
 
+    def test_built_with_the_sanitizers(self):
+        """A program built with them is the sanitizer run: their errors stop
+        check, at the line, and their environment keeps leaks quiet"""
+        nvcc = os.path.join(os.path.dirname(CHECK), 'cuda4cpu-nvcc')
+        sanitize = ['-g', '-fsanitize=address,undefined']
+        bad = os.path.join(self.work, 'out_of_bounds')
+        subprocess.run([nvcc, *sanitize, os.path.join(BUGS, 'out_of_bounds.cu'), '-o', bad], check=True)
+        result = check(bad)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('[AddressSanitizer: allocation-overflow]', result.stdout)
+        self.assertIn('out_of_bounds.cu:27', result.stdout)
+        self.assertIn('(1 run,', result.stdout)
+        self.assertNotIn('fails in the default order', result.stdout)
+        good = os.path.join(self.work, 'vector_add')
+        subprocess.run([nvcc, *sanitize, os.path.join(SAMPLES, 'vector_add.cu'), '-o', good], check=True)
+        result = check(good)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('(11 runs', result.stdout)
+        self.assertNotIn('built without AddressSanitizer', result.stdout)
+
     def test_not_cuda4cpu(self):
         result = check(shutil.which('true'))
         self.assertEqual(result.returncode, 0)
@@ -148,11 +168,37 @@ class Annotations(unittest.TestCase):
                           'allocation-overflow::', result.stdout)
 
 
+    def test_with_another_working_directory(self):
+        """Locations stay relative to where check runs, not to -C"""
+        with tempfile.TemporaryDirectory() as work:
+            os.makedirs(os.path.join(work, 'src'))
+            os.makedirs(os.path.join(work, 'run'))
+            shutil.copy(os.path.join(BUGS, 'out_of_bounds.cu'), os.path.join(work, 'src'))
+            result = check('--format', 'github', '-C', 'run', 'src/out_of_bounds.cu', cwd=work,
+                           env={'GITHUB_WORKSPACE': work})
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('::error file=src/out_of_bounds.cu,line=27,', result.stdout)
+
+    def test_compile_errors_in_the_summary(self):
+        with tempfile.TemporaryDirectory() as work:
+            with open(os.path.join(work, 'bad.cu'), 'w') as f:
+                f.write('int main() { return undeclared | 1; }\n')
+            summary = os.path.join(work, 'summary.md')
+            result = check('--format', 'github', 'bad.cu', cwd=work,
+                           env={'GITHUB_WORKSPACE': work, 'GITHUB_STEP_SUMMARY': summary})
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('::error file=bad.cu,line=1,', result.stdout)
+            with open(summary) as f:
+                text = f.read()
+            self.assertIn('| compiler error | bad.cu:1 |', text)
+
+
 class Errors(unittest.TestCase):
 
     def test_usage(self):
         for arguments in ([], ['--seeds', 'x', 'a.cu'], ['-e', 'NOVALUE', 'a.cu'], ['-X', '-O2', '/bin/true'],
-                          ['a.cu', 'notes.txt']):
+                          ['-X', '', '/bin/true'], ['-X', '-I "unclosed', 'a.cu'], ['a.cu', 'notes.txt'],
+                          ['--timeout', 'nan', '/bin/true']):
             result = check(*arguments)
             self.assertEqual(result.returncode, 2, arguments)
             self.assertIn('error:', result.stderr, arguments)

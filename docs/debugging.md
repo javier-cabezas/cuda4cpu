@@ -193,8 +193,9 @@ $ cuda4cpu-check -X '-I include -DN=1024' scan.cu main.cpp -- --size 4096
 ```
 
 It can also check a program your build system made with cuda4cpu, as
-`compute-sanitizer` runs a program. It then skips the sanitizer build. Build
-the program with `-g -fsanitize=address,undefined` to get those checks too:
+`compute-sanitizer` runs a program. There's no sanitizer build then, but a
+program built with `-g -fsanitize=address,undefined` is one: its first run
+stops `check` if the sanitizers find an error, as the sanitizer build does.
 
 ```console
 $ cuda4cpu-check build/tests/scan --size 4096

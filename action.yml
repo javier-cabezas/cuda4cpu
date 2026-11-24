@@ -37,9 +37,10 @@ inputs:
     default: ''
   check:
     description: >
-      Arguments of cuda4cpu-check to run after installing, as a shell would
-      split them: sources (examples/scan.cu) or a program built already
-      (build/tests/scan --size 1024). The step fails if it finds a problem,
+      Arguments of cuda4cpu-check to run after installing, split into words
+      as a shell would, with quotes, but without expanding globs or
+      variables: sources (src/scan.cu src/main.cpp) or a program built
+      already (build/tests/scan --size 1024). The step fails if it finds a problem,
       and annotates the findings at their lines.
     required: false
     default: ''
@@ -107,6 +108,9 @@ runs:
         PREFIX: ${{ steps.install.outputs.prefix }}
       run: |
         set -euo pipefail
-        # The workflow's own input, split as its shell would
-        eval "arguments=($CHECK)"
+        # Split as a shell splits words, quotes included, but without running
+        # or expanding anything in them
+        python3 -c 'import os, shlex, sys
+        sys.stdout.write("".join(a + "\0" for a in shlex.split(os.environ["CHECK"])))' > "$RUNNER_TEMP/cuda4cpu-check-arguments"
+        mapfile -d '' arguments < "$RUNNER_TEMP/cuda4cpu-check-arguments"
         "$PREFIX/bin/cuda4cpu-check" --format github "${arguments[@]}"

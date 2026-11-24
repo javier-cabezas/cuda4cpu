@@ -106,7 +106,8 @@ def safe_name(name):
     return norm
 
 
-SOURCE_EXTENSIONS = ('.cu', '.hip', '.cpp', '.cc', '.cxx', '.c')
+# The drivers' (cuda4cpu-c++'s CXX_EXTENSIONS), and C
+SOURCE_EXTENSIONS = ('.cu', '.hip', '.cpp', '.cc', '.cxx', '.c++', '.cp', '.CPP', '.C', '.c')
 
 
 class Program:
@@ -115,6 +116,7 @@ class Program:
 
     def __init__(self, arguments, work):
         self.work = work
+        self.run_environment = {}   # for every run of the program
         self.sources = []           # paths to compile
         self.names = {}             # path in the work directory -> name given inline
         files = arguments.get('files') or {}
@@ -185,13 +187,17 @@ class Program:
 
 class Prebuilt:
     """A program built already, which check runs as it is (cuda4cpu-check
-    ./program): no sanitizer build, since there are no sources to build"""
+    ./program). There are no sources to build with the sanitizers, but a
+    program built with them (sanitized) is the sanitizer build too: it gets
+    their environment on every run, and their errors stop check."""
 
     def __init__(self, binary, arguments, work):
         self.binary = os.path.abspath(binary)
         if not os.path.isfile(self.binary) or not os.access(self.binary, os.X_OK):
             raise ToolError(f'{binary}: no such program')
         self.work = work
+        self.sanitized = file_contains(self.binary, (b'__asan_init', b'__ubsan_handle_'))
+        self.run_environment = dict(SANITIZER_ENVIRONMENT) if self.sanitized else {}
         self.sources = []
         self.names = {}
         self.language = None
@@ -204,7 +210,7 @@ class Prebuilt:
     def source_directories(self):
         # The program's sources are most likely where it is run from, or
         # next to it
-        return {self.cwd + os.sep, os.path.dirname(self.binary) + os.sep}
+        return {os.path.realpath(self.cwd) + os.sep, os.path.dirname(os.path.realpath(self.binary)) + os.sep}
 
     def display(self, path):
         return path
@@ -294,7 +300,7 @@ def compile_result(program, succeeded, output):
 
 def timeout_of(arguments):
     timeout = arguments.get('timeout_seconds', DEFAULT_TIMEOUT)
-    if not isinstance(timeout, (int, float)) or timeout <= 0:
+    if not isinstance(timeout, (int, float)) or not timeout > 0:          # NaN too
         raise ToolError('timeout_seconds must be a positive number')
     return min(float(timeout), MAX_TIMEOUT)
 
@@ -315,6 +321,7 @@ def execute(binary, program, arguments, environment):
         raise ToolError('environment must map names to values')
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in extra.items()})
+    env.update(program.run_environment)
     env.update(environment)
     stdin = arguments.get('stdin')
     timeout = timeout_of(arguments)
@@ -1388,7 +1395,7 @@ def github_escape(text, property=False):
     return text.replace(':', '%3A').replace(',', '%2C') if property else text
 
 
-def github_annotations(result, program):
+def github_annotations(result):
     """The findings as GitHub Actions' error annotations, at their lines
     when the file is in the workspace, and a summary for the job's page"""
     workspace = os.path.realpath(os.environ.get('GITHUB_WORKSPACE') or os.getcwd())
@@ -1398,7 +1405,7 @@ def github_annotations(result, program):
         for l in f.get('locations', []):
             if not l.get('file'):
                 continue
-            path = os.path.realpath(os.path.join(program.cwd, l['file']))
+            path = os.path.realpath(l['file'])          # relative to the current directory, if not absolute
             if path.startswith(workspace + os.sep):
                 where = (f'file={github_escape(os.path.relpath(path, workspace), True)},'
                          f'line={l["line"]},')
@@ -1408,7 +1415,7 @@ def github_annotations(result, program):
                      f'{github_escape(message)}')
     for d in result.get('diagnostics', []) if not result.get('compiled', True) else []:
         if d['severity'] == 'error' and d['file']:
-            path = os.path.realpath(os.path.join(program.cwd, d['file']))
+            path = os.path.realpath(d['file'])
             if path.startswith(workspace + os.sep):
                 lines.append(f'::error file={github_escape(os.path.relpath(path, workspace), True)},'
                              f'line={d["line"]},title=cuda4cpu-check%3A does not compile::'
@@ -1416,12 +1423,17 @@ def github_annotations(result, program):
     summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary_file:
         table = [f'### cuda4cpu-check: {result["verdict"]}', '']
-        if result.get('findings'):
+        def cell(text):
+            text = text.replace('\\', '\\\\').replace('|', '\\|')
+            return ' '.join(text.split())          # newlines and carriage returns too
+        rows = [(f['kind'], ', '.join(f'{l["file"]}:{l["line"]}' for l in f.get('locations', []) if l.get('file')),
+                 f['message']) for f in result.get('findings', [])]
+        if not result.get('compiled', True):
+            rows += [('compiler error', f'{d["file"]}:{d["line"]}' if d['file'] else '', d['message'])
+                     for d in result.get('diagnostics', []) if d['severity'] == 'error']
+        if rows:
             table += ['| Finding | Where | Message |', '| --- | --- | --- |']
-            for f in result['findings']:
-                where = ', '.join(f'{l["file"]}:{l["line"]}' for l in f.get('locations', []) if l.get('file'))
-                cell = lambda text: text.replace('|', '\\|').replace('\n', ' ')
-                table.append(f'| {cell(f["kind"])} | {cell(where)} | {cell(f["message"])} |')
+            table += [f'| {cell(kind)} | {cell(where)} | {cell(message)} |' for kind, where, message in rows]
         try:
             with open(summary_file, 'a') as out:
                 out.write('\n'.join(table) + '\n\n')
@@ -1430,20 +1442,27 @@ def github_annotations(result, program):
     return lines
 
 
-def uses_cuda4cpu(path):
-    """Whether the program links cuda4cpu: its name is in the dynamic
-    section, or its symbols in a static link. A script that runs the program
-    doesn't, and gets a warning only."""
+def file_contains(path, words):
+    """Whether the file has one of the words (bytes)"""
+    overlap = max(len(w) for w in words) - 1
     try:
         with open(path, 'rb') as f:
             previous = b''
             while chunk := f.read(1 << 20):
-                if b'cuda4cpu' in previous[-8:] + chunk:
+                window = previous[-overlap:] + chunk
+                if any(w in window for w in words):
                     return True
                 previous = chunk
     except OSError:
         pass
     return False
+
+
+def uses_cuda4cpu(path):
+    """Whether the program links cuda4cpu: its name is in the dynamic
+    section, or its symbols in a static link. A script that runs the program
+    doesn't, and gets a warning only."""
+    return file_contains(path, (b'cuda4cpu',))
 
 
 def check_main(argv):
@@ -1498,16 +1517,18 @@ def check_main(argv):
         try:
             with open(options.stdin) as f:
                 arguments['stdin'] = f.read()
-        except OSError as e:
-            parser.error(f'--stdin: {e}')
-    compiler_options = [o for group in options.compiler_options for o in shlex.split(group)]
+        except (OSError, UnicodeDecodeError) as e:
+            parser.error(f'--stdin: {e} (the input must be text)')
+    try:
+        compiler_options = [o for group in options.compiler_options for o in shlex.split(group)]
+    except ValueError as e:
+        parser.error(f'--compiler-options: {e}')
 
     prebuilt = not command[0].endswith(SOURCE_EXTENSIONS)
     if prebuilt:
-        if compiler_options or options.language:
+        if options.compiler_options or options.language:
             parser.error('--compiler-options and --language are for sources, not a program built already')
         arguments['args'] = command[1:]
-        arguments['sanitizers'] = False
     else:
         sources, rest = (command[:command.index('--')], command[command.index('--') + 1:]) if '--' in command \
             else (command, [])
@@ -1518,13 +1539,18 @@ def check_main(argv):
         if options.language:
             arguments['language'] = options.language
 
-    if prebuilt and os.path.isfile(command[0]) and not uses_cuda4cpu(command[0]):
-        print(f'cuda4cpu-check: warning: {command[0]} does not seem to be built with cuda4cpu (cuda4cpu-nvcc, '
-              'cuda4cpu-hipcc, cuda4cpu-c++), so the thread orders and memory fills have no effect on it',
-              file=sys.stderr)
     try:
         with tempfile.TemporaryDirectory(prefix='cuda4cpu-check-') as work:
-            program = Prebuilt(command[0], arguments, work) if prebuilt else Program(arguments, work)
+            if prebuilt:
+                program = Prebuilt(command[0], arguments, work)
+                if not uses_cuda4cpu(program.binary):
+                    print(f'cuda4cpu-check: warning: {command[0]} does not seem to be built with cuda4cpu '
+                          '(cuda4cpu-nvcc, cuda4cpu-hipcc, cuda4cpu-c++), so the thread orders and memory fills '
+                          'have no effect on it', file=sys.stderr)
+                # Its sanitizer run is the program itself, if it was built with them
+                arguments['sanitizers'] = program.sanitized and not options.no_sanitizers
+            else:
+                program = Program(arguments, work)
             result = check_program(program, arguments)
     except ToolError as e:
         print(f'cuda4cpu-check: error: {e}', file=sys.stderr)
@@ -1546,7 +1572,7 @@ def check_main(argv):
         print(json.dumps(result, indent=1))
     else:
         if options.format == 'github':
-            for line in github_annotations(result, program):
+            for line in github_annotations(result):
                 print(line)
         if not result.get('compiled', True):
             sys.stderr.write(result.get('compiler_output', ''))
@@ -1561,9 +1587,9 @@ def check_main(argv):
                 end = ('timed out' if r['timed_out'] else f'killed by {r["signal"]}' if r['signal'] else
                        f'exit code {r["exit_code"]}')
                 print(f'  run {r["order"]}: {end}, {r["seconds"]} s ({r["description"]})')
-        if prebuilt and not options.no_sanitizers:
-            print('  note: a program built already runs without the sanitizer build: build it with '
-                  '-g -fsanitize=address,undefined, or give its sources, for those checks')
+        if prebuilt and not program.sanitized and not options.no_sanitizers:
+            print('  note: this program was built without AddressSanitizer and UBSan: build it with '
+                  '-g -fsanitize=address,undefined, or give its sources, for those checks too')
         if result.get('caveat'):
             print(f'  {result["caveat"]}')
     if not result.get('compiled', True):
