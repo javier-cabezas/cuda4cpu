@@ -186,6 +186,56 @@ inline int __all_sync(unsigned mask, int predicate)
     return unsigned(result) == unsigned(result >> 32);
 }
 
+//
+// Reductions over the participating lanes (CUDA's for compute capability
+// 8.0): each lane gets the same result
+//
+
+inline unsigned __reduce_add_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::add);
+}
+
+inline int __reduce_add_sync(unsigned mask, int value)
+{
+    return int(thread_block::warp_reduce(mask, unsigned(value), thread_block::reduction::add));
+}
+
+inline unsigned __reduce_min_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::min_unsigned);
+}
+
+inline int __reduce_min_sync(unsigned mask, int value)
+{
+    return int(thread_block::warp_reduce(mask, unsigned(value), thread_block::reduction::min_signed));
+}
+
+inline unsigned __reduce_max_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::max_unsigned);
+}
+
+inline int __reduce_max_sync(unsigned mask, int value)
+{
+    return int(thread_block::warp_reduce(mask, unsigned(value), thread_block::reduction::max_signed));
+}
+
+inline unsigned __reduce_and_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::bit_and);
+}
+
+inline unsigned __reduce_or_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::bit_or);
+}
+
+inline unsigned __reduce_xor_sync(unsigned mask, unsigned value)
+{
+    return thread_block::warp_reduce(mask, value, thread_block::reduction::bit_xor);
+}
+
 //! Mask of the participating lanes whose value equals the caller's
 template <typename T>
 inline unsigned __match_any_sync(unsigned mask, T value)

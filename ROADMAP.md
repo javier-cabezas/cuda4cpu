@@ -13,9 +13,7 @@ one of these:
   `surf2Dwrite`, CUDA arrays): 10 programs.
 - **Dynamic parallelism**: kernels that launch kernels. 2 programs.
 - **Smaller API gaps:** green contexts, one program.
-- **Kernel language:** `__reduce_*_sync`, 16-bit integer atomics, the
-  sub-byte types of `wmma::experimental`, and pipelines that a group shares
-  (`cuda::pipeline<cuda::thread_scope_block>`).
+- **Kernel language:** the sub-byte types of `wmma::experimental`.
 - **Platforms:** CI on AArch64, where the portable context switch
   (`_setjmp`/`_longjmp`) is used but hasn't been tested yet, and an assembly
   context switch for it. macOS and Windows would need their own fiber stacks

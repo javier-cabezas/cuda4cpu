@@ -8,7 +8,10 @@
 - `__syncthreads()`, and dynamic shared memory through `dynamic_shared<T>()`
 - Warp functions: `__shfl_sync`, `__shfl_up_sync`, `__shfl_down_sync`,
   `__shfl_xor_sync` (any trivially copyable type, with `width`),
-  `__ballot_sync`, `__any_sync`, `__all_sync`, `__match_any_sync`,
+  `__ballot_sync`, `__any_sync`, `__all_sync`, `__reduce_add_sync`,
+  `__reduce_min_sync`, `__reduce_max_sync` (`int` and `unsigned`),
+  `__reduce_and_sync`, `__reduce_or_sync`, `__reduce_xor_sync`,
+  `__match_any_sync`,
   `__match_all_sync`, `__activemask`, `__syncwarp`
 - Cooperative groups (`cooperative_groups.h`):
   - `thread_block` and `grid_group`
@@ -22,7 +25,7 @@
   - `grid.sync()` in kernels launched with `cudaLaunchCooperativeKernel`
 - Atomics: `atomicAdd`, `atomicSub`, `atomicExch`, `atomicMin`, `atomicMax`,
   `atomicInc`, `atomicDec`, `atomicCAS`, `atomicAnd`, `atomicOr`, `atomicXor`
-  for the same types as CUDA, and `__threadfence`, `__threadfence_block`,
+  for the same types as CUDA (16-bit `atomicCAS` too), and `__threadfence`, `__threadfence_block`,
   `__threadfence_system`
 - `dim3`, the built-in vector types (`float4`, `int2`, `uchar3`, ...) and their
   `make_<type>` functions
@@ -78,12 +81,18 @@
   implemented.
 - Asynchronous copies: libcu++'s `cuda::memcpy_async` with a thread's
   `cuda::pipeline` (`cuda::make_pipeline()`, `producer_acquire`,
-  `producer_commit`, `consumer_wait`, `pipeline_consumer_wait_prior`) or a
-  `cuda::barrier` (`<cuda/pipeline>`, `<cuda/barrier>`), with
+  `producer_commit`, `consumer_wait`, `pipeline_consumer_wait_prior`), a
+  pipeline that a group shares (`cuda::pipeline_shared_state`,
+  `make_pipeline(group, &state)`, with a producer count or
+  `cuda::pipeline_role`, `consumer_release`, `consumer_wait_for`/`_until`,
+  `quit`), or a `cuda::barrier` (`<cuda/pipeline>`, `<cuda/barrier>`), with
   `cuda::aligned_size_t`, and cooperative groups' `memcpy_async`, `wait` and
   `wait_prior` (`cooperative_groups/memcpy_async.h`). A copy is done when
-  `memcpy_async` returns. `cuda::barrier` works for any number of the
-  block's threads, with a completion function and `arrive_and_drop`.
+  `memcpy_async` returns. A shared pipeline's consumers wait for every
+  producer's commit of a stage, and its producers for every consumer's
+  release before using the stage again. `cuda::barrier` works for any
+  number of the block's threads, with a completion function and
+  `arrive_and_drop`.
 - libcu++'s `cuda::ceil_div`, `cuda::round_up` and `cuda::round_down`
   (`<cuda/cmath>`), and `<cuda/std/type_traits>` as `cuda::std`.
 - Math: the C++ standard library, plus `rsqrtf`, `rsqrt` and the fast

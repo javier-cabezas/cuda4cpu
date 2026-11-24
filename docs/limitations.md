@@ -89,8 +89,7 @@
   operations only with Clang. See
   [HIP](hip.md#hips-amd-platform).
 - **Not implemented yet:** textures and surfaces, dynamic parallelism,
-  `__reduce_*_sync`, 16-bit integer atomics, pipelines that a group shares
-  (`cuda::pipeline<cuda::thread_scope_block>`), inline PTX, and the driver
+  the sub-byte types of `wmma::experimental`, inline PTX, and the driver
   API. [Compatibility with real CUDA and HIP
   code](compatibility.md) shows which programs each
   one blocks.

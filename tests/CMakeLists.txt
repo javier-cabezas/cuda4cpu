@@ -195,6 +195,9 @@ add_executable(async_copy)
 set_target_properties(async_copy PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(async_copy async_copy.cu)
 add_test(NAME async_copy COMMAND async_copy)
+# Shared pipelines wait for other threads: in other orders too
+add_test(NAME async_copy_random COMMAND async_copy)
+set_tests_properties(async_copy_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:3")
 
 add_executable(wmma)
 set_target_properties(wmma PROPERTIES CXX_EXTENSIONS OFF)

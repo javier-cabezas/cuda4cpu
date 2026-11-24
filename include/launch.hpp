@@ -212,6 +212,13 @@ public:
     //! the live lanes in mask (low 32 bits) and the mask of those lanes (high 32 bits).
     static uint64_t warp_ballot(unsigned mask, bool predicate);
 
+    //! Implementation of the __reduce_*_sync functions: the reduction of
+    //! the values of the live lanes in mask, the same for each of them
+    enum class reduction : unsigned char {
+        add, min_unsigned, max_unsigned, min_signed, max_signed, bit_and, bit_or, bit_xor
+    };
+    static uint32_t warp_reduce(unsigned mask, uint32_t value, reduction operation);
+
     //! Implementation of __match_any_sync (all = false) and __match_all_sync
     //! (all = true) over the live lanes in mask. match_any returns the lanes
     //! whose value equals the caller's; match_all returns the participating

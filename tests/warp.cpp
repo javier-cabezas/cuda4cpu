@@ -19,6 +19,9 @@
  */
 
 
+#include <algorithm>
+#include <climits>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -137,8 +140,93 @@ __global__ void branch_then_barrier_rounds(int *out, int rounds)
     out[blockIdx.x * blockDim.x + t] = v;
 }
 
+// __reduce_*_sync over every lane of even warps, and over the odd lanes only
+// of odd warps (their even lanes return); out holds nreductions values per
+// thread, the int ones in out and the unsigned ones in uout
+constexpr int nreductions = 9;
+
+static int reduction_value(unsigned t)
+{
+    return int(t * 2654435761u >> 7) - 3000000;      // negative and positive
+}
+
+static bool odd_warp(unsigned t)
+{
+    return t / 32 % 2 == 1;
+}
+
+__global__ void reductions(int *out, unsigned *uout)
+{
+    const unsigned t = threadIdx.x;
+    if (odd_warp(t) && t % 2 == 0)
+        return;
+    const unsigned mask = odd_warp(t) ? 0xaaaaaaaau : full;
+    const int v = reduction_value(t);
+    const unsigned u = unsigned(v);
+    int *o = out + t * nreductions;
+    unsigned *uo = uout + t * nreductions;
+    o[0] = __reduce_add_sync(mask, v);
+    o[1] = __reduce_min_sync(mask, v);
+    o[2] = __reduce_max_sync(mask, v);
+    uo[3] = __reduce_add_sync(mask, u);
+    uo[4] = __reduce_min_sync(mask, u);
+    uo[5] = __reduce_max_sync(mask, u);
+    uo[6] = __reduce_and_sync(mask, u | 0x10000u);
+    uo[7] = __reduce_or_sync(mask, u & 0xff00ffu);
+    uo[8] = __reduce_xor_sync(mask, u);
+}
+
+static void expected_reductions(unsigned nthreads, std::vector<int> &out, std::vector<unsigned> &uout)
+{
+    out.assign(nthreads * nreductions, -1);
+    uout.assign(nthreads * nreductions, ~0u);
+    for (unsigned t = 0; t < nthreads; ++t) {
+        if (odd_warp(t) && t % 2 == 0)
+            continue;
+        const unsigned base = t / 32 * 32;
+        long long add = 0;
+        int lo = INT32_MAX, hi = INT32_MIN;
+        unsigned ulo = ~0u, uhi = 0, all = ~0u, any = 0, x = 0;
+        for (unsigned other = base; other < base + 32 && other < nthreads; ++other) {
+            if (odd_warp(t) && other % 2 == 0)
+                continue;
+            const int v = reduction_value(other);
+            const unsigned u = unsigned(v);
+            add += v;
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+            ulo = std::min(ulo, u);
+            uhi = std::max(uhi, u);
+            all &= u | 0x10000u;
+            any |= u & 0xff00ffu;
+            x ^= u;
+        }
+        int *o = &out[t * nreductions];
+        unsigned *uo = &uout[t * nreductions];
+        o[0] = int(unsigned(add));
+        o[1] = lo;
+        o[2] = hi;
+        uo[3] = unsigned(add);
+        uo[4] = ulo;
+        uo[5] = uhi;
+        uo[6] = all;
+        uo[7] = any;
+        uo[8] = x;
+    }
+}
+
 int main()
 {
+    // Full and partial warps
+    for (unsigned nthreads : {128u, 100u, 7u}) {
+        std::vector<int> out(nthreads * nreductions, -1), expected;
+        std::vector<unsigned> uout(nthreads * nreductions, ~0u), uexpected;
+        launch(reductions, 2, nthreads).call(out.data(), uout.data());
+        expected_reductions(nthreads, expected, uexpected);
+        check("reductions (int)", out, expected);
+        check("reductions (unsigned)", uout, uexpected);
+    }
+
     // Two full warps, and a full warp plus a partial one
     for (unsigned nthreads : {64u, 40u}) {
         std::vector<int> out(nthreads * nresults), expected;
