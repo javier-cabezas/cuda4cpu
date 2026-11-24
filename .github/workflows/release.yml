@@ -67,6 +67,8 @@ jobs:
         uses: ./
         with:
           archive: dist/cuda4cpu-linux-x86_64.tar.gz
+          # A correct program, which check must pass
+          check: tests/samples/vector_add.cu
 
       - name: Test the installation
         run: packaging/smoke-test.sh "${{ steps.action.outputs.prefix }}"

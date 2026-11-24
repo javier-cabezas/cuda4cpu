@@ -47,8 +47,9 @@ set(CUDA4CPU_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/cuda4cpu)
 # to their own directory, for the installation: cuda4cpu-c++,
 # cuda4cpu-hipcc, which compiles every C++ source as HIP, as hipcc does,
 # cuda4cpu-nvcc, which takes nvcc's options, cuda4cpu-hipconfig, which
-# answers as HIP's hipconfig, and cuda4cpu-mcp, an MCP server that compiles,
-# runs and checks programs with them
+# answers as HIP's hipconfig, cuda4cpu-mcp, an MCP server that compiles,
+# runs and checks programs with them, and cuda4cpu-check, its check tool as a
+# command
 set(driver_permissions OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
                        WORLD_READ WORLD_EXECUTE)
 
@@ -65,7 +66,11 @@ function(cuda4cpu_configure_drivers directory)
     endforeach()
     configure_file(tools/cuda4cpu-hipconfig.in ${directory}/cuda4cpu-hipconfig @ONLY
                    FILE_PERMISSIONS ${driver_permissions})
-    configure_file(tools/cuda4cpu-mcp.in ${directory}/cuda4cpu-mcp @ONLY FILE_PERMISSIONS ${driver_permissions})
+    # The MCP server, and the same file as check's command line
+    foreach(CUDA4CPU_TOOL IN ITEMS mcp check)
+        configure_file(tools/cuda4cpu-mcp.in ${directory}/cuda4cpu-${CUDA4CPU_TOOL} @ONLY
+                       FILE_PERMISSIONS ${driver_permissions})
+    endforeach()
 endfunction()
 
 set(CUDA4CPU_DRIVER_CXX "${CMAKE_CXX_COMPILER}")
@@ -94,6 +99,7 @@ include(cmake/cuda4cpu-toolkit.cmake)
 install(PROGRAMS tools/cuda4cpu-rewrite "${PROJECT_BINARY_DIR}/install/cuda4cpu-c++"
                  "${PROJECT_BINARY_DIR}/install/cuda4cpu-hipcc" "${PROJECT_BINARY_DIR}/install/cuda4cpu-nvcc"
                  "${PROJECT_BINARY_DIR}/install/cuda4cpu-hipconfig" "${PROJECT_BINARY_DIR}/install/cuda4cpu-mcp"
+                 "${PROJECT_BINARY_DIR}/install/cuda4cpu-check"
         DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES tools/cuda4cpu-gdb.py DESTINATION ${CMAKE_INSTALL_DATADIR}/cuda4cpu)
 # The reference, which cuda4cpu-mcp's capabilities tool reads

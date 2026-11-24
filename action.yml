@@ -35,6 +35,14 @@ inputs:
     description: A release archive to install instead, as a path or URL
     required: false
     default: ''
+  check:
+    description: >
+      Arguments of cuda4cpu-check to run after installing, as a shell would
+      split them: sources (examples/scan.cu) or a program built already
+      (build/tests/scan --size 1024). The step fails if it finds a problem,
+      and annotates the findings at their lines.
+    required: false
+    default: ''
 outputs:
   prefix:
     description: The installation prefix, with bin, include and lib
@@ -91,3 +99,14 @@ runs:
         echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
         echo "toolkit=$prefix/lib/cuda4cpu/toolkit" >> "$GITHUB_OUTPUT"
         "$prefix/bin/cuda4cpu-nvcc" --version | grep "^cuda4cpu "
+    - name: Check with cuda4cpu
+      if: inputs.check != ''
+      shell: bash
+      env:
+        CHECK: ${{ inputs.check }}
+        PREFIX: ${{ steps.install.outputs.prefix }}
+      run: |
+        set -euo pipefail
+        # The workflow's own input, split as its shell would
+        eval "arguments=($CHECK)"
+        "$PREFIX/bin/cuda4cpu-check" --format github "${arguments[@]}"

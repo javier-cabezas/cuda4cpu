@@ -167,4 +167,14 @@ server.stdin.close()
 server.wait()
 EOF
 
+step cuda4cpu-check
+cd "$work"
+cp "$src/examples/bugs/missing_barrier.cu" .
+status=0
+cuda4cpu-check missing_barrier.cu > check.out || status=$?
+cat check.out
+test "$status" = 1
+grep -F '[depends on the thread order]' check.out
+cuda4cpu-check "$src/tests/samples/vector_add.cu"
+
 step "all checks passed"

@@ -34,6 +34,11 @@ Tools:
   capabilities  what cuda4cpu implements, and what it doesn't
 
 Register it with an MCP client, e.g. `claude mcp add cuda4cpu -- cuda4cpu-mcp`.
+
+The same file, configured as cuda4cpu-check (TOOL), is check's command line:
+`cuda4cpu-check kernel.cu`, or `cuda4cpu-check ./program args...` for a
+program built already, prints the findings and exits with 1 if there are
+any (see check_main).
 Programs run with the user's permissions, in a temporary directory, with a
 time limit; nothing else isolates them.
 
@@ -54,6 +59,7 @@ import traceback
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 VERSION = '@PROJECT_VERSION@'
+TOOL = '@CUDA4CPU_TOOL@'                # mcp, the server, or check, the command line
 DOCS_DIR = os.path.normpath(os.path.join(HERE, '@CUDA4CPU_DRIVER_DOCS_DIR@'))
 NVCC = os.path.join(HERE, 'cuda4cpu-nvcc')
 HIPCC = os.path.join(HERE, 'cuda4cpu-hipcc')
@@ -152,6 +158,10 @@ class Program:
         if not os.path.isdir(self.cwd):
             raise ToolError(f'{self.cwd}: no such directory')
 
+    def source_directories(self):
+        """Where the program's own code is, for the frames of a stack"""
+        return {os.path.dirname(os.path.realpath(s)) + os.sep for s in self.sources}
+
     def display(self, path):
         """How a path appears in results: inline files by their names"""
         if path in self.names:
@@ -171,6 +181,38 @@ class Program:
         result = subprocess.run(command, capture_output=True, text=True, cwd=os.path.join(self.work, 'src')
                                 if self.names else self.cwd)
         return result.returncode == 0, result.stdout + result.stderr
+
+
+class Prebuilt:
+    """A program built already, which check runs as it is (cuda4cpu-check
+    ./program): no sanitizer build, since there are no sources to build"""
+
+    def __init__(self, binary, arguments, work):
+        self.binary = os.path.abspath(binary)
+        if not os.path.isfile(self.binary) or not os.access(self.binary, os.X_OK):
+            raise ToolError(f'{binary}: no such program')
+        self.work = work
+        self.sources = []
+        self.names = {}
+        self.language = None
+        self.options = []
+        directory = arguments.get('working_directory')
+        self.cwd = os.path.abspath(os.path.expanduser(directory)) if directory else os.getcwd()
+        if not os.path.isdir(self.cwd):
+            raise ToolError(f'{self.cwd}: no such directory')
+
+    def source_directories(self):
+        # The program's sources are most likely where it is run from, or
+        # next to it
+        return {self.cwd + os.sep, os.path.dirname(self.binary) + os.sep}
+
+    def display(self, path):
+        return path
+
+    def build(self, output, extra):
+        """The program itself, under the name check runs it by"""
+        os.symlink(self.binary, output)
+        return True, ''
 
 
 DIAGNOSTIC = re.compile(r'^(?P<file>[^:\n]+?):(?P<line>\d+):(?:(?P<column>\d+):)? '
@@ -321,7 +363,7 @@ def user_frame(stderr, program):
     sources and the directories they're in (frames of rewritten files name
     the original ones). Failing that, the first frame outside the system's
     and cuda4cpu's headers."""
-    directories = {os.path.dirname(os.path.realpath(s)) + os.sep for s in program.sources}
+    directories = program.source_directories()
     fallback = None
     for m in FRAME.finditer(stderr):
         path = os.path.realpath(m['file'])
@@ -1192,6 +1234,10 @@ def summary(name, result):
     the findings and diagnostics; the full result follows as JSON"""
     if name == 'capabilities':
         return result['text']
+    return '\n'.join(summary_lines(name, result)) + '\n\n' + json.dumps(result, indent=1)
+
+
+def summary_lines(name, result):
     lines = []
     if not result.get('compiled', True):
         lines.append('does not compile')
@@ -1231,7 +1277,7 @@ def summary(name, result):
             lines.append(f'  [{f["kind"]}] {f["message"]}')
     else:
         lines.append('compiles')
-    return '\n'.join(lines) + '\n\n' + json.dumps(result, indent=1)
+    return lines
 
 
 #
@@ -1318,5 +1364,212 @@ def main():
     return 0
 
 
+#
+# cuda4cpu-check: check's command line
+#
+
+CHECK_USAGE = """cuda4cpu-check [options] SOURCE... [-- ARGUMENT...]
+       cuda4cpu-check [options] PROGRAM [ARGUMENT...]"""
+
+CHECK_DESCRIPTION = """Look for the bugs a GPU hides in a CUDA or HIP program, on the CPU, as
+cuda4cpu-mcp's check tool does: built with AddressSanitizer and UBSan,
+then run in the default order twice, with new memory filled with 0xff
+bytes, and with the threads of each block in other orders, comparing the
+results. Give the sources (.cu, .hip, .cpp, ...) to build them, or a
+program built already with cuda4cpu, which runs without the sanitizer
+build. The program should check its results or print them. Exits with 0
+if nothing was found, 1 if something was, and 2 if the program could not
+be checked."""
+
+
+def github_escape(text, property=False):
+    """text in a workflow command: its data, or with property, a property's value"""
+    text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+    return text.replace(':', '%3A').replace(',', '%2C') if property else text
+
+
+def github_annotations(result, program):
+    """The findings as GitHub Actions' error annotations, at their lines
+    when the file is in the workspace, and a summary for the job's page"""
+    workspace = os.path.realpath(os.environ.get('GITHUB_WORKSPACE') or os.getcwd())
+    lines = []
+    for f in result.get('findings', []):
+        where = ''
+        for l in f.get('locations', []):
+            if not l.get('file'):
+                continue
+            path = os.path.realpath(os.path.join(program.cwd, l['file']))
+            if path.startswith(workspace + os.sep):
+                where = (f'file={github_escape(os.path.relpath(path, workspace), True)},'
+                         f'line={l["line"]},')
+                break
+        message = f['message'] + (f'\n\n{f["meaning"]}' if f.get('meaning') else '')
+        lines.append(f'::error {where}title={github_escape("cuda4cpu-check: " + f["kind"], True)}::'
+                     f'{github_escape(message)}')
+    for d in result.get('diagnostics', []) if not result.get('compiled', True) else []:
+        if d['severity'] == 'error' and d['file']:
+            path = os.path.realpath(os.path.join(program.cwd, d['file']))
+            if path.startswith(workspace + os.sep):
+                lines.append(f'::error file={github_escape(os.path.relpath(path, workspace), True)},'
+                             f'line={d["line"]},title=cuda4cpu-check%3A does not compile::'
+                             f'{github_escape(d["message"])}')
+    summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary_file:
+        table = [f'### cuda4cpu-check: {result["verdict"]}', '']
+        if result.get('findings'):
+            table += ['| Finding | Where | Message |', '| --- | --- | --- |']
+            for f in result['findings']:
+                where = ', '.join(f'{l["file"]}:{l["line"]}' for l in f.get('locations', []) if l.get('file'))
+                cell = lambda text: text.replace('|', '\\|').replace('\n', ' ')
+                table.append(f'| {cell(f["kind"])} | {cell(where)} | {cell(f["message"])} |')
+        try:
+            with open(summary_file, 'a') as out:
+                out.write('\n'.join(table) + '\n\n')
+        except OSError:
+            pass
+    return lines
+
+
+def uses_cuda4cpu(path):
+    """Whether the program links cuda4cpu: its name is in the dynamic
+    section, or its symbols in a static link. A script that runs the program
+    doesn't, and gets a warning only."""
+    try:
+        with open(path, 'rb') as f:
+            previous = b''
+            while chunk := f.read(1 << 20):
+                if b'cuda4cpu' in previous[-8:] + chunk:
+                    return True
+                previous = chunk
+    except OSError:
+        pass
+    return False
+
+
+def check_main(argv):
+    import argparse
+    import shlex
+    parser = argparse.ArgumentParser(prog='cuda4cpu-check', usage=CHECK_USAGE, description=CHECK_DESCRIPTION,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('-x', '--language', choices=['cuda', 'hip'],
+                        help='the sources\' language (by default hip for .hip files, else cuda)')
+    parser.add_argument('-X', '--compiler-options', action='append', default=[], metavar='OPTIONS',
+                        help="options for cuda4cpu-nvcc or cuda4cpu-hipcc, as nvcc's or hipcc's, split as a "
+                             "shell would (-X '-I include -DN=64'); default -O2 -g")
+    parser.add_argument('--seeds', default='1,2,3',
+                        help='seeds of the random orders, separated by commas (default 1,2,3)')
+    parser.add_argument('--no-sanitizers', action='store_true', help='skip the AddressSanitizer and UBSan build')
+    parser.add_argument('--ignore', action='append', default=[], metavar='REGEX',
+                        help='output lines to leave out of the comparisons, such as timings (repeatable)')
+    parser.add_argument('-e', '--env', action='append', default=[], metavar='NAME=VALUE',
+                        help='an environment variable for the program (repeatable)')
+    parser.add_argument('--stdin', metavar='FILE', help="a file for the program's standard input")
+    parser.add_argument('-C', '--working-directory', metavar='DIR',
+                        help='where the program runs (default: the current directory)')
+    parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='SECONDS',
+                        help=f'the time limit of each run (default {DEFAULT_TIMEOUT}, at most {MAX_TIMEOUT})')
+    parser.add_argument('--format', choices=['text', 'json', 'github'], default='text',
+                        help='text (the default), json (check\'s whole result), or github: text, and the '
+                             "findings as GitHub Actions' error annotations and job summary")
+    parser.add_argument('-v', '--verbose', action='store_true', help='also list every run and how it ended')
+    parser.add_argument('--version', action='version', version=f'cuda4cpu-check {VERSION}')
+    parser.add_argument('command', nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    options = parser.parse_args(argv)
+    command = options.command
+    if command and command[0] == '--':
+        command = command[1:]
+    if not command:
+        parser.error('give the sources to check, or a program built already')
+
+    try:
+        seeds = [int(seed) for seed in options.seeds.split(',') if seed.strip()]
+    except ValueError:
+        parser.error(f'--seeds: {options.seeds!r} is not a list of integers')
+    environment = {}
+    for setting in options.env:
+        name, equals, value = setting.partition('=')
+        if not equals or not name:
+            parser.error(f'--env: {setting!r} is not NAME=VALUE')
+        environment[name] = value
+    arguments = {'seeds': seeds, 'sanitizers': not options.no_sanitizers, 'ignore_patterns': options.ignore,
+                 'environment': environment, 'timeout_seconds': options.timeout,
+                 'working_directory': options.working_directory or os.getcwd()}
+    if options.stdin:
+        try:
+            with open(options.stdin) as f:
+                arguments['stdin'] = f.read()
+        except OSError as e:
+            parser.error(f'--stdin: {e}')
+    compiler_options = [o for group in options.compiler_options for o in shlex.split(group)]
+
+    prebuilt = not command[0].endswith(SOURCE_EXTENSIONS)
+    if prebuilt:
+        if compiler_options or options.language:
+            parser.error('--compiler-options and --language are for sources, not a program built already')
+        arguments['args'] = command[1:]
+        arguments['sanitizers'] = False
+    else:
+        sources, rest = (command[:command.index('--')], command[command.index('--') + 1:]) if '--' in command \
+            else (command, [])
+        others = [s for s in sources if not s.endswith(SOURCE_EXTENSIONS)]
+        if others:
+            parser.error(f'{others[0]} is not a source file: give the program\'s arguments after --')
+        arguments.update({'paths': sources, 'args': rest, 'options': compiler_options})
+        if options.language:
+            arguments['language'] = options.language
+
+    if prebuilt and os.path.isfile(command[0]) and not uses_cuda4cpu(command[0]):
+        print(f'cuda4cpu-check: warning: {command[0]} does not seem to be built with cuda4cpu (cuda4cpu-nvcc, '
+              'cuda4cpu-hipcc, cuda4cpu-c++), so the thread orders and memory fills have no effect on it',
+              file=sys.stderr)
+    try:
+        with tempfile.TemporaryDirectory(prefix='cuda4cpu-check-') as work:
+            program = Prebuilt(command[0], arguments, work) if prebuilt else Program(arguments, work)
+            result = check_program(program, arguments)
+    except ToolError as e:
+        print(f'cuda4cpu-check: error: {e}', file=sys.stderr)
+        return 2
+
+    # Paths relative to where it was run from, as a compiler's diagnostics
+    def relative(path):
+        if path and os.path.isabs(path):
+            shorter = os.path.relpath(path)
+            return shorter if not shorter.startswith('..') else path
+        return path
+    for item in result.get('findings', []):
+        for l in item.get('locations', []):
+            l['file'] = relative(l.get('file'))
+    for d in result.get('diagnostics', []):
+        d['file'] = relative(d.get('file'))
+
+    if options.format == 'json':
+        print(json.dumps(result, indent=1))
+    else:
+        if options.format == 'github':
+            for line in github_annotations(result, program):
+                print(line)
+        if not result.get('compiled', True):
+            sys.stderr.write(result.get('compiler_output', ''))
+        lines = summary_lines('check', result)
+        runs = result.get('runs', [])
+        if runs:
+            seconds = sum(r['seconds'] for r in runs)
+            lines[0] = f'{lines[0]} ({len(runs)} run{"s" if len(runs) > 1 else ""}, {seconds:.1f} s)'
+        print('cuda4cpu-check: ' + '\n'.join(lines))
+        if options.verbose:
+            for r in runs:
+                end = ('timed out' if r['timed_out'] else f'killed by {r["signal"]}' if r['signal'] else
+                       f'exit code {r["exit_code"]}')
+                print(f'  run {r["order"]}: {end}, {r["seconds"]} s ({r["description"]})')
+        if prebuilt and not options.no_sanitizers:
+            print('  note: a program built already runs without the sanitizer build: build it with '
+                  '-g -fsanitize=address,undefined, or give its sources, for those checks')
+        if result.get('caveat'):
+            print(f'  {result["caveat"]}')
+    if not result.get('compiled', True):
+        return 2
+    return 1 if result.get('findings') else 0
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(check_main(sys.argv[1:]) if TOOL == 'check' else main())

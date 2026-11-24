@@ -161,6 +161,21 @@ script adds the built-in variables:
 thread (6, 0, 0) of block (2, 0, 0), lane 6; blocks of (64, 1, 1) threads, grid of (8, 1, 1) blocks
 ```
 
+**All of it in one command.** `cuda4cpu-check` runs a program with the
+sanitizers, with new memory filled with garbage, and in each thread order,
+and reports what changes the result. It exits with 1 when it finds
+something, for CI:
+
+```console
+$ cuda4cpu-check missing_barrier.cu
+cuda4cpu-check: problems found (11 runs, 0.1 s)
+  [depends on the thread order] running the threads of each block in reverse order (reverse) ends with exit code 1 instead of exit code 0; 8 of 8 other orders change the result
+    a thread reads data that another thread of its block writes without a __syncthreads() between them (or, within a warp, a __syncwarp()), or threads race on the same data. On a GPU, such code works or fails depending on timing.
+```
+
+It takes sources, or a program your build made with cuda4cpu:
+`cuda4cpu-check build/tests/scan --size 4096`.
+
 [docs/debugging.md](docs/debugging.md) has the details.
 
 ## Use it from an AI agent (MCP)
@@ -271,7 +286,13 @@ jobs:
       # Again with the threads of each block in another order, which exposes
       # missing __syncthreads()
       - run: CUDA4CPU_SCHEDULE=reverse ctest --test-dir build --output-on-failure
+      # Every check on one test program: thread orders, uninitialized memory
+      - run: cuda4cpu-check --format github build/tests/scan --size 4096
 ```
+
+`--format github` shows the findings as annotations at their lines. The
+action's `check` input runs `cuda4cpu-check` right after installing, with
+the arguments it's given: `check: src/scan.cu -- --size 4096`.
 
 Its outputs give the `toolkit` directory, for Makefiles written for nvcc
 (`make CUDA_PATH=...`), and the `toolchain-file` for CMake's CUDA and HIP
