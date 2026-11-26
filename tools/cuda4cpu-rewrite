@@ -101,6 +101,9 @@ import sys
 NVCC_MACROS = ''.join(f'#ifndef {name}\n#define {name} {value}\n#endif\n' for name, value in (
     ('__NVCC__', 1), ('__CUDACC_VER_MAJOR__', 12), ('__CUDACC_VER_MINOR__', 0), ('__CUDACC_VER_BUILD__', 140)))
 
+# Starts the copy of a system header, before its #line directive
+SYSTEM_HEADER = '#pragma GCC system_header\n'
+
 # Prepended to the rewritten file, before its #line directive, by language
 PROLOGUES = {
     'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n' + NVCC_MACROS,
@@ -872,7 +875,20 @@ class Rewriter:
 
     def rewrite_file(self, path):
         """Rewrites path and the headers it includes; returns the text."""
-        return self.rewrite(path)[0]
+        text = self.rewrite(path)[0]
+        # A copy is one file however it's included: a system header if any
+        # include of it is one (the rewriter follows includes the
+        # preprocessor may skip), so that a library's warnings don't fail
+        # -Werror. Copies written before a system include reached them get
+        # the pragma now.
+        for header in self.system:
+            shadow = self.done.get(header)
+            if shadow is not None:
+                with open(shadow, encoding='utf-8', errors='surrogateescape') as f:
+                    copy = f.read()
+                if not copy.startswith(SYSTEM_HEADER):
+                    write_if_changed(shadow, SYSTEM_HEADER + copy)
+        return text
 
     def rewrite(self, path):
         """The rewritten text of path, and whether it differs from the file
@@ -951,7 +967,7 @@ class Rewriter:
             # A system header's copy is one too, as the compiler would have
             # seen the original (warnings): the copy is included by its path
             if header in self.system:
-                text = '#pragma GCC system_header\n' + text
+                text = SYSTEM_HEADER + text
             write_if_changed(shadow, text)
             return shadow
         return None

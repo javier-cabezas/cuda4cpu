@@ -370,6 +370,22 @@ class Headers(unittest.TestCase):
                 self.assertTrue(copy.split('\n', 2 if pragma else 1)[-1].startswith(('#define LAUNCH', '#include')),
                                 kind)
 
+    def test_system_header_reached_first_as_a_user_header(self):
+        """A header that a quote include reaches first (maybe in a branch the
+        preprocessor skips) and an -isystem lookup later is a system header"""
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, 'third_party')
+            os.makedirs(system)
+            with open(os.path.join(system, 'lib.hpp'), 'w') as f:
+                f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            src = os.path.join(tmp, 'main.cu')
+            with open(src, 'w') as f:
+                f.write('#ifdef LOCAL\n#include "third_party/lib.hpp"\n#endif\n#include <lib.hpp>\n')
+            shadow = os.path.join(tmp, 'shadow')
+            rw.Rewriter(shadow, [system], [system]).rewrite_file(src)
+            with open(os.path.join(shadow, system.lstrip(os.sep), 'lib.hpp')) as f:
+                self.assertTrue(f.read().startswith(rw.SYSTEM_HEADER + '#line 1 '))
+
     def test_include_directories(self):
         """Headers that -I finds are rewritten if they, or headers they
         include, have something to rewrite; the others stay where they are"""

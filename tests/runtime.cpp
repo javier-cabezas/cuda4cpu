@@ -635,6 +635,12 @@ int main()
         const float2 pair = tex1Dfetch<float2>(texture, 0);
         EXPECT(pair.x == 0.2f && pair.y == 0.2f);
         cudaDestroyTextureObject(texture);
+        // A format of no kind isn't normalized: its bytes as they are
+        resource.res.linear.desc = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindNone);
+        resource.res.linear.sizeInBytes = 1;
+        EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaSuccess);
+        EXPECT(tex1Dfetch<unsigned char>(texture, 0) == 51);
+        cudaDestroyTextureObject(texture);
         // No memory, and no texture
         resource.res.linear.devPtr = nullptr;
         EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorInvalidValue);

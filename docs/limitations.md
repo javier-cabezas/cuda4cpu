@@ -18,8 +18,8 @@
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only, and asynchronous copies complete
   before they return, so `cudaErrorNotReady` never occurs.
-- **`cuda4cpu_add_cuda_sources` rewrites local headers only.** Through CMake's
-  function, headers included with `#include "..."` relative to the including
+- **`cuda4cpu_add_cuda_sources` rewrites local headers only**, and so does
+  `cuda4cpu_add_hip_sources`. Through CMake's functions, headers included with `#include "..."` relative to the including
   file are rewritten; headers found through include directories (`-I`) or
   `#include <...>` are not, so a launch or `extern __shared__` array in one of
   those doesn't compile. The drivers (`cuda4cpu-c++`, `cuda4cpu-nvcc`,

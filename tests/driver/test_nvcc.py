@@ -179,6 +179,11 @@ class Translation(unittest.TestCase):
         self.assertEqual(command[command.index('helper.c') - 2:], ['-x', 'c', 'helper.c'])
         command = compile_command('-c', 'helper.c', '-Xcompiler', '-B,/usr/bin')
         self.assertNotIn('none', command[command.index('helper.c'):])
+        # An option's value that is an option itself: the file after it is an
+        # input, which needs the -x none before it
+        command = compile_command('-c', 'helper.c', '-Xcompiler', '-Xlinker,-x', 'other.o')
+        self.assertEqual(command[command.index('helper.c'):command.index('helper.c') + 3],
+                         ['helper.c', '-x', 'none'])
 
     def test_steps(self):
         link = commands('-dlink', '-arch=sm_80', '-Xcompiler', '-fPIC', 'a.o', 'b.o', '-o', 'dlink.o')

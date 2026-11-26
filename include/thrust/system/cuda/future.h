@@ -25,8 +25,10 @@
 
 #include <thrust/detail/config.h>
 
-#if THRUST_DEVICE_SYSTEM == THRUST_DEVICE_SYSTEM_OMP && !defined(ROCTHRUST_VERSION)
+// Without Thrust (THRUST_DEVICE_SYSTEM_OMP undefined), its configuration
+// has said so already
+#if defined(THRUST_DEVICE_SYSTEM_OMP) && THRUST_DEVICE_SYSTEM == THRUST_DEVICE_SYSTEM_OMP && !defined(ROCTHRUST_VERSION)
 #error "cuda4cpu: Thrust's CUDA futures (thrust/system/cuda/future.h) need its CUDA backend; cuda4cpu builds Thrust on OpenMP"
-#else
+#elif __has_include_next(<thrust/system/cuda/future.h>)
 #include_next <thrust/system/cuda/future.h>
 #endif

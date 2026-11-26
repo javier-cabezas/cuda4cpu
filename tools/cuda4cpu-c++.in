@@ -466,18 +466,21 @@ def without_trailing_x_none(args):
     warns that they have no effect (an error with -Werror), and each
     rewritten source is followed by one, which a program's own -x none can
     follow too"""
-    inputs = [i for i in range(len(args))
-              if not args[i].startswith('-') and not (i > 0 and args[i - 1] in OPTIONS_WITH_VALUE)]
-    last_input = max(inputs, default=-1)
-    result = []
+    # Options and their values in order, as the compiler reads them:
+    # -Xlinker -x is the linker's option, and the file after it an input
+    x_none, last_input = [], -1
     i = 0
     while i < len(args):
-        if i > last_input and args[i] == '-x' and i + 1 < len(args) and args[i + 1] == 'none':
+        if args[i] in OPTIONS_WITH_VALUE and i + 1 < len(args):
+            if args[i] == '-x' and args[i + 1] == 'none':
+                x_none.append(i)
             i += 2
             continue
-        result.append(args[i])
+        if not args[i].startswith('-'):
+            last_input = i
         i += 1
-    return result
+    dropped = {i for i in x_none if i > last_input}
+    return [a for i, a in enumerate(args) if i not in dropped and i - 1 not in dropped]
 
 
 def with_shadow_mirrors(args, shadow_dirs):

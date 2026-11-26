@@ -293,7 +293,7 @@ cuda4cpu-nvcc -I cccl/thrust -I cccl/libcudacxx/include -I cccl/cub sort.cu -o s
 Thrust runs on its OpenMP backend: `cuda_runtime.h`, and Thrust's own
 configuration header for sources that include Thrust first, set
 `THRUST_DEVICE_SYSTEM` to `THRUST_DEVICE_SYSTEM_OMP`, unless the program sets
-it. It also turns off CCCL's NVTX ranges and its own support of the half,
+it. They also turn off CCCL's NVTX ranges and its own support of the half,
 bfloat16 and 8-bit floating-point types (`CCCL_DISABLE_NVTX`,
 `CCCL_DISABLE_FP16_SUPPORT`). Algorithms on those types still work.
 
