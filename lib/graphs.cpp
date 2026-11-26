@@ -293,6 +293,7 @@ struct cudaGraphNode__ {
     cudaMemcpy3DParms copy{};
     cudaMemsetParams fill{};
     cudaHostNodeParams host{};
+    std::shared_ptr<void> host_data;   //!< Owns host.userData, for nodes the library captures (cuBLAS's)
     cudaEvent_t event = nullptr;
     cudaGraph_t child = nullptr;   //!< Owned
 
@@ -341,6 +342,7 @@ struct exec_node {
     cudaMemcpy3DParms copy{};
     cudaMemsetParams fill{};
     cudaHostNodeParams host{};
+    std::shared_ptr<void> host_data;
     cudaEvent_t event = nullptr;
     std::unique_ptr<cudaGraphExec__> child;
     std::shared_ptr<detail::graph_allocation> allocation;
@@ -449,6 +451,7 @@ cudaGraph_t clone(cudaGraph_t graph)
         node->copy           = n->copy;
         node->fill           = n->fill;
         node->host           = n->host;
+        node->host_data      = n->host_data;
         node->event          = n->event;
         node->child          = n->child ? clone(n->child) : nullptr;
         node->allocation     = n->allocation;
@@ -522,6 +525,7 @@ cudaError_t instantiate(cudaGraph_t graph, std::unique_ptr<cudaGraphExec__> &out
         e.copy           = n->copy;
         e.fill           = n->fill;
         e.host           = n->host;
+        e.host_data      = n->host_data;
         e.event          = n->event;
         e.allocation     = n->allocation;
         e.free_ptr       = n->free_ptr;
@@ -734,6 +738,18 @@ cudaError_t capture_host(cudaStream_t stream, cudaHostFn_t fn, void *userData)
         return record_error(cudaErrorInvalidValue);
     auto node  = new_node(cudaGraphNodeTypeHost);
     node->host = {fn, userData};
+    return capture(stream, std::move(node));
+}
+
+//! A host node whose data the graph owns: its nodes, and the executable
+//! graphs made from it, keep data alive (cuBLAS's routines, captured)
+cudaError_t capture_host_owned(cudaStream_t stream, cudaHostFn_t fn, std::shared_ptr<void> data)
+{
+    if (fn == nullptr)
+        return record_error(cudaErrorInvalidValue);
+    auto node       = new_node(cudaGraphNodeTypeHost);
+    node->host      = {fn, data.get()};
+    node->host_data = std::move(data);
     return capture(stream, std::move(node));
 }
 
@@ -973,6 +989,8 @@ cudaError_t cudaGraphHostNodeSetParams(cudaGraphNode_t node, const cudaHostNodeP
     if (node == nullptr || node->type != cudaGraphNodeTypeHost || pNodeParams == nullptr ||
         pNodeParams->fn == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
+    if (pNodeParams->userData != node->host_data.get())
+        node->host_data.reset();
     node->host = *pNodeParams;
     return cudaSuccess;
 }
@@ -1462,6 +1480,8 @@ cudaError_t cudaGraphExecHostNodeSetParams(cudaGraphExec_t hGraphExec, cudaGraph
     exec_node *e = hGraphExec == nullptr ? nullptr : find_exec_node(hGraphExec, node);
     if (e == nullptr || e->type != cudaGraphNodeTypeHost || pNodeParams == nullptr || pNodeParams->fn == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
+    if (pNodeParams->userData != e->host_data.get())
+        e->host_data.reset();
     e->host = *pNodeParams;
     return cudaSuccess;
 }

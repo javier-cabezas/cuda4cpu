@@ -279,6 +279,27 @@ on the build. Most of the others use AMD's own tools (assembly, LLVM IR,
 hipify) or AMD-only build steps. A few compile with the plain C++ compiler,
 which `CXX=<toolkit>/bin/cuda4cpu-c++` fixes.
 
+### BLAS
+
+cuBLAS, hipBLAS and rocBLAS (see [features](features.md#libraries)) run their
+routines on a CBLAS library, which cuda4cpu loads when a program first calls
+one. Install one with your system's packages, such as `libopenblas0` on
+Debian and Ubuntu, or `openblas` on Fedora.
+- **The libraries it looks for, in order:** OpenBLAS (`libopenblas.so.0`),
+  BLIS (`libblis.so.4`), MKL (`libmkl_rt.so`), then `libcblas.so.3` and
+  `libblas.so.3`, which are the reference BLAS, or whichever library the
+  system's alternatives pick.
+- **`CUDA4CPU_BLAS`:** names another library, as a path or a name the
+  dynamic loader finds. `CUDA4CPU_BLAS=builtin` uses cuda4cpu's own
+  implementation instead.
+- **Without a library:** the routines run on cuda4cpu's own implementation,
+  which is correct but much slower for large products.
+- **A library that can't be loaded:** if `CUDA4CPU_BLAS` names a file that
+  isn't a CBLAS library, cuda4cpu warns and uses its own implementation.
+
+The library must have the 32-bit integer interface, as distributions'
+packages do; OpenBLAS's 64-bit one is `libopenblas64`.
+
 ### Thrust
 
 cuda4cpu builds NVIDIA's Thrust, from the CCCL of a CUDA toolkit or of

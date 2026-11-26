@@ -87,6 +87,11 @@ works too, with HIP's NVIDIA platform and the toolkit's toolchain file. See
   of `hiprand/hiprand.hpp` (`hiprand_cpp`'s engines and distributions), on
   cuda4cpu's cuRAND (see [features](features.md#libraries)), and `-lhiprand`.
   rocRAND's own API (`rocrand_*`) isn't provided.
+- **hipBLAS and rocBLAS:** `hipblas/hipblas.h` (hipBLAS 3's API, with
+  `hipComplex`) and `rocblas/rocblas.h` (rocBLAS 5's, with
+  `rocblas_float_complex`), on cuda4cpu's cuBLAS (see
+  [features](features.md#libraries)), and `-lhipblas` and `-lrocblas`.
+  hipBLASLt isn't provided.
 - **rocThrust and hipCUB** (on HIP's AMD platform, with Clang): from their
   own sources, with rocPRIM's, on their HIP backends. See
   [usage](usage.md#thrust).

@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 160 of 185 pass today; most of the rest need
+shows what blocks real programs. 173 of 198 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -35,7 +35,10 @@ with cuBLAS, and rocm-examples has more for their ROCm counterparts.
    rocPRIM, for HIP's AMD platform. Left: CUB's device-wide algorithms for
    CUDA, which launch kernels for a GPU (3 samples).
 3. **cuBLAS, hipBLAS and rocBLAS** on a CBLAS (OpenBLAS), with a simple
-   built-in fallback.
+   built-in fallback. Done: every BLAS routine and cuBLAS's extensions, on
+   the CBLAS library found at run time, and the rocBLAS and hipBLAS examples
+   and `UnifiedMemoryStreams` pass. Left: cuBLASLt, and cuSPARSE, which
+   `conjugateGradientCudaGraphs` needs too.
 4. **cuFFT, hipFFT and rocFFT** on pocketfft (BSD), not FFTW, which is GPL.
 
 ## AMD GPU builtins

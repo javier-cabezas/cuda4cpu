@@ -241,6 +241,21 @@ add_executable(curand_test)
 set_target_properties(curand_test PROPERTIES CXX_EXTENSIONS OFF)
 cuda4cpu_add_cuda_sources(curand_test curand.cu)
 add_test(NAME curand COMMAND curand_test)
+# cuBLAS against a reference, on cuda4cpu's own BLAS, and on a CBLAS library
+# (CUDA4CPU_TEST_CBLAS, by default the OpenBLAS that CMake finds), which the
+# test must load
+add_executable(cublas_test)
+set_target_properties(cublas_test PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(cublas_test cublas.cu)
+add_test(NAME cublas COMMAND cublas_test)
+set_tests_properties(cublas PROPERTIES ENVIRONMENT "CUDA4CPU_BLAS=builtin")
+find_library(CUDA4CPU_OPENBLAS NAMES openblas libopenblas.so.0)
+set(CUDA4CPU_TEST_CBLAS "${CUDA4CPU_OPENBLAS}" CACHE FILEPATH "A CBLAS library for the cuBLAS test")
+if(CUDA4CPU_TEST_CBLAS)
+    add_test(NAME cublas_cblas COMMAND cublas_test)
+    set_tests_properties(cublas_cblas PROPERTIES ENVIRONMENT "CUDA4CPU_BLAS=${CUDA4CPU_TEST_CBLAS}"
+                         FAIL_REGULAR_EXPRESSION "CUDA4CPU_BLAS=")
+endif()
 # Shared pipelines wait for other threads: in other orders too
 add_test(NAME async_copy_random COMMAND async_copy)
 set_tests_properties(async_copy_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:3")
@@ -282,8 +297,9 @@ add_test(NAME rewrite_features COMMAND rewrite_features)
 # HIP programs, through HIP's headers and names only: the runtime API, the
 # host APIs for memory and contexts, the kernel language, and
 # hipLaunchKernelGGL as a function template in a .cpp file, which
-# cuda4cpu_add_hip_sources compiles as HIP whatever its extension
-foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/template_launch.cpp)
+# cuda4cpu_add_hip_sources compiles as HIP whatever its extension, and
+# hipBLAS and rocBLAS
+foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/template_launch.cpp hip/blas.hip)
     cmake_path(GET source STEM stem)
     add_executable(hip_${stem})
     set_target_properties(hip_${stem} PROPERTIES CXX_EXTENSIONS OFF)

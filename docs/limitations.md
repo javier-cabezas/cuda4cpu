@@ -101,6 +101,12 @@
 - **Not implemented yet:** CUDA arrays and their textures and surfaces (texture
   objects of linear memory work), dynamic parallelism, the sub-byte types of
   `wmma::experimental`, inline PTX, the driver API, and CUDA's libraries
-  other than cuRAND and Thrust (cuBLAS, cuFFT, CUB's device algorithms, ...). [Compatibility with real CUDA and HIP
-  code](compatibility.md) shows which programs each
-  one blocks.
+  other than cuRAND, cuBLAS and Thrust (cuFFT, cuSPARSE, CUB's device
+  algorithms, ...). [Compatibility with real CUDA and HIP
+  code](compatibility.md) shows which programs each one blocks.
+- **cuBLAS:** cublas_v2.h's API.
+  - Not provided: cuBLASLt, cuBLASXt, the legacy API of `cublas.h`, and the
+    64-bit integer forms (`cublasSgemm_64`).
+  - Speed: without a CBLAS library, cuda4cpu's own BLAS is much slower than
+    an optimized one for large products (see [usage](usage.md#blas)).
+  - Rounding: half-precision products compute in float.

@@ -147,6 +147,29 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   const scramble-constant overloads, and the C++ API (`hiprand.hpp`).
   `include/library_types.h` is CUDA's (`libraryPropertyType`,
   `cudaDataType`).
+- `include/cublas_api.h`, `cublas_v2.h`, `hipblas/hipblas.h`,
+  `rocblas/rocblas.h` (and `rocblas.h`) and `lib/blas.cpp`: cuBLAS, hipBLAS
+  and rocBLAS, with C linkage. Their routines take the same arguments in the
+  same order, so `lib/make-blas-api.py` generates every API's declarations
+  (into the headers' `cuda4cpu-blas: begin ...` blocks) and their functions
+  (`lib/blas_api.inc`) from one table: each converts its arguments
+  (`blas::arg` for enumerations, AMD's having the reference CBLAS's values,
+  `blas::ptr` to `std::complex`, `blas::scalar_in`) and calls the routine,
+  `blas::<core>`, a template on the type, which checks the arguments as the
+  BLAS does and runs it through `blas::run`: when called, or as a host node
+  (`capture_host`) when the stream is captured. A scalar (`blas::scalar`)
+  is its value with the host's pointers, read when called, or the pointer
+  with the device's, read when it runs, so a graph's earlier nodes can set
+  it (`conjugateGradientCudaGraphs` does). A routine calls a CBLAS
+  library's (`cblas_function<F, T, prefix, suffix>`, `cblas_` + prefix + the
+  type's letter + suffix, looked up once), which `cblas()` loads with
+  `dlopen` the first time: `CUDA4CPU_BLAS` (a library, or `builtin`), or
+  OpenBLAS, BLIS, MKL, `libcblas.so.3`, `libblas.so.3`; else cuda4cpu's own
+  loops, in parallel (`parallel_for`: outside parallel regions, with enough
+  work). The handle's context is shared by every API; statuses are mapped
+  per API (`api_status`). Management, copies and the mixed-precision
+  products (`cublasGemmEx`, `Hgemm`: operands converted to the computation's
+  type, `gemm_ex`) are written by hand.
 - `include/mma.h`: CUDA's warp matrix functions (`nvcuda::wmma`), for half,
   bfloat16, tf32, double and 8-bit integers. Lane l holds elements
   `l * num_elements ...` of the tile, modulo its size, in the order of the
@@ -430,12 +453,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`build/<preset>/toolkit`, installed as `<libdir>/cuda4cpu/toolkit`), for
   build systems written for nvcc: `bin/nvcc` links to `cuda4cpu-nvcc`,
   `include` to the headers, and `lib64` has `libcudart.so`,
-  `libcudart_static.a`, `libcuda.so`, `libcurand.so` and
-  `libcurand_static.a` as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
+  `libcudart_static.a`, `libcuda.so`, `libcurand.so`,
+  `libcurand_static.a`, `libcublas.so`, `libcublasLt.so` and their static
+  archives as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
   they resolve through `-L` wherever it's installed, for libraries named
   by path, as CMake's `CUDA::curand`; every driver drops `-l` of the
   libraries libcuda4cpu provides, `PROVIDED_LIBRARIES` (`cudart`, `curand`,
-  `amdhip64`, `hiprand`, ...), so that a real one a `-L` finds isn't linked,
+  `cublas`, `amdhip64`, `hiprand`, `hipblas`, `rocblas`, ...), so that a real one a `-L` finds isn't linked,
   and links with `-L` the toolkit's `lib64` and `lib` before libcuda4cpu's
   directory), next to links to libcuda4cpu and its soname, and an empty
   `libcudadevrt.a`. `nvvm/libdevice` is empty: CMake checks it exists.
@@ -671,6 +695,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     device memory (and `universal_vector`'s as managed), host-to-device
     copies into it under `CUDA4CPU_MEMCPY_DIRECTION=error`, a kernel on it,
     and `thrust::system_error`.
+  - `cublas` (`cublas.cu`, with `CUDA4CPU_BLAS=builtin`) and `cublas_cblas`
+    (with the CBLAS library `CUDA4CPU_TEST_CBLAS` names, by default the
+    OpenBLAS CMake finds, which CI installs; failing if it isn't loaded):
+    every routine in each type against a long double reference that builds
+    each matrix from its storage, with every op, triangle, side and diagonal,
+    strides (negative in level 1 and 2), larger leading dimensions, and NaN
+    where the BLAS mustn't read; the mixed-precision products, the device's
+    pointers, calls captured in a graph (scalars read when it runs, or when
+    captured), copies, management and errors. `hip_blas` (`hip/blas.hip`):
+    hipBLAS's and rocBLAS's names, enumerations, complex types and statuses.
   - `curand` (`curand.cu`): XORWOW against reference streams (values 0, 1,
     2 and 1023 of six seeds and subsequences, and offsets), Philox's rounds
     against Random123's known answers, Sobol' points against Joe and Kuo's
