@@ -45,6 +45,9 @@ namespace cuda4cpu {
 
 inline namespace hip_api {
 
+//! HIP's marker for errors to come, which CUDA doesn't have
+inline constexpr cudaError_t hipErrorTbd = cudaError_t(1054);
+
 //! Converts between HIP's and CUDA's error codes, which are the same
 inline cudaError_t hipCUDAErrorTohipError(cudaError_t error) { return error; }
 inline cudaError_t hipErrorToCudaError(cudaError_t error) { return error; }
@@ -52,6 +55,9 @@ inline cudaError_t hipErrorToCudaError(cudaError_t error) { return error; }
 //! HIP's names for CUDA's error codes
 inline const char *hipGetErrorName(cudaError_t error)
 {
+    // HIP's own code, outside cudaError_t's enumerators (-Wswitch)
+    if (error == hipErrorTbd)
+        return "hipErrorTbd";
     switch (error) {
     case cudaSuccess:                        return "hipSuccess";
     case cudaErrorInvalidValue:              return "hipErrorInvalidValue";
@@ -73,6 +79,17 @@ inline const char *hipGetErrorName(cudaError_t error)
     case cudaErrorHostMemoryAlreadyRegistered: return "hipErrorHostMemoryAlreadyRegistered";
     case cudaErrorHostMemoryNotRegistered:   return "hipErrorHostMemoryNotRegistered";
     case cudaErrorLaunchFailure:             return "hipErrorLaunchFailure";
+    case cudaErrorMissingConfiguration: return "hipErrorMissingConfiguration";
+    case cudaErrorMapBufferObjectFailed: return "hipErrorMapFailed";
+    case cudaErrorUnsupportedLimit: return "hipErrorUnsupportedLimit";
+    case cudaErrorSharedObjectSymbolNotFound: return "hipErrorSharedObjectSymbolNotFound";
+    case cudaErrorSharedObjectInitFailed: return "hipErrorSharedObjectInitFailed";
+    case cudaErrorLaunchOutOfResources: return "hipErrorLaunchOutOfResources";
+    case cudaErrorLaunchTimeout: return "hipErrorLaunchTimeOut";
+    case cudaErrorPeerAccessAlreadyEnabled: return "hipErrorPeerAccessAlreadyEnabled";
+    case cudaErrorPeerAccessNotEnabled: return "hipErrorPeerAccessNotEnabled";
+    case cudaErrorSetOnActiveProcess: return "hipErrorSetOnActiveProcess";
+    case cudaErrorApiFailureBase:            return "hipErrorApiFailureBase";
     case cudaErrorCooperativeLaunchTooLarge: return "hipErrorCooperativeLaunchTooLarge";
     case cudaErrorNotSupported:              return "hipErrorNotSupported";
     case cudaErrorStreamCaptureUnsupported:  return "hipErrorStreamCaptureUnsupported";
@@ -1154,6 +1171,17 @@ using namespace cuda4cpu::hip_api;
 #define hipErrorNotReady cudaErrorNotReady
 #define hipErrorAssert cudaErrorAssert
 #define hipErrorLaunchFailure cudaErrorLaunchFailure
+#define hipErrorMissingConfiguration cudaErrorMissingConfiguration
+#define hipErrorMapFailed cudaErrorMapBufferObjectFailed
+#define hipErrorUnsupportedLimit cudaErrorUnsupportedLimit
+#define hipErrorSharedObjectSymbolNotFound cudaErrorSharedObjectSymbolNotFound
+#define hipErrorSharedObjectInitFailed cudaErrorSharedObjectInitFailed
+#define hipErrorLaunchOutOfResources cudaErrorLaunchOutOfResources
+#define hipErrorLaunchTimeOut cudaErrorLaunchTimeout
+#define hipErrorPeerAccessAlreadyEnabled cudaErrorPeerAccessAlreadyEnabled
+#define hipErrorPeerAccessNotEnabled cudaErrorPeerAccessNotEnabled
+#define hipErrorSetOnActiveProcess cudaErrorSetOnActiveProcess
+#define hipErrorMapBufferObjectFailed cudaErrorMapBufferObjectFailed
 #define hipErrorCooperativeLaunchTooLarge cudaErrorCooperativeLaunchTooLarge
 #define hipErrorNotSupported cudaErrorNotSupported
 #define hipErrorStreamCaptureUnsupported cudaErrorStreamCaptureUnsupported
@@ -1316,6 +1344,42 @@ using namespace cuda4cpu::hip_api;
 #define hipMemPoolAttrUsedMemCurrent cudaMemPoolAttrUsedMemCurrent
 #define hipMemPoolAttrUsedMemHigh cudaMemPoolAttrUsedMemHigh
 #define hipArray_t cudaArray_t
+
+// Textures (cuda/texture.hpp)
+#define hipChannelFormatKind cudaChannelFormatKind
+#define hipChannelFormatKindSigned cudaChannelFormatKindSigned
+#define hipChannelFormatKindUnsigned cudaChannelFormatKindUnsigned
+#define hipChannelFormatKindFloat cudaChannelFormatKindFloat
+#define hipChannelFormatKindNone cudaChannelFormatKindNone
+#define hipChannelFormatDesc cudaChannelFormatDesc
+#define hipCreateChannelDesc cudaCreateChannelDesc
+#define hipResourceType cudaResourceType
+#define hipResourceTypeArray cudaResourceTypeArray
+#define hipResourceTypeMipmappedArray cudaResourceTypeMipmappedArray
+#define hipResourceTypeLinear cudaResourceTypeLinear
+#define hipResourceTypePitch2D cudaResourceTypePitch2D
+#define hipResourceDesc cudaResourceDesc
+#define hipTextureAddressMode cudaTextureAddressMode
+#define hipAddressModeWrap cudaAddressModeWrap
+#define hipAddressModeClamp cudaAddressModeClamp
+#define hipAddressModeMirror cudaAddressModeMirror
+#define hipAddressModeBorder cudaAddressModeBorder
+#define hipTextureFilterMode cudaTextureFilterMode
+#define hipFilterModePoint cudaFilterModePoint
+#define hipFilterModeLinear cudaFilterModeLinear
+#define hipTextureReadMode cudaTextureReadMode
+#define hipReadModeElementType cudaReadModeElementType
+#define hipReadModeNormalizedFloat cudaReadModeNormalizedFloat
+#define hipTextureDesc cudaTextureDesc
+#define hipResourceViewDesc cudaResourceViewDesc
+#define hipResourceViewFormat cudaResourceViewFormat
+#define hipResViewFormatNone cudaResViewFormatNone
+#define hipTextureObject_t cudaTextureObject_t
+#define hipMipmappedArray_t cudaMipmappedArray_t
+#define hipCreateTextureObject cudaCreateTextureObject
+#define hipDestroyTextureObject cudaDestroyTextureObject
+#define hipGetTextureObjectResourceDesc cudaGetTextureObjectResourceDesc
+#define hipGetTextureObjectTextureDesc cudaGetTextureObjectTextureDesc
 #define hipArray_const_t cudaArray_const_t
 #define hipPitchedPtr cudaPitchedPtr
 #define hipExtent cudaExtent

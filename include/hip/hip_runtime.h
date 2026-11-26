@@ -258,6 +258,13 @@ inline void hipLaunchKernelGGL(F kernel, const dim3 &numBlocks, const dim3 &dimB
 #endif
 
 //
+// AMD's form of tex1Dfetch, which stores the element
+template <typename T>
+inline void tex1Dfetch(T *ptr, hipTextureObject_t texture, int x)
+{
+    *ptr = ::cuda4cpu::tex1Dfetch<T>(texture, x);
+}
+
 // Dynamic shared memory. HIP_DYNAMIC_SHARED(type, name) declares
 // extern __shared__ type name[]; cuda4cpu-rewrite rewrites it as it rewrites
 // those declarations. Without the rewriter, this macro gives the pointer form,

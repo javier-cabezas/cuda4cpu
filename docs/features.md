@@ -128,6 +128,7 @@
 | Streams | `cudaStreamCreate`, `cudaStreamCreateWithFlags`, `cudaStreamCreateWithPriority`, `cudaStreamDestroy`, `cudaStreamGetFlags`, `cudaStreamGetPriority`, `cudaStreamQuery`, `cudaStreamSynchronize`, `cudaStreamWaitEvent`, `cudaStreamAddCallback`, `cudaLaunchHostFunc`, and the default streams `cudaStreamLegacy` and `cudaStreamPerThread` (one per OS thread) |
 | Configuration hints, accepted and ignored | `cudaFuncSetAttribute`, `cudaFuncGetAttributes`, `cudaFuncSetCacheConfig`, `cudaDeviceSetCacheConfig`, `cudaDeviceSetSharedMemConfig`, `cudaStreamSetAttribute` (L2 access policy), `cudaCtxResetPersistingL2Cache`, `cudaProfilerStart`, `cudaProfilerStop` |
 | Headers | `cuda_runtime.h`, `cuda_runtime_api.h`, `cuda.h` (`CUDA_VERSION` and the runtime API; the driver API isn't implemented), `cuda_profiler_api.h`, `vector_types.h`, `vector_functions.h`, `device_launch_parameters.h`, `cooperative_groups.h`, `cooperative_groups/reduce.h`, `cooperative_groups/scan.h`, `cooperative_groups/memcpy_async.h`, `cuda/pipeline`, `cuda/barrier`, `cuda/cmath`, `cuda/std/type_traits`, `cuda_fp16.h`, `cuda_bf16.h`, `cuda_fp8.h`, `cuComplex.h`, `mma.h`, `curand.h`, `curand_kernel.h`, `library_types.h`, `nvtx3/nvToolsExt.h` and `nvToolsExt.h` (NVTX annotations, which do nothing) |
+| Textures | Texture objects of linear and pitched memory (`cudaCreateTextureObject`, `cudaDestroyTextureObject`, `cudaGetTextureObjectResourceDesc`, `cudaGetTextureObjectTextureDesc`, with the channel, resource and texture descriptors, `cudaCreateChannelDesc`), and `tex1Dfetch`, with element and normalized-float reads; not CUDA arrays and their textures (`tex1D`, `tex2D`, `tex3D`, filtering, addressing modes) yet |
 | Graphs | Explicit graphs with every node type except external semaphores: kernel, memcpy, memset, host, child graph, empty, event record and wait, memory allocation and free, and conditional nodes (if/else, while, switch, set by `cudaGraphSetConditional`), including `cudaGraphAddNode`. Dependencies, queries, `cudaGraphClone`, `cudaGraphDebugDotPrint`, instantiation, launch, `cudaGraphExecUpdate` and the `cudaGraphExec*NodeSetParams` functions, and the graph memory attributes. |
 | Stream capture | `cudaStreamBeginCapture`, `cudaStreamBeginCaptureToGraph`, `cudaStreamEndCapture`, `cudaStreamIsCapturing`, `cudaStreamGetCaptureInfo`, `cudaStreamUpdateCaptureDependencies`, and fork and join through events. Kernel launches, async copies and memsets, `cudaLaunchHostFunc`, `cudaMallocAsync` and `cudaFreeAsync` are captured. |
 | Launch | `cudaLaunchKernel`, `cudaLaunchCooperativeKernel`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor`, `cudaOccupancyMaxPotentialBlockSize`, `cudaOccupancyAvailableDynamicSMemPerBlock` |
@@ -165,6 +166,26 @@
     public.
   - MT19937 and MTGP32: C++'s `std::mt19937`, in the host API only.
   - The scrambled Sobol' sets: cuda4cpu's own random scrambling.
+
+**Thrust**, NVIDIA's (from its CCCL, as CUDA toolkits ship it, or CCCL's own
+repository), with `-I` to it: on its OpenMP backend, as nvcc builds it
+with `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_OMP`. See
+[usage](usage.md#thrust).
+- **Device memory:** a `device_vector`'s memory, and `thrust::device_malloc`'s,
+  comes from `cudaMalloc`, and a `universal_vector`'s from
+  `cudaMallocManaged`. So kernels take it, copies into it are host-to-device
+  ones, and cuda4cpu's checks know it.
+- **Programs written for Thrust's CUDA backend:**
+  - `thrust::cuda::par` and `par_nosync`, with `.on(stream)`, run on
+    OpenMP;
+  - `thrust::cuda::vector` and the CUDA system's other names work too;
+  - `thrust::system_error` is available without its own header, as the
+    CUDA backend's headers bring it along.
+- **Tested:** with CCCL 2.8 and 3.5.
+
+**rocThrust and hipCUB**, AMD's, on rocPRIM, on [HIP's AMD
+platform](hip.md#hips-amd-platform), with their HIP backends: rocPRIM's
+kernels run on cuda4cpu.
 
 **hipRAND** (`hiprand/hiprand.h`, `hiprand/hiprand_kernel.h`, and the C++
 API of `hiprand/hiprand.hpp`) is cuRAND with HIP's names, as on HIP's NVIDIA

@@ -87,7 +87,11 @@ works too, with HIP's NVIDIA platform and the toolkit's toolchain file. See
   of `hiprand/hiprand.hpp` (`hiprand_cpp`'s engines and distributions), on
   cuda4cpu's cuRAND (see [features](features.md#libraries)), and `-lhiprand`.
   rocRAND's own API (`rocrand_*`) isn't provided.
-- **Not implemented:** what CUDA lacks here too (textures, ...), and what
+- **rocThrust and hipCUB** (on HIP's AMD platform, with Clang): from their
+  own sources, with rocPRIM's, on their HIP backends. See
+  [usage](usage.md#thrust).
+- **Not implemented:** what CUDA lacks here too (textures of CUDA arrays,
+  ...), and what
   needs
   device code compiled or loaded at run time: HIPRTC and the module API
   (`hipModuleLoad`, ...). Also `hipPointerGetAttribute` and
@@ -124,7 +128,11 @@ cuda4cpu-hipcc --cuda4cpu-platform=amd --offload-arch=gfx1101 -o app app.hip
   `__amdgcn_processor__`, its name as a string) and `__AMDGCN_WAVEFRONT_SIZE__` (32),
   instead of `__HIP_PLATFORM_NVIDIA__`. Builds that don't go through the
   drivers can define `__HIP_PLATFORM_AMD__` and a `__gfx11xx__` or
-  `__gfx120x__` macro, and `hip/hip_common.h` adds the rest. `__HIP_DEVICE_COMPILE__` isn't defined,
+  `__gfx120x__` macro, and `hip/hip_common.h` adds the rest. Through the
+  drivers (or `cuda4cpu-rewrite`), HIP sources also get `__HIP__`, and not
+  `__CUDACC__` or `__NVCC__`, as with AMD's hipcc: rocThrust picks its HIP
+  backend by them. The half types (`__half`, `__half2`) are at global scope,
+  as AMD's, with their operators. `__HIP_DEVICE_COMPILE__` isn't defined,
   since host and device code compile together: define it
   (`-D__HIP_DEVICE_COMPILE__=1`) to compile code under it, such as
   rocPRIM's DPP paths, but code under `#ifndef __HIP_DEVICE_COMPILE__` then

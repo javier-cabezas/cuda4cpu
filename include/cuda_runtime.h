@@ -46,6 +46,9 @@ using namespace cuda4cpu::cuda_api;
 #define __DRIVER_TYPES_H__
 #endif
 
+// NVIDIA's CCCL on the CPU: Thrust on OpenMP (see cuda/cccl.hpp)
+#include "cuda/cccl.hpp"
+
 //! Calling convention of host callbacks, empty on Linux
 #ifndef CUDART_CB
 #define CUDART_CB

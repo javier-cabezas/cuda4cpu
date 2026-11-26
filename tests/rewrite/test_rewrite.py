@@ -341,6 +341,28 @@ class Errors(unittest.TestCase):
 
 
 class Headers(unittest.TestCase):
+    def test_system_include_directories(self):
+        """A rewritten copy of a header from a system include directory
+        (-isystem) is a system header too, without moving its lines"""
+        with tempfile.TemporaryDirectory() as tmp:
+            for kind in ('user', 'system'):
+                lib = os.path.join(tmp, kind, 'mylib')
+                os.makedirs(lib)
+                with open(os.path.join(lib, f'{kind}.hpp'), 'w') as f:
+                    f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            src = os.path.join(tmp, 'main.cu')
+            with open(src, 'w') as f:
+                f.write('#include <mylib/user.hpp>\n#include <mylib/system.hpp>\n')
+            shadow = os.path.join(tmp, 'shadow')
+            system = os.path.join(tmp, 'system')
+            rw.Rewriter(shadow, [os.path.join(tmp, 'user'), system], [system]).rewrite_file(src)
+            for kind, pragma in (('user', False), ('system', True)):
+                path = os.path.join(tmp, kind, 'mylib', f'{kind}.hpp')
+                with open(os.path.join(shadow, path.lstrip(os.sep))) as f:
+                    copy = f.read()
+                self.assertEqual(copy.startswith('#pragma GCC system_header\n#line 1 '), pragma, kind)
+                self.assertTrue(copy.split('\n', 2 if pragma else 1)[-1].startswith('#define LAUNCH'), kind)
+
     def test_include_directories(self):
         """Headers that -I finds are rewritten if they, or headers they
         include, have something to rewrite; the others stay where they are"""
@@ -436,6 +458,26 @@ class Headers(unittest.TestCase):
             self.assertIn('#define __HIPCC__', rw.PROLOGUES['hip'])
             self.assertIn('#define __CUDACC__', rw.PROLOGUES['hip'])
             self.assertNotIn('__HIPCC__', rw.PROLOGUES['cuda'])
+            # nvcc's host pass: its name and version, for CUDA and HIP on
+            # NVIDIA's platform; AMD's hipcc's __HIP__ on AMD's
+            self.assertIn('#define __NVCC__', rw.PROLOGUES['cuda'])
+            self.assertIn('#define __CUDACC_VER_MAJOR__ 12', rw.PROLOGUES['cuda'])
+            self.assertIn('#define __HIP__', rw.PROLOGUES['hip'])
+
+    def test_prologue_macros_by_platform(self):
+        """Preprocessed, the HIP prologue defines nvcc's macros on HIP's NVIDIA
+        platform, and __HIP__ without __CUDACC__ on AMD's"""
+        import shutil
+        import subprocess
+        compiler = shutil.which('c++') or shutil.which('g++')
+        if compiler is None:
+            self.skipTest('no C++ compiler')
+        probe = '#if defined(__CUDACC__)\ncuda\n#endif\n#if defined(__NVCC__)\nnvcc\n#endif\n' \
+                '#if defined(__HIP__)\nhip\n#endif\n'
+        for defines, expected in (([], {'cuda', 'nvcc'}), (['-D__HIP_PLATFORM_AMD__'], {'hip'})):
+            out = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'] + defines, input=rw.PROLOGUES['hip'] + probe,
+                                 capture_output=True, text=True, check=True).stdout
+            self.assertEqual({w for w in out.split() if w in ('cuda', 'nvcc', 'hip')}, expected, defines)
 
     def test_error_reports_file_and_line(self):
         with tempfile.TemporaryDirectory() as tmp:

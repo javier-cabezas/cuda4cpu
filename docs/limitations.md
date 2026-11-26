@@ -93,8 +93,12 @@
   distributed as CUDA's, but their values differ. MTGP32's device API isn't
   provided, and its host generator is `std::mt19937`. See
   [features](features.md#libraries).
-- **Not implemented yet:** textures and surfaces, dynamic parallelism,
-  the sub-byte types of `wmma::experimental`, inline PTX, the driver API,
-  and CUDA's libraries other than cuRAND (cuBLAS, cuFFT, Thrust, CUB, ...). [Compatibility with real CUDA and HIP
+- **Thrust runs on its OpenMP backend**, with CCCL's support of the half,
+  bfloat16 and 8-bit types off. CUB's device-wide algorithms don't build for
+  CUDA; hipCUB's do on HIP's AMD platform.
+- **Not implemented yet:** CUDA arrays and their textures and surfaces (texture
+  objects of linear memory work), dynamic parallelism, the sub-byte types of
+  `wmma::experimental`, inline PTX, the driver API, and CUDA's libraries
+  other than cuRAND and Thrust (cuBLAS, cuFFT, CUB's device algorithms, ...). [Compatibility with real CUDA and HIP
   code](compatibility.md) shows which programs each
   one blocks.

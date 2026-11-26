@@ -22,6 +22,13 @@
 // multiple
 #pragma once
 
+// libcu++'s, when the include path has it (CCCL): cuda4cpu's own is a
+// stand-in for programs without it
+#if __has_include_next(<cuda/cmath>)
+#include_next <cuda/cmath>
+#else
+
+
 #include <type_traits>
 
 namespace cuda {
@@ -55,3 +62,4 @@ constexpr ::std::common_type_t<T, U> round_down(const T a, const U b)
 }
 
 }
+#endif

@@ -279,6 +279,37 @@ on the build. Most of the others use AMD's own tools (assembly, LLVM IR,
 hipify) or AMD-only build steps. A few compile with the plain C++ compiler,
 which `CXX=<toolkit>/bin/cuda4cpu-c++` fixes.
 
+### Thrust
+
+cuda4cpu builds NVIDIA's Thrust, from the CCCL of a CUDA toolkit or of
+[CCCL's repository](https://github.com/NVIDIA/cccl). Point the include path
+at it: a toolkit's `include` directory, or a repository's `thrust`,
+`libcudacxx/include` and `cub` directories:
+
+```sh
+cuda4cpu-nvcc -I cccl/thrust -I cccl/libcudacxx/include -I cccl/cub sort.cu -o sort
+```
+
+Thrust runs on its OpenMP backend: `cuda_runtime.h` sets
+`THRUST_DEVICE_SYSTEM` to `THRUST_DEVICE_SYSTEM_OMP`, unless the program sets
+it. It also turns off CCCL's NVTX ranges and its own support of the half,
+bfloat16 and 8-bit floating-point types (`CCCL_DISABLE_NVTX`,
+`CCCL_DISABLE_FP16_SUPPORT`). Algorithms on those types still work.
+
+A few cuda4cpu headers come before CCCL's on the include path, in
+`include/thrust`:
+- **Device memory:** `device_vector` allocates with `cudaMalloc`.
+- **The CUDA backend's names:** `thrust::cuda::par` and the rest map to
+  OpenMP's.
+
+The driver doesn't rewrite CCCL's headers. On the OpenMP backend they launch
+no kernels. CUB's device-wide algorithms (`cub::DeviceReduce`, ...) launch
+kernels for a GPU, and don't build.
+
+On HIP's AMD platform, rocThrust and hipCUB build from their own sources,
+with rocPRIM's: `-I` to rocPRIM's `rocprim/include`, rocThrust's root and
+hipCUB's `hipcub/include`, with Clang.
+
 ## Porting a CUDA program
 
 CUDA code compiles as it is: there are no source changes. The rewriting turns
@@ -319,7 +350,10 @@ The rewriter also handles a few things that only nvcc understands:
   clock, which counts at the reported `clockRate`, like `clock64()`. On the
   host, `clock()` stays the C library's.
 - **`__CUDACC__`** is defined, as nvcc does, so code that checks for a CUDA
-  compiler takes the CUDA branch.
+  compiler takes the CUDA branch, and so are `__NVCC__` and nvcc's version
+  (`__CUDACC_VER_MAJOR__` 12, ...), as nvcc's host pass sees them: libraries
+  such as CCCL check them. HIP sources on HIP's AMD platform get `__HIP__`
+  instead, as with AMD's hipcc.
 
 C++ code can also use the API directly, without the rewriter:
 `cuda4cpu::launch(kernel, grid, block[, smem]).call(args...)` and

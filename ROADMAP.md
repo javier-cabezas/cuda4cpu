@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 150 of 175 pass today; most of the rest need
+shows what blocks real programs. 160 of 185 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -30,8 +30,10 @@ with cuBLAS, and rocm-examples has more for their ROCm counterparts.
 1. **cuRAND and hipRAND.** Done: XORWOW's and Philox's numbers are CUDA's,
    and five cuRAND samples, `MonteCarloMultiGPU` and the hipRAND examples
    pass.
-2. **Thrust and CUB, from their own sources:** NVIDIA's Thrust (CCCL) on its
-   OpenMP backend, for CUDA, and rocThrust and hipCUB on rocPRIM, for HIP.
+2. **Thrust and CUB, from their own sources.** Done: NVIDIA's Thrust (CCCL 2.8
+   and 3.5) on its OpenMP backend, for CUDA, and rocThrust and hipCUB on
+   rocPRIM, for HIP's AMD platform. Left: CUB's device-wide algorithms for
+   CUDA, which launch kernels for a GPU (3 samples).
 3. **cuBLAS, hipBLAS and rocBLAS** on a CBLAS (OpenBLAS), with a simple
    built-in fallback.
 4. **cuFFT, hipFFT and rocFFT** on pocketfft (BSD), not FFTW, which is GPL.

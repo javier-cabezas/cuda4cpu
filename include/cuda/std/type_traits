@@ -21,8 +21,16 @@
 // libcu++'s <cuda/std/type_traits>: the standard library's, as cuda::std
 #pragma once
 
+// libcu++'s, when the include path has it (CCCL, as Thrust and CUB need):
+// cuda4cpu's own is a stand-in for programs without it
+#if __has_include_next(<cuda/std/type_traits>)
+#include_next <cuda/std/type_traits>
+#else
+
+
 #include <type_traits>
 
 namespace cuda::std {
 using namespace ::std;
 }
+#endif

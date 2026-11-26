@@ -81,6 +81,10 @@ only those that change or include one that does.
 The rewritten .cu file defines __CUDACC__ first, as nvcc does, so that code
 that tells CUDA compilation apart from host compilation (for instance the
 host fallbacks in the CUDA samples' helper_math.h) takes the CUDA branch.
+It also defines __NVCC__ and nvcc's version (__CUDACC_VER_MAJOR__, ...,
+12.0.140 as CUDART_VERSION), as nvcc's host pass sees them: libraries such as
+CCCL (Thrust, CUB, libcu++) check that the compiler matches the runtime's
+version, and take their host paths only for nvcc.
 
 HIP sources (.hip files, or any file with --language hip) are rewritten the
 same way. They also define __HIPCC__ and __HIP_PLATFORM_NVIDIA__, as hipcc
@@ -93,10 +97,19 @@ import os
 import re
 import sys
 
+# nvcc's macros, as its host pass sees them
+NVCC_MACROS = ''.join(f'#ifndef {name}\n#define {name} {value}\n#endif\n' for name, value in (
+    ('__NVCC__', 1), ('__CUDACC_VER_MAJOR__', 12), ('__CUDACC_VER_MINOR__', 0), ('__CUDACC_VER_BUILD__', 140)))
+
 # Prepended to the rewritten file, before its #line directive, by language
 PROLOGUES = {
-    'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n',
-    'hip': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n'
+    'cuda': '#ifndef __CUDACC__\n#define __CUDACC__ 1\n#endif\n' + NVCC_MACROS,
+    # On HIP's AMD platform, as with hipcc there, __HIP__ and not __CUDACC__:
+    # rocThrust picks its HIP backend by them
+    'hip': '#if !defined(__CUDACC__) && !defined(__HIP_PLATFORM_AMD__)\n#define __CUDACC__ 1\n#endif\n'
+           # hipcc is nvcc on HIP's NVIDIA platform
+           '#ifndef __HIP_PLATFORM_AMD__\n' + NVCC_MACROS + '#endif\n'
+           '#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIP__)\n#define __HIP__ 1\n#endif\n'
            '#ifndef __HIPCC__\n#define __HIPCC__ 1\n#endif\n'
            '#if !defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)\n'
            '#define __HIP_PLATFORM_NVIDIA__ 1\n#endif\n',
@@ -842,9 +855,10 @@ def line_of(token):
 
 
 class Rewriter:
-    def __init__(self, shadow_dir, include_dirs=()):
+    def __init__(self, shadow_dir, include_dirs=(), system_include_dirs=()):
         self.shadow_dir = shadow_dir
         self.include_dirs = [os.path.abspath(d) for d in include_dirs]
+        self.system_include_dirs = [os.path.abspath(d) for d in system_include_dirs]
         self.read_files = []                        # every file read, for depfiles
         self.done = {}                              # original path -> shadow path, or None
         self.kernels = set()                        # __global__ functions seen so far
@@ -928,6 +942,10 @@ class Rewriter:
         # a header it includes, changes: libraries stay where they are,
         # and so do headers with #pragma once that others include too
         if local or changed or header in self.cycled:
+            # A system header's copy is one too, as the compiler would have
+            # seen the original (warnings): the copy is included by its path
+            if any(header.startswith(d + os.sep) for d in self.system_include_dirs):
+                text = '#pragma GCC system_header\n' + text
             write_if_changed(shadow, text)
             return shadow
         return None
@@ -1080,6 +1098,9 @@ def main(argv=None):
     parser.add_argument('-I', '--include-dir', action='append', default=[], dest='include_dirs',
                         help='a directory to look for included headers in, as the compiler does: '
                              'those that need rewriting are rewritten into the shadow directory')
+    parser.add_argument('--system-include-dir', action='append', default=[], dest='system_include_dirs',
+                        help='an include directory of system headers (-isystem): their rewritten copies '
+                             'are system headers too')
     parser.add_argument('--language', choices=sorted(PROLOGUES),
                         help='language of the input: hip for .hip files, cuda otherwise (default)')
     args = parser.parse_args(argv)
@@ -1092,7 +1113,8 @@ def main(argv=None):
             parser.error('--shadow-dir is required when writing to standard output')
         args.shadow_dir = args.output + '.headers'
 
-    rewriter = Rewriter(os.path.abspath(args.shadow_dir), args.include_dirs)
+    rewriter = Rewriter(os.path.abspath(args.shadow_dir), args.include_dirs + args.system_include_dirs,
+                        args.system_include_dirs)
     try:
         result = rewriter.rewrite_file(args.input)
     except RewriteError as e:
