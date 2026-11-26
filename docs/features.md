@@ -167,6 +167,51 @@
   - MT19937 and MTGP32: C++'s `std::mt19937`, in the host API only.
   - The scrambled Sobol' sets: cuda4cpu's own random scrambling.
 
+**cuBLAS** (`cublas_v2.h`; `-lcublas`, `-lcublasLt` and CMake's
+`CUDA::cublas` link it, as libcuda4cpu):
+
+- **Every BLAS routine**, in single, double, complex and double complex
+  precision:
+  - Level 1: `amax`, `amin`, `asum`, `axpy`, `copy`, `dot` (`dotu`,
+    `dotc`), `nrm2`, `rot`, `rotg`, `rotm`, `rotmg`, `scal` and `swap`.
+  - Level 2: `gemv`, `gbmv`, `ger`, `symv`, `sbmv`, `spmv`, `syr`, `syr2`,
+    `spr`, `spr2`, `trmv`, `tbmv`, `tpmv`, `trsv`, `tbsv`, `tpsv`, and the
+    hermitian ones (`hemv`, `hbmv`, `hpmv`, `her`, `her2`, `hpr`, `hpr2`).
+  - Level 3: `gemm`, `symm`, `hemm`, `syrk`, `herk`, `syr2k`, `her2k`,
+    `trmm` (out of place, as cuBLAS's) and `trsm`.
+- **cuBLAS's extensions:** `gemmBatched`, `gemmStridedBatched`,
+  `gemvBatched`, `gemvStridedBatched`, `trsmBatched`, `gemm3m`, `syrkx`,
+  `herkx`, `geam` and `dgmm`.
+- **Other types:** `cublasGemmEx`, `cublasGemmBatchedEx`,
+  `cublasGemmStridedBatchedEx`, `cublasSgemmEx` and `cublasCgemmEx`.
+  - Inputs: half, bfloat16, float, double, 8-bit integers, and complex
+    floats and doubles.
+  - Computed in float, double or 32-bit integers (`CUBLAS_COMPUTE_*`, or
+    cuBLAS 10's `cudaDataType`).
+  - `cublasHgemm` and its batches compute in float, and round to half.
+- **Management:**
+  - handles and their streams, pointer modes, math and atomics modes;
+  - `cublasSetVector`, `cublasGetVector`, `cublasSetMatrix`,
+    `cublasGetMatrix` and their `Async` forms;
+  - versions, and statuses' names and strings.
+- **Where it runs:**
+  - Calls run when they're made, or, in a captured stream, when the graph
+    runs.
+  - With `CUBLAS_POINTER_MODE_DEVICE`, scalars are read when the routine
+    runs, so a graph's earlier nodes can set them. With the host's mode,
+    they're read when the routine is called.
+  - The routines run on the CBLAS library that cuda4cpu finds when it
+    starts: OpenBLAS, BLIS, MKL or the reference BLAS, or the one
+    `CUDA4CPU_BLAS` names. See [usage](usage.md#blas).
+  - Without one, they run on cuda4cpu's own implementation, in parallel but
+    without blocking for the cache. It's correct, but much slower than an
+    optimized BLAS for large products.
+
+**hipBLAS and rocBLAS** (`hipblas/hipblas.h`, `rocblas/rocblas.h`; `-lhipblas`
+and `-lrocblas`) are the same routines, with their own names, enumerations,
+complex types (`hipComplex`, `rocblas_float_complex`) and statuses:
+hipBLAS 3's API, and rocBLAS 5's.
+
 **Thrust**, NVIDIA's (from its CCCL, as CUDA toolkits ship it, or CCCL's own
 repository), with `-I` to it: on its OpenMP backend, as nvcc builds it
 with `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_OMP`. See

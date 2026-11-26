@@ -1,4 +1,4 @@
-add_library(cuda4cpu cuda4cpu.cpp curand.cpp graphs.cpp memory.cpp)
+add_library(cuda4cpu blas.cpp cuda4cpu.cpp curand.cpp graphs.cpp memory.cpp)
 add_library(cuda4cpu::cuda4cpu ALIAS cuda4cpu)
 
 set(CUDA4CPU_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
@@ -18,10 +18,15 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/cuda_bf16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp16.h
             ${CUDA4CPU_INCLUDE_DIR}/cuda_fp8.h
+            ${CUDA4CPU_INCLUDE_DIR}/cublas_api.h
+            ${CUDA4CPU_INCLUDE_DIR}/cublas_v2.h
             ${CUDA4CPU_INCLUDE_DIR}/curand.h
             ${CUDA4CPU_INCLUDE_DIR}/curand_kernel.h
             ${CUDA4CPU_INCLUDE_DIR}/library_types.h
             ${CUDA4CPU_INCLUDE_DIR}/hip/amd_detail/host_defines.h
+            ${CUDA4CPU_INCLUDE_DIR}/hipblas/hipblas.h
+            ${CUDA4CPU_INCLUDE_DIR}/rocblas.h
+            ${CUDA4CPU_INCLUDE_DIR}/rocblas/rocblas.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/detail/config.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/device_vector.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/execution_policy.h
@@ -95,7 +100,7 @@ set_target_properties(cuda4cpu PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR})
 
 # Kernels are launched from header code that uses OpenMP, so consumers need it too
-target_link_libraries(cuda4cpu PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(cuda4cpu PUBLIC OpenMP::OpenMP_CXX PRIVATE ${CMAKE_DL_LIBS})
 
 target_compile_options(cuda4cpu PRIVATE -Wall)
 

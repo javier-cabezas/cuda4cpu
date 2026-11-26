@@ -28,7 +28,7 @@ jobs:
         id: setup
         uses: ./.github/actions/setup
         with:
-          packages: ninja-build libnuma-dev ${{ matrix.compiler.packages }}
+          packages: ninja-build libnuma-dev libopenblas0-pthread ${{ matrix.compiler.packages }}
           ccache-key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
 
       # NVIDIA's CCCL, for the Thrust tests (CUDA4CPU_CCCL_DIR)

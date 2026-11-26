@@ -3,7 +3,7 @@
     "cuda-samples": {
       "url": "https://github.com/NVIDIA/cuda-samples.git",
       "revision": "v13.4",
-      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND and Thrust (from NVIDIA's CCCL, on its OpenMP backend), CUB, MPI or multiple GPUs). They check their own results.",
+      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND, cuBLAS and Thrust (from NVIDIA's CCCL, on its OpenMP backend), CUB, MPI or multiple GPUs). They check their own results.",
       "defaults": {
         "sources": [
           "*.cu",
@@ -21,6 +21,10 @@
         }
       },
       "programs": [
+        {
+          "dir": "cpp/0_Introduction/UnifiedMemoryStreams",
+          "verified": false
+        },
         {
           "dir": "cpp/0_Introduction/asyncAPI"
         },
@@ -518,7 +522,7 @@
     "rocm-examples": {
       "url": "https://github.com/ROCm/rocm-examples.git",
       "revision": "rocm-7.2.4",
-      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocThrust, hipCUB, rocWMMA and hipRAND or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
+      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocThrust, hipCUB, rocWMMA, hipRAND, rocBLAS and hipBLAS or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
       "defaults": {
         "driver": "hipcc",
         "sources": [
@@ -1278,6 +1282,57 @@
             "-D__HIP_DEVICE_COMPILE__=1"
           ],
           "expect": "Sorted \\(key, value\\) pairs: \\[ \\(0, 9\\), \\(1\\.1, 8\\), \\(2\\.1, 1\\), \\(2\\.2, 4\\), \\(2\\.7, 7\\), \\(3\\.6, 6\\), \\(4, 3\\), \\(5, 5\\), \\(7\\.3, 2\\), \\(9\\.3, 0\\) \\]"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_1/axpy",
+          "name": "rocblas_axpy"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_1/dot",
+          "name": "rocblas_dot"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_1/nrm2",
+          "name": "rocblas_nrm2"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_1/scal",
+          "name": "rocblas_scal"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_1/swap",
+          "name": "rocblas_swap"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_2/gemv",
+          "name": "rocblas_gemv"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_2/her",
+          "name": "rocblas_her",
+          "flags": [
+            "--cuda4cpu-platform=amd"
+          ]
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_3/gemm",
+          "name": "rocblas_gemm"
+        },
+        {
+          "dir": "Libraries/rocBLAS/level_3/gemm_strided_batched",
+          "name": "rocblas_gemm_strided_batched"
+        },
+        {
+          "dir": "Libraries/hipBLAS/gemm_strided_batched",
+          "name": "hipblas_gemm_strided_batched"
+        },
+        {
+          "dir": "Libraries/hipBLAS/her",
+          "name": "hipblas_her"
+        },
+        {
+          "dir": "Libraries/hipBLAS/scal",
+          "name": "hipblas_scal"
         }
       ]
     }
