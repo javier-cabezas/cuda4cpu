@@ -93,7 +93,8 @@ OPTIONS_WITH_VALUE = {
     '-o', '-x', '-include', '-imacros', '-isystem', '-iquote', '-idirafter', '-iprefix',
     '-iwithprefix', '-iwithprefixbefore', '-isysroot', '-MF', '-MT', '-MQ', '-Xlinker',
     '-Xassembler', '-Xpreprocessor', '-L', '-I', '-D', '-U', '-l', '-T', '-u', '-e',
-    '-aux-info', '--param', '-dumpbase', '-dumpdir', '-wrapper', '-z',
+    '-aux-info', '--param', '-dumpbase', '-dumpdir', '-wrapper', '-z', '-B', '-target', '--sysroot',
+    '-Xclang', '-gcc-toolchain',
 }
 
 # Options that stop before linking
@@ -461,17 +462,25 @@ def include_dirs(argv, system=False):
 
 
 def without_trailing_x_none(args):
-    """args without the last -x none if no input file follows it: Clang
-    warns that it has no effect (an error with -Werror), and each rewritten
-    source is followed by one"""
-    last = max((i for i in range(len(args) - 1) if args[i] == '-x' and args[i + 1] == 'none'), default=None)
-    if last is None:
-        return args
-    for i in range(last + 2, len(args)):
-        value = i > 0 and (args[i - 1] in OPTIONS_WITH_VALUE or args[i - 1] == '-x')
-        if not args[i].startswith('-') and not value:
-            return args
-    return args[:last] + args[last + 2:]
+    """args without the -x none options that no input file follows: Clang
+    warns that they have no effect (an error with -Werror), and each
+    rewritten source is followed by one, which a program's own -x none can
+    follow too"""
+    # Options and their values in order, as the compiler reads them:
+    # -Xlinker -x is the linker's option, and the file after it an input
+    x_none, last_input = [], -1
+    i = 0
+    while i < len(args):
+        if args[i] in OPTIONS_WITH_VALUE and i + 1 < len(args):
+            if args[i] == '-x' and args[i + 1] == 'none':
+                x_none.append(i)
+            i += 2
+            continue
+        if not args[i].startswith('-'):
+            last_input = i
+        i += 1
+    dropped = {i for i in x_none if i > last_input}
+    return [a for i, a in enumerate(args) if i not in dropped and i - 1 not in dropped]
 
 
 def with_shadow_mirrors(args, shadow_dirs):

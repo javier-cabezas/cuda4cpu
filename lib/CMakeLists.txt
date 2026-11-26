@@ -33,6 +33,7 @@ target_sources(cuda4cpu
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/error.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/memory_resource.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/execution_policy.h
+            ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/future.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/memory.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/pointer.h
             ${CUDA4CPU_INCLUDE_DIR}/thrust/system/cuda/vector.h

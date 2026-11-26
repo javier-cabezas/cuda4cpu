@@ -26,4 +26,8 @@
 
 #include "../../cuda/cccl.hpp"
 
+#if __has_include_next(<thrust/detail/config.h>)
 #include_next <thrust/detail/config.h>
+#else
+#error "cuda4cpu: Thrust is NVIDIA's CCCL: add its include directories (a CUDA toolkit's include, or a CCCL repository's thrust, libcudacxx/include and cub)"
+#endif

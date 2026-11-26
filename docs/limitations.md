@@ -18,10 +18,12 @@
 - **Kernel launches are synchronous** and always run on the host. Streams and
   events exist for API compatibility only, and asynchronous copies complete
   before they return, so `cudaErrorNotReady` never occurs.
-- **The rewriter finds local headers through relative paths only.** Headers
-  included with `#include "..."` relative to the including file are rewritten.
-  Headers found through include directories (`-I`) or `#include <...>` are not.
-  A launch or `extern __shared__` array in one of those doesn't compile.
+- **`cuda4cpu_add_cuda_sources` rewrites local headers only**, and so does
+  `cuda4cpu_add_hip_sources`. Through CMake's functions, headers included with `#include "..."` relative to the including
+  file are rewritten; headers found through include directories (`-I`) or
+  `#include <...>` are not, so a launch or `extern __shared__` array in one of
+  those doesn't compile. The drivers (`cuda4cpu-c++`, `cuda4cpu-nvcc`,
+  `cuda4cpu-hipcc`) rewrite those too.
 - **`extern __shared__` at namespace scope** becomes an object that converts
   to a pointer and supports subscripts, but not `reinterpret_cast` or
   `sizeof`. Inside functions it is a plain pointer. Alignment specifiers are

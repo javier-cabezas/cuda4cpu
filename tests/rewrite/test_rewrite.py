@@ -343,25 +343,48 @@ class Errors(unittest.TestCase):
 class Headers(unittest.TestCase):
     def test_system_include_directories(self):
         """A rewritten copy of a header from a system include directory
-        (-isystem) is a system header too, without moving its lines"""
+        (-isystem), or found next to one, is a system header too, without
+        moving its lines; a header of a -I directory inside a system one
+        isn't"""
         with tempfile.TemporaryDirectory() as tmp:
-            for kind in ('user', 'system'):
-                lib = os.path.join(tmp, kind, 'mylib')
-                os.makedirs(lib)
-                with open(os.path.join(lib, f'{kind}.hpp'), 'w') as f:
-                    f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            # (directory, header): user's -I is inside the system directory
+            headers = (('system/user', 'user.hpp'), ('system', 'system.hpp'), ('system', 'next.hpp'))
+            for directory, name in headers:
+                lib = os.path.join(tmp, directory, 'mylib')
+                os.makedirs(lib, exist_ok=True)
+                with open(os.path.join(lib, name), 'w') as f:
+                    include = '#include "next.hpp"\n' if name == 'system.hpp' else ''
+                    f.write(include + f'#define LAUNCH_{name[0]}(k) k<<<1, 1>>>()\n')
             src = os.path.join(tmp, 'main.cu')
             with open(src, 'w') as f:
                 f.write('#include <mylib/user.hpp>\n#include <mylib/system.hpp>\n')
             shadow = os.path.join(tmp, 'shadow')
             system = os.path.join(tmp, 'system')
-            rw.Rewriter(shadow, [os.path.join(tmp, 'user'), system], [system]).rewrite_file(src)
-            for kind, pragma in (('user', False), ('system', True)):
-                path = os.path.join(tmp, kind, 'mylib', f'{kind}.hpp')
+            rw.Rewriter(shadow, [os.path.join(tmp, 'system', 'user'), system], [system]).rewrite_file(src)
+            for (directory, name), pragma in zip(headers, (False, True, True)):
+                kind = name[:-4]
+                path = os.path.join(tmp, directory, 'mylib', name)
                 with open(os.path.join(shadow, path.lstrip(os.sep))) as f:
                     copy = f.read()
                 self.assertEqual(copy.startswith('#pragma GCC system_header\n#line 1 '), pragma, kind)
-                self.assertTrue(copy.split('\n', 2 if pragma else 1)[-1].startswith('#define LAUNCH'), kind)
+                self.assertTrue(copy.split('\n', 2 if pragma else 1)[-1].startswith(('#define LAUNCH', '#include')),
+                                kind)
+
+    def test_system_header_reached_first_as_a_user_header(self):
+        """A header that a quote include reaches first (maybe in a branch the
+        preprocessor skips) and an -isystem lookup later is a system header"""
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, 'third_party')
+            os.makedirs(system)
+            with open(os.path.join(system, 'lib.hpp'), 'w') as f:
+                f.write('#define LAUNCH(k) k<<<1, 1>>>()\n')
+            src = os.path.join(tmp, 'main.cu')
+            with open(src, 'w') as f:
+                f.write('#ifdef LOCAL\n#include "third_party/lib.hpp"\n#endif\n#include <lib.hpp>\n')
+            shadow = os.path.join(tmp, 'shadow')
+            rw.Rewriter(shadow, [system], [system]).rewrite_file(src)
+            with open(os.path.join(shadow, system.lstrip(os.sep), 'lib.hpp')) as f:
+                self.assertTrue(f.read().startswith(rw.SYSTEM_HEADER + '#line 1 '))
 
     def test_include_directories(self):
         """Headers that -I finds are rewritten if they, or headers they
