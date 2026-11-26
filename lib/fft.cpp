@@ -56,6 +56,10 @@
 #pragma GCC diagnostic ignored "-Wall"
 #pragma GCC diagnostic ignored "-Wextra"
 #endif
+// Its thread pool restarts in a child of fork(); its buffers come from
+// posix_memalign
+#define POCKETFFT_PTHREADS
+#define POCKETFFT_USE_POSIX_MEMALIGN
 #include "third_party/pocketfft/pocketfft_hdronly.h"
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
@@ -187,7 +191,7 @@ template <typename T>
 void execute_typed(const plan &p, void *in_ptr, void *out_ptr, bool forward)
 {
     using C = std::complex<T>;
-    const bool in_place = in_ptr == out_ptr;
+    const bool in_place = in_ptr == out_ptr; // cuFFT's basic layout: padded in place
     layout in = p.in, out = p.out;
     if (p.basic)
         std::tie(in, out) = basic_layouts(p, in_place);
@@ -198,21 +202,28 @@ void execute_typed(const plan &p, void *in_ptr, void *out_ptr, bool forward)
     const auto out_lengths = array_lengths(p, false);
 
     // Load callbacks: the input loaded into a copy, with the same layout
+    // Callbacks get the array at its offset, and offsets from there, as
+    // rocFFT's kernels give them (cuFFT's arrays have no offsets); copies
+    // start at the offset too
     std::vector<unsigned char> loaded;
-    const void *source = in_ptr;
+    const void *source = static_cast<const unsigned char *>(in_ptr) + in.offset * in_size;
+    layout in_rel = in, out_rel = out;
+    in_rel.offset = out_rel.offset = 0;
     if (p.load.function != nullptr) {
-        loaded.assign(footprint(p, in_lengths, in) * in_size, 0);
+        loaded.assign(footprint(p, in_lengths, in_rel) * in_size, 0);
         std::vector<unsigned char> shared(p.load.shared);
+        void *const shared_ptr = shared.empty() ? nullptr : shared.data();
+        void *const buffer = const_cast<void *>(source);
         void *data = p.load.data;
         if (real_in) {
             auto f = reinterpret_cast<load_function<T>>(p.load.function);
             T *to = reinterpret_cast<T *>(loaded.data());
-            each_element(p, in_lengths, in, [&](std::size_t o) { to[o] = f(in_ptr, o, data, shared.data()); });
+            each_element(p, in_lengths, in_rel, [&](std::size_t o) { to[o] = f(buffer, o, data, shared_ptr); });
         } else {
             auto f = reinterpret_cast<load_function<complex_of<T>>>(p.load.function);
             C *to = reinterpret_cast<C *>(loaded.data());
-            each_element(p, in_lengths, in, [&](std::size_t o) {
-                const complex_of<T> e = f(in_ptr, o, data, shared.data());
+            each_element(p, in_lengths, in_rel, [&](std::size_t o) {
+                const complex_of<T> e = f(buffer, o, data, shared_ptr);
                 to[o] = C(e.x, e.y);
             });
         }
@@ -220,18 +231,36 @@ void execute_typed(const plan &p, void *in_ptr, void *out_ptr, bool forward)
     }
     // Store callbacks: the output into a copy, stored from it
     std::vector<unsigned char> stored;
-    void *target = out_ptr;
+    void *const out_buffer = static_cast<unsigned char *>(out_ptr) + out.offset * out_size;
+    void *target = out_buffer;
     if (p.store.function != nullptr) {
-        stored.assign(footprint(p, out_lengths, out) * out_size, 0);
+        stored.assign(footprint(p, out_lengths, out_rel) * out_size, 0);
         target = stored.data();
+    }
+
+    // In place, pocketfft needs the same strides, and reads a line before
+    // it writes it: complex arrays with the same layout. Anything else
+    // (real transforms, other strides or offsets) transforms a copy of the
+    // input
+    std::vector<unsigned char> input_copy;
+    if (in_ptr == out_ptr && p.load.function == nullptr && p.store.function == nullptr) {
+        const bool same = p.k == kind::c2c && in.offset == out.offset && (p.batch == 1 || in.dist == out.dist) &&
+                          std::equal(in.stride.begin(), in.stride.begin() + p.rank, out.stride.begin());
+        if (!same) {
+            input_copy.resize(footprint(p, in_lengths, in_rel) * in_size);
+            std::memcpy(input_copy.data(), source, input_copy.size());
+            source = input_copy.data();
+        }
     }
 
     const std::size_t rank = std::size_t(p.rank);
     pocketfft::shape_t shape(rank + 1), axes(rank);
     pocketfft::stride_t stride_in(rank + 1), stride_out(rank + 1);
+    // One transform: its distance is no stride (pocketfft compares them in
+    // place)
     shape[0] = std::size_t(p.batch);
-    stride_in[0] = std::ptrdiff_t(in.dist * (long long)in_size);
-    stride_out[0] = std::ptrdiff_t(out.dist * (long long)out_size);
+    stride_in[0] = p.batch == 1 ? 0 : std::ptrdiff_t(in.dist * (long long)in_size);
+    stride_out[0] = p.batch == 1 ? 0 : std::ptrdiff_t(out.dist * (long long)out_size);
     for (std::size_t d = 0; d < rank; ++d) {
         shape[d + 1] = std::size_t(p.n[d]);
         stride_in[d + 1] = std::ptrdiff_t(in.stride[d] * (long long)in_size);
@@ -243,9 +272,8 @@ void execute_typed(const plan &p, void *in_ptr, void *out_ptr, bool forward)
         elements *= p.n[d];
     const std::size_t threads = elements > 32768 && !omp_in_parallel() ? std::size_t(omp_get_max_threads()) : 1;
     const T scale = T(p.scale);
-    // A copy has the array's layout, offset included
-    const auto *src = static_cast<const unsigned char *>(source) + in.offset * in_size;
-    auto *dst = static_cast<unsigned char *>(target) + out.offset * out_size;
+    const auto *src = static_cast<const unsigned char *>(source);
+    auto *dst = static_cast<unsigned char *>(target);
     switch (p.k) {
     case kind::c2c:
         pocketfft::c2c(shape, stride_in, stride_out, axes, forward, reinterpret_cast<const C *>(src),
@@ -263,16 +291,17 @@ void execute_typed(const plan &p, void *in_ptr, void *out_ptr, bool forward)
 
     if (p.store.function != nullptr) {
         std::vector<unsigned char> shared(p.store.shared);
+        void *const shared_ptr = shared.empty() ? nullptr : shared.data();
         void *data = p.store.data;
         if (real_out) {
             auto f = reinterpret_cast<store_function<T>>(p.store.function);
             const T *from = reinterpret_cast<const T *>(stored.data());
-            each_element(p, out_lengths, out, [&](std::size_t o) { f(out_ptr, o, from[o], data, shared.data()); });
+            each_element(p, out_lengths, out_rel, [&](std::size_t o) { f(out_buffer, o, from[o], data, shared_ptr); });
         } else {
             auto f = reinterpret_cast<store_function<complex_of<T>>>(p.store.function);
             const C *from = reinterpret_cast<const C *>(stored.data());
-            each_element(p, out_lengths, out, [&](std::size_t o) {
-                f(out_ptr, o, complex_of<T>{from[o].real(), from[o].imag()}, data, shared.data());
+            each_element(p, out_lengths, out_rel, [&](std::size_t o) {
+                f(out_buffer, o, complex_of<T>{from[o].real(), from[o].imag()}, data, shared_ptr);
             });
         }
     }
@@ -306,12 +335,14 @@ inline status execute(const plan &p, void *in, void *out, bool forward)
 //! A plan's lengths, batch and layouts: in and out (cuFFT's inembed and
 //! onembed, with strides and distances) or, if either is null, the basic
 //! layout
-inline status make(plan &p, int rank, const long long *n, const long long *inembed, long long istride,
+inline status make(plan &made, int rank, const long long *n, const long long *inembed, long long istride,
                    long long idist, const long long *onembed, long long ostride, long long odist, int type,
                    long long batch)
 {
     if (rank < 1 || rank > 3 || n == nullptr)
         return status::invalid_value;
+    // A plan that fails leaves the handle's previous one as it was
+    plan p = made;
     switch (type) {
     case CUFFT_C2C: p.k = kind::c2c; p.dbl = false; break;
     case CUFFT_Z2Z: p.k = kind::c2c; p.dbl = true; break;
@@ -330,22 +361,31 @@ inline status make(plan &p, int rank, const long long *n, const long long *inemb
     p.n = {1, 1, 1};
     std::copy_n(n, rank, p.n.begin());
     p.batch = batch;
+    // A null embedding is cuFFT's basic layout, for both arrays: the other
+    // advanced parameters are ignored
     p.basic = inembed == nullptr || onembed == nullptr;
     if (!p.basic) {
-        if (istride < 1 || ostride < 1 || idist < 1 || odist < 1)
+        // A distance matters only between transforms; an embedding holds
+        // the array's lengths
+        if (istride < 1 || ostride < 1 || (batch > 1 && (idist < 1 || odist < 1)))
             return status::invalid_value;
+        const auto in_lengths = array_lengths(p, true), out_lengths = array_lengths(p, false);
+        for (int d = 1; d < rank; ++d)
+            if (inembed[d] < in_lengths[d] || onembed[d] < out_lengths[d])
+                return status::invalid_value;
         auto advanced = [&](const long long *embed, long long stride, long long dist) {
             layout l;
             l.stride[rank - 1] = stride;
             for (int d = rank - 2; d >= 0; --d)
                 l.stride[d] = l.stride[d + 1] * embed[d + 1];
-            l.dist = dist;
+            l.dist = std::max(dist, 0LL);
             return l;
         };
         p.in = advanced(inembed, istride, idist);
         p.out = advanced(onembed, ostride, odist);
     }
     p.made = true;
+    made = p;
     return status::success;
 }
 
@@ -372,9 +412,10 @@ inline bool matches(const plan &p, kind k, bool dbl)
     return p.k == k && p.dbl == dbl;
 }
 
-// cuFFT's handles are ints: an index into a table
-std::mutex handles_mutex;
-std::vector<std::unique_ptr<plan>> handles;
+// cuFFT's handles are ints: an index into a table, never destroyed, since a
+// static object's destructor may destroy a plan after main returns
+std::mutex &handles_mutex = *new std::mutex;
+std::vector<std::unique_ptr<plan>> &handles = *new std::vector<std::unique_ptr<plan>>;
 
 inline plan *from_handle(int handle)
 {
@@ -1088,13 +1129,16 @@ namespace {
 
 //! A rocFFT layout: the description's strides and distance (fastest first,
 //! reversed into the plan's order), or the default's where it leaves them
-fft::layout rocfft_layout(const fft::plan &p, const fft::layout &defaults, const std::vector<std::size_t> &strides,
-                          std::size_t distance, std::size_t offset)
+fft::layout rocfft_layout(const fft::plan &p, bool input, const fft::layout &defaults,
+                          const std::vector<std::size_t> &strides, std::size_t distance, std::size_t offset)
 {
     fft::layout l = defaults;
-    if (!strides.empty())
+    if (!strides.empty()) {
         for (int d = 0; d < p.rank; ++d)
             l.stride[p.rank - 1 - d] = (long long)strides[d];
+        // The default distance: past the slowest dimension's last element
+        l.dist = l.stride[0] * fft::array_lengths(p, input)[0];
+    }
     if (distance != 0)
         l.dist = (long long)distance;
     l.offset = (long long)offset;
@@ -1177,7 +1221,7 @@ rocfft_status rocfft_plan_create(rocfft_plan *plan, rocfft_result_placement plac
         return rocfft_status_invalid_arg_value;
     if (dimensions < 1 || dimensions > 3)
         return rocfft_status_invalid_dimensions;
-    if (precision == rocfft_precision_half)
+    if (precision != rocfft_precision_single && precision != rocfft_precision_double)
         return rocfft_status_invalid_arg_value;
     if (placement != rocfft_placement_inplace && placement != rocfft_placement_notinplace)
         return rocfft_status_invalid_arg_value;
@@ -1209,7 +1253,9 @@ rocfft_status rocfft_plan_create(rocfft_plan *plan, rocfft_result_placement plac
         (d.out_type != rocfft_array_type_unset && d.out_type != out_type))
         return rocfft_status_invalid_array_type;
     if ((!d.in_strides.empty() && d.in_strides.size() != dimensions) ||
-        (!d.out_strides.empty() && d.out_strides.size() != dimensions))
+        (!d.out_strides.empty() && d.out_strides.size() != dimensions) ||
+        std::count(d.in_strides.begin(), d.in_strides.end(), 0u) != 0 ||
+        std::count(d.out_strides.begin(), d.out_strides.end(), 0u) != 0)
         return rocfft_status_invalid_strides;
 
     auto made = std::make_unique<rocfft_plan_t>();
@@ -1225,8 +1271,8 @@ rocfft_status rocfft_plan_create(rocfft_plan *plan, rocfft_result_placement plac
                     transform_type == rocfft_transform_type_real_forward;
     const auto [in, out] = fft::basic_layouts(made->p, made->in_place);
     made->p.basic = false;
-    made->p.in = rocfft_layout(made->p, in, d.in_strides, d.in_distance, d.in_offset);
-    made->p.out = rocfft_layout(made->p, out, d.out_strides, d.out_distance, d.out_offset);
+    made->p.in = rocfft_layout(made->p, true, in, d.in_strides, d.in_distance, d.in_offset);
+    made->p.out = rocfft_layout(made->p, false, out, d.out_strides, d.out_distance, d.out_offset);
     made->p.scale = d.scale;
     *plan = made.release();
     return rocfft_status_success;

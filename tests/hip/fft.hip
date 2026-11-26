@@ -136,6 +136,14 @@ double2 load_scaled(void *in, size_t offset, void *data, void *)
     return {s * e.x, s * e.y};
 }
 
+//! A filter indexed by the callback's offset, as rocm-examples' callbacks do
+double2 load_filtered(void *in, size_t offset, void *data, void *)
+{
+    const double2 e = static_cast<double2 *>(in)[offset];
+    const double f = static_cast<double *>(data)[offset];
+    return {f * e.x, f * e.y};
+}
+
 void rocfft()
 {
     ROCFFT(rocfft_setup());
@@ -216,6 +224,66 @@ void rocfft()
     ROCFFT(rocfft_plan_destroy(inverse));
     CHECK(hipStreamDestroy(stream) == hipSuccess);
 
+    // Strides without a distance: the default is past the slowest
+    // dimension's last element (2 transforms of 4, stride 2: distance 8)
+    {
+        const size_t len[1] = {4}, stride[1] = {2};
+        std::vector<double2> buf(16), res(8);
+        std::vector<std::vector<cd>> xs(2, std::vector<cd>(4));
+        for (int b = 0; b < 2; ++b)
+            for (int i = 0; i < 4; ++i) {
+                buf[b * 8 + i * 2] = {b + 1.0 * i, 0.5 * i - b};
+                xs[b][i] = {buf[b * 8 + i * 2].x, buf[b * 8 + i * 2].y};
+            }
+        rocfft_plan_description desc;
+        ROCFFT(rocfft_plan_description_create(&desc));
+        ROCFFT(rocfft_plan_description_set_data_layout(desc, rocfft_array_type_complex_interleaved,
+                                                       rocfft_array_type_complex_interleaved, nullptr, nullptr, 1,
+                                                       stride, 0, 0, nullptr, 0));
+        rocfft_plan strided;
+        ROCFFT(rocfft_plan_create(&strided, rocfft_placement_notinplace, rocfft_transform_type_complex_forward,
+                                  rocfft_precision_double, 1, len, 2, desc));
+        void *bi[1] = {buf.data()}, *bo[1] = {res.data()};
+        ROCFFT(rocfft_execute(strided, bi, bo, nullptr));
+        bool fine = true;
+        for (int b = 0; b < 2; ++b) {
+            const auto w = dft(xs[b], -1);
+            for (int i = 0; i < 4; ++i)
+                fine &= near({res[b * 4 + i].x, res[b * 4 + i].y}, w[i]);
+        }
+        CHECK(fine);
+        ROCFFT(rocfft_plan_destroy(strided));
+        ROCFFT(rocfft_plan_description_destroy(desc));
+    }
+
+    // A callback with an input offset: the array at the offset, and offsets
+    // from there
+    {
+        const size_t len[1] = {4}, offset[1] = {3};
+        std::vector<double2> buf(7), res(4);
+        for (int i = 0; i < 7; ++i)
+            buf[i] = {i < 3 ? 1e9 : double(i - 3), 0};
+        rocfft_plan_description desc;
+        ROCFFT(rocfft_plan_description_create(&desc));
+        ROCFFT(rocfft_plan_description_set_data_layout(desc, rocfft_array_type_complex_interleaved,
+                                                       rocfft_array_type_complex_interleaved, offset, nullptr, 0,
+                                                       nullptr, 0, 0, nullptr, 0));
+        rocfft_plan shifted;
+        ROCFFT(rocfft_plan_create(&shifted, rocfft_placement_notinplace, rocfft_transform_type_complex_forward,
+                                  rocfft_precision_double, 1, len, 1, desc));
+        double filter[4] = {1, 10, 100, 1000};
+        void *cb = reinterpret_cast<void *>(&load_filtered), *cbd = filter;
+        rocfft_execution_info shifted_info;
+        ROCFFT(rocfft_execution_info_create(&shifted_info));
+        ROCFFT(rocfft_execution_info_set_load_callback(shifted_info, &cb, &cbd, 0));
+        void *bi[1] = {buf.data()}, *bo[1] = {res.data()};
+        ROCFFT(rocfft_execute(shifted, bi, bo, shifted_info));
+        CHECK(near({res[0].x, res[0].y}, 3210.0)); // 0 + 1 * 10 + 2 * 100 + 3 * 1000
+        ROCFFT(rocfft_execution_info_destroy(shifted_info));
+        ROCFFT(rocfft_plan_destroy(shifted));
+        ROCFFT(rocfft_plan_description_destroy(desc));
+    }
+
     // Errors: dimensions, array types, strides
     const size_t four[4] = {2, 2, 2, 2};
     CHECK(rocfft_plan_create(&plan, rocfft_placement_inplace, rocfft_transform_type_complex_forward,
@@ -227,6 +295,16 @@ void rocfft()
     CHECK(rocfft_plan_create(&plan, rocfft_placement_inplace, rocfft_transform_type_complex_forward,
                              rocfft_precision_single, 1, n, 1, description) == rocfft_status_invalid_array_type);
     ROCFFT(rocfft_plan_description_destroy(description));
+    const size_t zero_stride[1] = {0};
+    ROCFFT(rocfft_plan_description_create(&description));
+    ROCFFT(rocfft_plan_description_set_data_layout(description, rocfft_array_type_complex_interleaved,
+                                                   rocfft_array_type_complex_interleaved, nullptr, nullptr, 1,
+                                                   zero_stride, 0, 0, nullptr, 0));
+    CHECK(rocfft_plan_create(&plan, rocfft_placement_notinplace, rocfft_transform_type_complex_forward,
+                             rocfft_precision_double, 1, n, 1, description) == rocfft_status_invalid_strides);
+    ROCFFT(rocfft_plan_description_destroy(description));
+    CHECK(rocfft_plan_create(&plan, rocfft_placement_inplace, rocfft_transform_type_complex_forward,
+                             rocfft_precision(7), 1, n, 1, nullptr) == rocfft_status_invalid_arg_value);
     char version[32];
     ROCFFT(rocfft_get_version_string(version, sizeof(version)));
     CHECK(std::strncmp(version, "1.", 2) == 0);

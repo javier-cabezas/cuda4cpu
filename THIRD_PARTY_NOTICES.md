@@ -46,10 +46,27 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 `lib/third_party/pocketfft/pocketfft_hdronly.h`, Martin Reinecke's pocketfft
 (https://github.com/mreineck/pocketfft, the C++ header-only version, commit
 4d865cba24359b05b37da4e75aee24498c3b78e7), unchanged, computes cuFFT's,
-hipFFT's and rocFFT's transforms. libcuda4cpu contains it.
+hipFFT's and rocFFT's transforms. libcuda4cpu contains it. Its notice, as
+the header gives it:
 
 ```
-Copyright (C) 2010-2018 Max-Planck-Society
+This file is part of pocketfft.
+
+Copyright (C) 2010-2024 Max-Planck-Society
+Copyright (C) 2019-2020 Peter Bell
+
+For the odd-sized DCT-IV transforms:
+  Copyright (C) 2003, 2007-14 Matteo Frigo
+  Copyright (C) 2003, 2007-14 Massachusetts Institute of Technology
+
+For the prev_good_size search:
+  Copyright (C) 2024 Tan Ping Liang, Peter Bell
+
+For the safeguards against integer overflow in good_size search:
+  Copyright (C) 2024 Cris Luengo
+
+Authors: Martin Reinecke, Peter Bell
+
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,

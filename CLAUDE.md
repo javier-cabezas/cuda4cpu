@@ -839,7 +839,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
-    `cuda_runtime.h`, a program linked with `CUDA::curand`) and HIP language, configured with the toolkit's
+    `cuda_runtime.h`, programs linked with `CUDA::curand`, `CUDA::cublas` and `CUDA::cufft`) and HIP language, configured with the toolkit's
     toolchain file, built and run. A second build must do nothing, and
     touching a local header (`saxpy.cuh`) must recompile its source.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):

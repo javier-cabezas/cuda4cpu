@@ -346,6 +346,54 @@ void advanced_layout()
     }
 }
 
+//! In place between different layouts (contiguous batches in, interleaved
+//! ones out), and a single transform whose distances differ or are 0
+template <typename T>
+void in_place_layouts()
+{
+    int n[1] = {4};
+    const int batch = 2;
+    std::vector<complex_t<T>> data(8);
+    std::vector<std::vector<lc>> x(batch, std::vector<lc>(4));
+    for (int b = 0; b < batch; ++b)
+        for (int i = 0; i < 4; ++i) {
+            data[b * 4 + i] = {T(uniform()), T(uniform())};
+            x[b][i] = lc(data[b * 4 + i].x, data[b * 4 + i].y);
+        }
+    cufftHandle p;
+    OK(cufftPlanMany(&p, 1, n, n, 1, 4, n, 2, 1, c2c_type<T>(), batch));
+    OK(exec_c2c<T>(p, data.data(), data.data(), CUFFT_FORWARD));
+    bool ok = true;
+    for (int b = 0; b < batch; ++b) {
+        const auto want = dft(x[b], {4}, -1);
+        for (int i = 0; i < 4; ++i)
+            ok &= std::abs(lc(data[i * 2 + b].x, data[i * 2 + b].y) - want[i]) <= tolerance<T>() * 10;
+    }
+    CHECK(ok);
+    OK(cufftDestroy(p));
+    // One transform: distances of 16 and 32, or 0, in place
+    int m[1] = {8};
+    for (int dist : {16, 0}) {
+        std::vector<complex_t<T>> d(8);
+        std::vector<lc> y(8);
+        for (int i = 0; i < 8; ++i) {
+            d[i] = {T(uniform()), T(uniform())};
+            y[i] = lc(d[i].x, d[i].y);
+        }
+        OK(cufftPlanMany(&p, 1, m, m, 1, dist, m, 1, 2 * dist, c2c_type<T>(), 1));
+        OK(exec_c2c<T>(p, d.data(), d.data(), CUFFT_INVERSE));
+        const auto want = dft(y, {8}, 1);
+        ok = true;
+        for (int i = 0; i < 8; ++i)
+            ok &= std::abs(lc(d[i].x, d[i].y) - want[i]) <= tolerance<T>() * 20;
+        CHECK(ok);
+        OK(cufftDestroy(p));
+    }
+    // An embedding that doesn't hold the array
+    int n2[2] = {4, 6}, small[2] = {4, 5};
+    CHECK(cufftPlanMany(&p, 2, n2, small, 1, 24, n2, 1, 24, c2c_type<T>(), 2) == CUFFT_INVALID_VALUE);
+}
+
 // Callbacks: each input element times 2 (and its offset recorded), and each
 // output element stored to a second array, plus 1
 
@@ -491,6 +539,8 @@ int main()
     real_transforms<double>();
     advanced_layout<float>();
     advanced_layout<double>();
+    in_place_layouts<float>();
+    in_place_layouts<double>();
     callbacks();
     graphs();
     errors();
