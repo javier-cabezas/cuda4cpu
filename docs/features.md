@@ -207,6 +207,36 @@
     without blocking for the cache. It's correct, but much slower than an
     optimized BLAS for large products.
 
+**cuFFT** (`cufft.h`, `cufftXt.h`; `-lcufft` and CMake's `CUDA::cufft` link
+it, as libcuda4cpu), on pocketfft (BSD-3-Clause, built into libcuda4cpu):
+
+- **Transforms:** complex to complex, real to complex and complex to real,
+  in single and double precision (C2C, R2C, C2R, Z2Z, D2Z, Z2D), in one to
+  three dimensions of any lengths, forward and inverse, unnormalized as
+  cuFFT's.
+- **Plans:** `cufftPlan1d`, `2d`, `3d` and `Many`; `cufftCreate` with
+  `cufftMakePlan*` (and `Many64`); `cufftEstimate*`, `cufftGetSize*`,
+  `cufftSetWorkArea` and `cufftSetAutoAllocation` (no work area is needed).
+- **Layouts:** batches in the basic layout, and the advanced one
+  (`inembed`, `istride`, `idist`, ...). Real transforms in place take the
+  padded layout, with n / 2 + 1 complex elements' room.
+- **Callbacks:** `cufftXtSetCallback`, `cufftXtClearCallback` and
+  `cufftXtSetCallbackSharedSize`, for loading and storing elements of every
+  type. The callback is the function that the program's `__device__`
+  variable points to, which it gets with `cudaMemcpyFromSymbol`, as on a
+  GPU.
+- **Streams and graphs:** with `cufftSetStream`, a transform runs in the
+  stream's order: when executed, or, while the stream is being captured,
+  when the graph runs.
+
+**hipFFT and rocFFT** (`hipfft/hipfft.h`, `hipfft/hipfftXt.h`,
+`rocfft/rocfft.h`; `-lhipfft` and `-lrocfft`) are the same transforms:
+- **hipFFT:** cuFFT's API with HIP's names.
+- **rocFFT:** its plans, descriptions (data layouts with lengths and strides
+  fastest dimension first, offsets, scale factors) and execution infos
+  (streams, work buffers, and load and store callbacks), for interleaved
+  arrays.
+
 **hipBLAS and rocBLAS** (`hipblas/hipblas.h`, `rocblas/rocblas.h`; `-lhipblas`
 and `-lrocblas`) are the same routines, with their own names, enumerations,
 complex types (`hipComplex`, `rocblas_float_complex`) and statuses:

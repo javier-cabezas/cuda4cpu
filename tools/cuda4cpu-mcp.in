@@ -239,12 +239,13 @@ UNSUPPORTED = [
      r'(>|: No such file)',
      'of libcu++ (<cuda/...>, cuda::std), only <cuda/barrier>, <cuda/pipeline>, <cuda/cmath> and '
      '<cuda/std/type_traits> are provided'),
-    (r'cublasLt|cublasXt|cublas\.h|cufft|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|(?<!hip)cub/device|'
-     r'hipblas[Ll]t|hipfft|rocfft|rocrand|curand_mtgp32',
-     'of the CUDA and ROCm libraries, cuda4cpu provides cuRAND, hipRAND, cuBLAS (cublas_v2.h), hipBLAS and '
-     'rocBLAS, and builds Thrust (NVIDIA\'s CCCL, given with -I, on its OpenMP backend), and rocThrust and '
-     'hipCUB (on HIP\'s AMD platform); not cuBLASLt, cuBLASXt, cuBLAS\'s legacy API (cublas.h), cuFFT, '
-     'CUB\'s device-wide algorithms for CUDA, rocRAND\'s own API, ...'),
+    (r'cublasLt|cublasXt|cublas\.h|cufftw|cufftXtSetGPUs|hipfftXtSetGPUs|rocfft_(brick|field)|cusparse|cusolver|'
+     r'nvrtc|nvjpeg|npp[a-z]*\.h|(?<!hip)cub/device|hipblas[Ll]t|rocrand|curand_mtgp32',
+     'of the CUDA and ROCm libraries, cuda4cpu provides cuRAND, hipRAND, cuBLAS (cublas_v2.h), hipBLAS, '
+     'rocBLAS, cuFFT, hipFFT and rocFFT (on one device), and builds Thrust (NVIDIA\'s CCCL, given with -I, on '
+     'its OpenMP backend), and rocThrust and hipCUB (on HIP\'s AMD platform); not cuBLASLt, cuBLASXt, '
+     'cuBLAS\'s legacy API (cublas.h), cuFFTW, multi-GPU FFTs, cuSPARSE, CUB\'s device-wide algorithms for '
+     'CUDA, rocRAND\'s own API, ...'),
     (r'cuda_pipeline(_primitives)?\.h|__pipeline_(memcpy_async|commit|wait_prior)',
      'the __pipeline_* primitives (cuda_pipeline.h) are not '
      'implemented: use cuda::memcpy_async with a cuda::pipeline'),

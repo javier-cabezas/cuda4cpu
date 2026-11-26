@@ -1,7 +1,7 @@
 ![cuda4cpu](https://raw.githubusercontent.com/javier-cabezas/cuda4cpu/main/docs/images/wordmark.svg)
 
 [![CI](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml/badge.svg)](https://github.com/javier-cabezas/cuda4cpu/actions/workflows/ci.yml)
-[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-173%20of%20198%20pass-brightgreen)](docs/compatibility.md)
+[![Real programs](https://img.shields.io/badge/real%20CUDA%2FHIP%20programs-184%20of%20209%20pass-brightgreen)](docs/compatibility.md)
 [![MCP server](https://img.shields.io/badge/MCP-kernel%20checks%20for%20AI%20agents-8A2BE2)](#use-it-from-an-ai-agent-mcp)
 [![javier-cabezas/cuda4cpu MCP server](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu/badges/score.svg)](https://glama.ai/mcp/servers/javier-cabezas/cuda4cpu)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](docs/usage.md#requirements)
@@ -30,7 +30,7 @@ c[42] = 126, computed on cuda4cpu: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
 - **Catch the bugs a GPU hides:** missing `__syncthreads()`, threads of a
   block that reach different barriers, reads of memory never written, and
   allocations never freed.
-- **Real code works:** 173 of 198 programs from NVIDIA's cuda-samples,
+- **Real code works:** 184 of 209 programs from NVIDIA's cuda-samples,
   Rodinia and AMD's rocm-examples build unmodified and pass, and CI checks
   that they keep passing.
 - **The CUDA you write today:** shared memory, warp shuffles and votes,
@@ -386,7 +386,7 @@ project](docs/usage.md#using-cuda4cpu-in-your-project).
 
 **Do I need to change my code?** Usually not. Programs that use textures,
 dynamic parallelism, inline PTX, the driver API or CUDA's libraries other
-than cuRAND, cuBLAS and Thrust (cuFFT, cuSPARSE, CUB, ...) don't build yet. See [limitations](docs/limitations.md).
+than cuRAND, cuBLAS, cuFFT and Thrust (cuSPARSE, CUB, ...) don't build yet. See [limitations](docs/limitations.md).
 
 **Will my kernels be fast?** Faster than you might expect, but it's a CPU:
 expect the performance of a well-parallelized CPU program, not of a GPU.

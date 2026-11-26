@@ -33,6 +33,8 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -71,6 +73,24 @@ __global__ void intrinsics(float *out)
     out[1] = __fdividef(1.f, 4.f);
     out[2] = __saturatef(2.f);
     out[3] = float(__popc(0xf0f0u));
+}
+
+// CUDA's vector types are at global scope: a template in another namespace
+// finds the program's global operators on them through argument-dependent
+// lookup, as the operator<< below, declared after the template
+namespace printing {
+template <typename T>
+std::string show(const T &value)
+{
+    std::ostringstream s;
+    s << value;
+    return s.str();
+}
+}
+
+std::ostream &operator<<(std::ostream &o, const float2 &v)
+{
+    return o << '(' << v.x << ',' << v.y << ')';
 }
 
 static bool launch_rejected(dim3 grid, dim3 block)
@@ -667,6 +687,8 @@ int main()
         cudaGetLastError();
         cudaFree(ints);
     }
+
+    EXPECT(printing::show(make_float2(1.5f, -2)) == "(1.5,-2)");
 
     if (errors == 0)
         std::printf("runtime: PASS\n");

@@ -92,6 +92,11 @@ works too, with HIP's NVIDIA platform and the toolkit's toolchain file. See
   `rocblas_float_complex`), on cuda4cpu's cuBLAS (see
   [features](features.md#libraries)), and `-lhipblas` and `-lrocblas`.
   hipBLASLt isn't provided.
+- **hipFFT and rocFFT:** `hipfft/hipfft.h` and `hipfft/hipfftXt.h`
+  (callbacks), and `rocfft/rocfft.h`, on cuda4cpu's cuFFT (see
+  [features](features.md#libraries)), and `-lhipfft` and `-lrocfft`. Not
+  provided: multiple GPUs, rocFFT's planar arrays, fields and bricks, and
+  plan caches.
 - **rocThrust and hipCUB** (on HIP's AMD platform, with Clang): from their
   own sources, with rocPRIM's, on their HIP backends. See
   [usage](usage.md#thrust).

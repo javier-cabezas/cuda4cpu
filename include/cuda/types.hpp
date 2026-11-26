@@ -30,6 +30,31 @@
 #include "../hip/amd_vector_types.h"
 #endif
 
+// CUDA's vector types are at global scope, as CUDA's: argument-dependent
+// lookup then finds the program's own operators on them (helper_math.h's
+// operator+, an operator<< that prints them), also from templates in other
+// namespaces. cuda_api has using-declarations of them.
+#if !defined(CUDA4CPU_AMD_VECTOR_TYPES)
+#define CUDA4CPU_VECTOR_STRUCTS(n, t)  \
+    struct n##1 { t x; };              \
+    struct n##2 { t x, y; };           \
+    struct n##3 { t x, y, z; };        \
+    struct n##4 { t x, y, z, w; };
+CUDA4CPU_VECTOR_STRUCTS(char, char)
+CUDA4CPU_VECTOR_STRUCTS(uchar, unsigned char)
+CUDA4CPU_VECTOR_STRUCTS(short, short)
+CUDA4CPU_VECTOR_STRUCTS(ushort, unsigned short)
+CUDA4CPU_VECTOR_STRUCTS(int, int)
+CUDA4CPU_VECTOR_STRUCTS(uint, unsigned)
+CUDA4CPU_VECTOR_STRUCTS(long, int long)
+CUDA4CPU_VECTOR_STRUCTS(ulong, unsigned long)
+CUDA4CPU_VECTOR_STRUCTS(longlong, int long long)
+CUDA4CPU_VECTOR_STRUCTS(ulonglong, unsigned long long)
+CUDA4CPU_VECTOR_STRUCTS(float, float)
+CUDA4CPU_VECTOR_STRUCTS(double, double)
+#undef CUDA4CPU_VECTOR_STRUCTS
+#endif
+
 namespace cuda4cpu {
 
 // The CUDA API lives in the inline namespace cuda_api: code that includes
@@ -108,27 +133,10 @@ struct dim3 {
     inline n##4 make_##n##4(t x, t y, t z, t w) { return {x, y, z, w}; }
 #else
 #define VECTOR_TYPE(n,t) \
-    typedef struct {     \
-        t x;             \
-    } n##1;              \
-                         \
-    typedef struct {     \
-        t x;             \
-        t y;             \
-    } n##2;              \
-                         \
-    typedef struct {     \
-        t x;             \
-        t y;             \
-        t z;             \
-    } n##3;              \
-                         \
-    typedef struct {     \
-        t x;             \
-        t y;             \
-        t z;             \
-        t w;             \
-    } n##4;              \
+    using ::n##1;        \
+    using ::n##2;        \
+    using ::n##3;        \
+    using ::n##4;        \
                          \
     inline n##1 make_##n##1(t x) { return {x}; }                    \
     inline n##2 make_##n##2(t x, t y) { return {x, y}; }            \

@@ -52,6 +52,7 @@
 #include "cuda_bf16.h"
 #include "hipblas/hipblas.h"
 #include "rocblas/rocblas.h"
+#include "stream_tasks.hpp"
 
 namespace cuda4cpu::detail::blas {
 
@@ -271,26 +272,11 @@ scalar<std::remove_const_t<typename core<X>::type>> scalar_in(const context &c, 
     return s;
 }
 
-} // namespace cuda4cpu::detail::blas
-
-namespace cuda4cpu::detail {
-cudaError_t capture_host_owned(cudaStream_t stream, cudaHostFn_t fn, std::shared_ptr<void> data);
-}
-
-namespace cuda4cpu::detail::blas {
-
-//! Runs f now, or as a host node of the graph that the stream is capturing,
-//! which owns f (and so do the executable graphs made from it)
+//! Runs f now, or as a host node of the graph that the stream is capturing
 template <typename F>
 status run(const context &c, F &&f)
 {
-    if (capturing(c.stream)) {
-        auto job = std::make_shared<std::function<void()>>(std::forward<F>(f));
-        auto call = [](void *data) { (*static_cast<std::function<void()> *>(data))(); };
-        return capture_host_owned(c.stream, call, job) == cudaSuccess ? status::success : status::execution_failed;
-    }
-    f();
-    return status::success;
+    return run_on_stream(c.stream, std::forward<F>(f)) == cudaSuccess ? status::success : status::execution_failed;
 }
 
 // The CBLAS library
