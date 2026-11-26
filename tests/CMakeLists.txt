@@ -227,6 +227,13 @@ if(CUDA4CPU_CCCL_DIR)
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
     set_tests_properties(thrust_host PROPERTIES
                          ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER};CUDA4CPU_MEMCPY_DIRECTION=error")
+    string(REPLACE "|" ";" cccl_flag_list "${cccl_flags}")
+    add_test(NAME thrust_future_rejected
+             COMMAND ${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++ ${cccl_flag_list} -fsyntax-only
+                     ${CMAKE_CURRENT_SOURCE_DIR}/thrust_future.cpp)
+    set_tests_properties(thrust_future_rejected PROPERTIES
+                         ENVIRONMENT "CUDA4CPU_CXX=${CMAKE_CXX_COMPILER}"
+                         PASS_REGULAR_EXPRESSION "futures .* need its CUDA backend")
 endif()
 
 # cuRAND against CUDA's XORWOW, Random123's Philox and Joe and Kuo's Sobol'

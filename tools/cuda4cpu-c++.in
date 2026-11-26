@@ -93,7 +93,8 @@ OPTIONS_WITH_VALUE = {
     '-o', '-x', '-include', '-imacros', '-isystem', '-iquote', '-idirafter', '-iprefix',
     '-iwithprefix', '-iwithprefixbefore', '-isysroot', '-MF', '-MT', '-MQ', '-Xlinker',
     '-Xassembler', '-Xpreprocessor', '-L', '-I', '-D', '-U', '-l', '-T', '-u', '-e',
-    '-aux-info', '--param', '-dumpbase', '-dumpdir', '-wrapper', '-z',
+    '-aux-info', '--param', '-dumpbase', '-dumpdir', '-wrapper', '-z', '-B', '-target', '--sysroot',
+    '-Xclang', '-gcc-toolchain',
 }
 
 # Options that stop before linking
@@ -461,17 +462,22 @@ def include_dirs(argv, system=False):
 
 
 def without_trailing_x_none(args):
-    """args without the last -x none if no input file follows it: Clang
-    warns that it has no effect (an error with -Werror), and each rewritten
-    source is followed by one"""
-    last = max((i for i in range(len(args) - 1) if args[i] == '-x' and args[i + 1] == 'none'), default=None)
-    if last is None:
-        return args
-    for i in range(last + 2, len(args)):
-        value = i > 0 and (args[i - 1] in OPTIONS_WITH_VALUE or args[i - 1] == '-x')
-        if not args[i].startswith('-') and not value:
-            return args
-    return args[:last] + args[last + 2:]
+    """args without the -x none options that no input file follows: Clang
+    warns that they have no effect (an error with -Werror), and each
+    rewritten source is followed by one, which a program's own -x none can
+    follow too"""
+    inputs = [i for i in range(len(args))
+              if not args[i].startswith('-') and not (i > 0 and args[i - 1] in OPTIONS_WITH_VALUE)]
+    last_input = max(inputs, default=-1)
+    result = []
+    i = 0
+    while i < len(args):
+        if i > last_input and args[i] == '-x' and i + 1 < len(args) and args[i + 1] == 'none':
+            i += 2
+            continue
+        result.append(args[i])
+        i += 1
+    return result
 
 
 def with_shadow_mirrors(args, shadow_dirs):

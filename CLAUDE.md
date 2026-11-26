@@ -184,7 +184,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   which `system/cuda/*.h`, `device_vector.h` and `execution_policy.h`
   include. `thrust::cuda`, `cuda_cub` and `system::cuda` are aliases of
   `cuda4cpu_cuda_system`, so every top-level `system/cuda/` header of CCCL
-  needs an overlay: CCCL's would reopen them as namespaces. Every overlay passes through to the next header with rocThrust
+  needs an overlay: CCCL's would reopen them as namespaces. CCCL 2's
+  `future.h` needs the CUDA backend: its overlay is an `#error`. Every overlay passes through to the next header with rocThrust
   (`ROCTHRUST_VERSION`) or another device system. `cuda/std/type_traits`
   and `cuda/cmath` defer to CCCL's (`__has_include_next`).
   `include/hip/amd_detail/host_defines.h` stands in for AMD's, and
@@ -377,10 +378,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   but not rocThrust's `thrust/rocthrust_version.hpp`) isn't passed to the
   rewriter: on Thrust's OpenMP backend it launches nothing, and the rewriter
   would shadow most of it (loop_tick in its `__host__ __device__` loops).
-  `-isystem` directories go to the rewriter as `--system-include-dir`: their
-  headers' copies start with `#pragma GCC system_header` (before the
+  `-isystem` directories go to the rewriter as `--system-include-dir`: the
+  copies of headers found through them, or next to such a header
+  (`Rewriter.system`), start with `#pragma GCC system_header` (before the
   `#line`), since the copy is included by its path, and a library's
-  warnings would otherwise fail `-Werror`.
+  warnings would otherwise fail `-Werror`. A `-I` of an `-isystem`
+  directory is ignored, as GCC does. `without_trailing_x_none` drops the
+  `-x none` options after the last input, which Clang's `-Werror` rejects.
   `tools/cuda4cpu-c++.in`: the compiler driver, configured into
   `build/<preset>/tools/cuda4cpu-c++` (absolute build-tree paths) and, for
   installation, with paths relative to its own directory. The same template
@@ -658,6 +662,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     quadruples, and conversions in a kernel.
   - `thrust_host` (`thrust_host.cpp`): Thrust in a C++ source that includes
     it before `cuda_runtime.h` takes the OpenMP backend too.
+    `thrust_future_rejected` (`thrust_future.cpp`): the CUDA system's futures
+    stop with the overlay's error.
   - `thrust_{c++,nvcc}` (`thrust.cu`, with `CUDA4CPU_CCCL_DIR`, a CCCL
     repository or a toolkit's include directory, which CI fetches): NVIDIA's
     Thrust through each driver, `thrust::cuda::par.on(stream)` and the CUDA
@@ -1248,7 +1254,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   and digit separators (`1'000`).
 - Shadow headers are written under `<output>.headers/<absolute original
   path>`, and the rewritten `#include` points to them with an absolute path.
-  Only quote includes that resolve relative to the including file are
+  Without include directories (`cuda4cpu_add_cuda_sources` passes none),
+  only quote includes that resolve relative to the including file are
   rewritten.
 
 ## Conventions

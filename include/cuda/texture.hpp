@@ -256,7 +256,8 @@ inline T tex1Dfetch(cudaTextureObject_t texture, int x)
     if (x < 0 || element == 0 || size_t(x) >= linear.sizeInBytes / element)
         return value;
     const unsigned char *at = static_cast<const unsigned char *>(linear.devPtr) + size_t(x) * element;
-    bool normalize = t.texture.readMode == cudaReadModeNormalizedFloat && c.f != cudaChannelFormatKindFloat;
+    bool normalize = t.texture.readMode == cudaReadModeNormalizedFloat &&
+                     (c.f == cudaChannelFormatKindSigned || c.f == cudaChannelFormatKindUnsigned);
     for (int width : widths)
         normalize = normalize && (width == 0 || width == 8 || width == 16);
     if (!normalize) {

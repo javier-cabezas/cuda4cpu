@@ -640,6 +640,21 @@ int main()
         EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorInvalidValue);
         cudaGetLastError();
         EXPECT(tex1Dfetch<int>(cudaTextureObject_t(0), 0) == 0);
+        // Pitched memory: no memory is an error too, and tex1Dfetch reads
+        // only linear memory
+        cudaResourceDesc pitched{};
+        pitched.resType = cudaResourceTypePitch2D;
+        pitched.res.pitch2D.desc = cudaCreateChannelDesc<int>();
+        pitched.res.pitch2D.width = 4;
+        pitched.res.pitch2D.height = 2;
+        pitched.res.pitch2D.pitchInBytes = 4 * sizeof(int);
+        EXPECT(cudaCreateTextureObject(&texture, &pitched, &description, nullptr) == cudaErrorInvalidValue);
+        cudaGetLastError();
+        pitched.res.pitch2D.devPtr = ints;
+        description.readMode = cudaReadModeElementType;
+        EXPECT(cudaCreateTextureObject(&texture, &pitched, &description, nullptr) == cudaSuccess);
+        EXPECT(tex1Dfetch<int>(texture, 1) == 0);
+        cudaDestroyTextureObject(texture);
         // CUDA arrays aren't implemented yet
         resource.resType = cudaResourceTypeArray;
         EXPECT(cudaCreateTextureObject(&texture, &resource, &description, nullptr) == cudaErrorNotSupported);

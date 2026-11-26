@@ -865,6 +865,7 @@ class Rewriter:
         self.in_progress = set()                    # headers being rewritten
         self.cycled = set()                         # ... that their own includes point to
         self.library = set()                        # headers of include directories, and theirs
+        self.system = set()                         # ... found through system ones, and theirs
 
     def shadow_path(self, path):
         return os.path.join(self.shadow_dir, path.lstrip(os.sep))
@@ -895,27 +896,32 @@ class Rewriter:
         return result, changed
 
     def find_header(self, directory, name, angled):
-        """The header that #include names, and whether it is local: next to
-        the including file, for a quote include, else in an include
-        directory. None if it is neither, as system headers are."""
+        """The header that #include names, whether it is local (next to the
+        including file, for a quote include, else in an include directory),
+        and whether the include directory it was found in is a system one.
+        None if it is neither, as system headers are."""
         if not angled:
             local = os.path.normpath(os.path.join(directory, name))
             if os.path.isfile(local):
-                return local, True
+                return local, True, False
         for include_dir in self.include_dirs:
             header = os.path.normpath(os.path.join(include_dir, name))
             if os.path.isfile(header):
-                return header, False
-        return None, False
+                return header, False, include_dir in self.system_include_dirs
+        return None, False, False
 
     def include_hook(self, path, redirects):
         directory = os.path.dirname(path)
         from_library = path in self.library
 
         def hook(name, angled=False):
-            header, local = self.find_header(directory, name, angled)
+            header, local, system = self.find_header(directory, name, angled)
             if header is None:
                 return None
+            # As the compiler does: a header from a system directory is a
+            # system header, and so is one found next to a system header
+            if system or (local and path in self.system):
+                self.system.add(header)
             # A library's own headers, found next to its others, are its too
             relative = local
             local = local and not from_library
@@ -944,7 +950,7 @@ class Rewriter:
         if local or changed or header in self.cycled:
             # A system header's copy is one too, as the compiler would have
             # seen the original (warnings): the copy is included by its path
-            if any(header.startswith(d + os.sep) for d in self.system_include_dirs):
+            if header in self.system:
                 text = '#pragma GCC system_header\n' + text
             write_if_changed(shadow, text)
             return shadow
