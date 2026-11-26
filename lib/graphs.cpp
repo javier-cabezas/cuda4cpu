@@ -989,6 +989,8 @@ cudaError_t cudaGraphHostNodeSetParams(cudaGraphNode_t node, const cudaHostNodeP
     if (node == nullptr || node->type != cudaGraphNodeTypeHost || pNodeParams == nullptr ||
         pNodeParams->fn == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
+    if (pNodeParams->userData != node->host_data.get())
+        node->host_data.reset();
     node->host = *pNodeParams;
     return cudaSuccess;
 }
@@ -1478,6 +1480,8 @@ cudaError_t cudaGraphExecHostNodeSetParams(cudaGraphExec_t hGraphExec, cudaGraph
     exec_node *e = hGraphExec == nullptr ? nullptr : find_exec_node(hGraphExec, node);
     if (e == nullptr || e->type != cudaGraphNodeTypeHost || pNodeParams == nullptr || pNodeParams->fn == nullptr)
         return detail::record_error(cudaErrorInvalidValue);
+    if (pNodeParams->userData != e->host_data.get())
+        e->host_data.reset();
     e->host = *pNodeParams;
     return cudaSuccess;
 }

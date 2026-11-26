@@ -304,7 +304,7 @@ def replace_block(path, begin, end, text):
 def main():
     include = os.path.join(ROOT, 'include')
     blocks = [(os.path.join(include, 'cublas_api.h'), "cuBLAS's routines", declarations('c')),
-              (os.path.join(include, 'cublas_v2.h'), "cuBLAS's _v2 names", v2_macros()),
+              (os.path.join(include, 'cublas_api.h'), "cuBLAS's _v2 names", v2_macros()),
               (os.path.join(include, 'hipblas', 'hipblas.h'), "hipBLAS's routines", declarations('h')),
               (os.path.join(include, 'rocblas', 'rocblas.h'), "rocBLAS's routines", declarations('r'))]
     for path, what, text in blocks:

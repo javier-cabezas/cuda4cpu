@@ -76,6 +76,10 @@ function(cuda4cpu_toolkit directory nvcc include libdir)
     if(NOT BUILD_SHARED_LIBS AND NUMA_LIBRARY)
         list(APPEND inputs ${NUMA_LIBRARY})
     endif()
+    # dlopen, for the BLAS library (glibc before 2.34 has it in libdl)
+    if(NOT BUILD_SHARED_LIBS AND CMAKE_DL_LIBS)
+        list(APPEND inputs -l${CMAKE_DL_LIBS})
+    endif()
     list(JOIN inputs " " inputs)
     foreach(name IN ITEMS lib64/libcudart.so lib64/libcudart_static.a lib64/libcuda.so lib64/libcurand.so
                           lib64/libcurand_static.a lib64/libcublas.so lib64/libcublas_static.a lib64/libcublasLt.so

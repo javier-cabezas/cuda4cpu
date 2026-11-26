@@ -240,7 +240,7 @@ UNSUPPORTED = [
      'of libcu++ (<cuda/...>, cuda::std), only <cuda/barrier>, <cuda/pipeline>, <cuda/cmath> and '
      '<cuda/std/type_traits> are provided'),
     (r'cublasLt|cublasXt|cublas\.h|cufft|cusparse|cusolver|nvrtc|nvjpeg|npp[a-z]*\.h|(?<!hip)cub/device|'
-     r'hipblaslt|hipfft|rocfft|rocrand|curand_mtgp32',
+     r'hipblas[Ll]t|hipfft|rocfft|rocrand|curand_mtgp32',
      'of the CUDA and ROCm libraries, cuda4cpu provides cuRAND, hipRAND, cuBLAS (cublas_v2.h), hipBLAS and '
      'rocBLAS, and builds Thrust (NVIDIA\'s CCCL, given with -I, on its OpenMP backend), and rocThrust and '
      'hipCUB (on HIP\'s AMD platform); not cuBLASLt, cuBLASXt, cuBLAS\'s legacy API (cublas.h), cuFFT, '

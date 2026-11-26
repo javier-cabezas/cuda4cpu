@@ -1127,9 +1127,76 @@ void level3_triangular(cublasHandle_t h)
         }
 }
 
+//! alpha 0: the BLAS doesn't read the operands it would multiply (NaN
+//! here), and a product's result is beta C, or zero; and infinite norms
+template <typename T>
+void alpha_zero(cublasHandle_t h)
+{
+    const T zero{}, beta = T(2);
+    const int n = 4;
+    std::vector<T> nan(16, nan_value<T>());
+    std::vector<T> y(n, T(1));
+    OK(BLAS(axpy)(h, n, api(&zero), api(nan.data()), 1, api(y.data()), 1));
+    CHECK(y[0] == T(1) && y[3] == T(1));
+    std::vector<T> A(16, T(3));
+    if constexpr (is_complex<T>)
+        OK(pick<T>(0, 0, cublasCgeru, cublasZgeru)(h, n, n, api(&zero), api(nan.data()), 1, api(nan.data()), 1,
+                                                   api(A.data()), n));
+    else
+        OK(pick<T>(cublasSger, cublasDger, 0, 0)(h, n, n, &zero, nan.data(), 1, nan.data(), 1, A.data(), n));
+    OK(BLAS(syr)(h, CUBLAS_FILL_MODE_UPPER, n, api(&zero), api(nan.data()), 1, api(A.data()), n));
+    OK(BLAS(syr2)(h, CUBLAS_FILL_MODE_LOWER, n, api(&zero), api(nan.data()), 1, api(nan.data()), 1, api(A.data()), n));
+    CHECK(A[5] == T(3) && A[15] == T(3));
+    // Products: C = beta C
+    std::vector<T> C(16, T(1));
+    OK(BLAS(gemm)(h, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n, api(&zero), api(nan.data()), n, api(nan.data()), n, api(&beta),
+                  api(C.data()), n));
+    CHECK(C[0] == T(2) && C[15] == T(2));
+    OK(BLAS(symm)(h, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, n, n, api(&zero), api(nan.data()), n, api(nan.data()), n,
+                  api(&beta), api(C.data()), n));
+    CHECK(C[0] == T(4) && C[15] == T(4));
+    OK(BLAS(syrk)(h, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, n, n, api(&zero), api(nan.data()), n, api(&beta), api(C.data()),
+                  n));
+    CHECK(C[0] == T(8) && C[1] == T(4)); // the lower triangle untouched
+    std::vector<T> yv(n, T(1));
+    OK(BLAS(gemv)(h, CUBLAS_OP_T, n, n, api(&zero), api(nan.data()), n, api(nan.data()), 1, api(&beta), api(yv.data()),
+                  1));
+    CHECK(yv[0] == T(2) && yv[3] == T(2));
+    OK(BLAS(symv)(h, CUBLAS_FILL_MODE_LOWER, n, api(&zero), api(nan.data()), n, api(nan.data()), 1, api(&beta),
+                  api(yv.data()), 1));
+    CHECK(yv[0] == T(4));
+    // Triangular: zero, without reading A or B
+    std::vector<T> B = nan;
+    OK(BLAS(trsm)(h, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, n, n, api(&zero),
+                  api(nan.data()), n, api(B.data()), n));
+    CHECK(B[0] == T(0) && B[15] == T(0));
+    B = nan;
+    std::vector<T> D(16, T(5));
+    OK(BLAS(trmm)(h, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, CUBLAS_DIAG_UNIT, n, n, api(&zero),
+                  api(nan.data()), n, api(B.data()), n, api(D.data()), n));
+    CHECK(D[0] == T(0) && D[15] == T(0));
+    // trmm in place needs ldb == ldc
+    std::vector<T> E(64, T(1));
+    const T one = T(1);
+    CHECK(BLAS(trmm)(h, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, n, n, api(&one),
+                     api(A.data()), n, api(E.data()), 6, api(E.data()), 8) == CUBLAS_STATUS_INVALID_VALUE);
+    // Norms of infinities
+    const real_t<T> inf = std::numeric_limits<real_t<T>>::infinity();
+    const T infinite[2] = {T(inf), T(-inf)};
+    real_t<T> norm = 0;
+    OK(pick<T>(cublasSnrm2, cublasDnrm2, cublasScnrm2, cublasDznrm2)(h, 2, api(infinite), 1, &norm));
+    CHECK(norm == inf);
+    // Batches with nothing to compute don't read their arrays
+    OK(BLAS(gemmBatched)(h, CUBLAS_OP_N, CUBLAS_OP_N, 0, n, n, api(&one), nullptr, 1, nullptr, n, api(&one), nullptr, 1,
+                         3));
+    // A rank-2 update of nothing needs no y
+    OK(BLAS(syr2)(h, CUBLAS_FILL_MODE_UPPER, 0, api(&one), api(A.data()), 1, nullptr, 1, api(A.data()), 1));
+}
+
 template <typename T>
 void every_routine(cublasHandle_t h)
 {
+    alpha_zero<T>(h);
     level1<T>(h);
     level2_general<T>(h);
     level2_symmetric<T>(h);
@@ -1200,6 +1267,13 @@ void mixed_precision(cublasHandle_t h)
             ok &= Ci[i + j * m] == s;
         }
     CHECK(ok);
+    // Terms that overflow 32 bits, in a result that doesn't
+    const int8_t a8[2] = {1, -1}, b8[2] = {100, 100};
+    int32_t c32 = 7;
+    const int32_t big = 100000000, izero = 0;
+    OK(cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, 1, 1, 2, &big, a8, CUDA_R_8I, 1, b8, CUDA_R_8I, 2, &izero, &c32,
+                    CUDA_R_32I, 1, CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT));
+    CHECK(c32 == 0);
     // A strided batch of floats, as single products
     const int batch = 3;
     const auto Af = random_vector<float>(m * k * batch), Bf = random_vector<float>(k * n * batch);
@@ -1281,6 +1355,22 @@ void pointers_and_graphs(cublasHandle_t h)
     CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
     CHECK(y[3] == 35);
 
+    // rotm's param with the host's pointers: its values when captured
+    float px[2] = {1, 1}, py[2] = {1, 1};
+    float param[5] = {-1, 2, 0, 0, 3};
+    cudaGraph_t graph4;
+    CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) == cudaSuccess);
+    OK(cublasSrotm(h, 2, px, 1, py, 1, param));
+    CHECK(cudaStreamEndCapture(stream, &graph4) == cudaSuccess);
+    param[1] = 100;
+    cudaGraphExec_t exec4;
+    CHECK(cudaGraphInstantiate(&exec4, graph4, 0) == cudaSuccess);
+    CHECK(cudaGraphLaunch(exec4, stream) == cudaSuccess);
+    CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
+    CHECK(px[0] == 2 && py[1] == 3);
+    cudaGraphExecDestroy(exec4);
+    cudaGraphDestroy(graph4);
+
     // Copies in the stream's order, captured too
     float host[2 * n];
     for (int i = 0; i < 2 * n; ++i)
@@ -1288,6 +1378,7 @@ void pointers_and_graphs(cublasHandle_t h)
     cudaGraph_t graph3;
     CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) == cudaSuccess);
     OK(cublasSetVectorAsync(n, sizeof(float), host, 2, y, 1, stream));
+    CHECK(cublasSetVectorAsync(n, sizeof(float), host, 0, y, 1, stream) == CUBLAS_STATUS_INVALID_VALUE);
     CHECK(cudaStreamEndCapture(stream, &graph3) == cudaSuccess);
     cudaGraphExec_t exec3;
     CHECK(cudaGraphInstantiate(&exec3, graph3, 0) == cudaSuccess);

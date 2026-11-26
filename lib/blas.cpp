@@ -23,7 +23,7 @@
 // double, std::complex<float> and std::complex<double>), which check the
 // arguments as the BLAS does and then run the routine (run): when called,
 // or, while the handle's stream is being captured, as a host node of the
-// graph. A routine runs on a CBLAS library loaded at run time (cblas_symbol:
+// graph. A routine runs on a CBLAS library loaded at run time (cblas_function:
 // OpenBLAS, BLIS, MKL, the reference BLAS, or CUDA4CPU_BLAS's), when it has
 // it, or else on cuda4cpu's own implementation (builtin), loops in column
 // order whose products and updates run in parallel. The APIs' functions,
@@ -31,12 +31,14 @@
 // and call them.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -301,7 +303,9 @@ struct cblas_library {
 //! A library with the CBLAS of every type (cblas_sgemm ... cblas_zgemm)
 inline void *open_cblas(const char *name)
 {
-    void *handle = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+    // MKL's single library loads its own libraries, which need its symbols
+    const bool mkl = std::string_view(name).find("mkl") != std::string_view::npos;
+    void *handle = dlopen(name, RTLD_NOW | (mkl ? RTLD_GLOBAL : RTLD_LOCAL));
     if (handle == nullptr)
         return nullptr;
     for (const char *symbol : {"cblas_sgemm", "cblas_dgemm", "cblas_cgemm", "cblas_zgemm"}) {
@@ -510,9 +514,9 @@ status axpy(const context &c, int n, scalar<T> alpha, const T *x, int incx, T *y
     if (alpha.missing)
         return status::invalid_value;
     return run(c, [=] {
-        if (n <= 0)
-            return;
         const T a = alpha.get();
+        if (n <= 0 || a == T(0))
+            return;
         if (auto f = cblas_function<void(int, cb_value<T>, cb_in<T>, int, cb_out<T>, int), T, "", "axpy">()) {
             f(n, value_arg(a), x, incx, y, incy);
             return;
@@ -597,8 +601,11 @@ real_t<T> nrm2_builtin(int n, const T *x, int incx)
     using R = real_t<T>;
     R scale = 0;
     R ssq = 1;
+    bool infinite = false;
     auto add = [&](R value) {
-        if (value != 0) {
+        if (std::isinf(value)) {
+            infinite = true;
+        } else if (value != 0) {
             const R a = std::abs(value);
             if (scale < a) {
                 ssq = 1 + ssq * (scale / a) * (scale / a);
@@ -617,7 +624,7 @@ real_t<T> nrm2_builtin(int n, const T *x, int incx)
             add(e);
         }
     }
-    return scale * std::sqrt(ssq);
+    return infinite && !std::isnan(scale * ssq) ? std::numeric_limits<R>::infinity() : scale * std::sqrt(ssq);
 }
 
 template <typename T>
@@ -727,26 +734,33 @@ status rotm(const context &c, int n, T *x, int incx, T *y, int incy, const T *pa
 {
     if (param == nullptr)
         return status::invalid_value;
+    // With the host's pointers, param's values when called (a graph runs
+    // later); with the device's, when it runs
+    std::array<T, 5> values{};
+    if (!c.device_pointers)
+        std::copy_n(param, 5, values.begin());
+    const bool now = !c.device_pointers;
     return run(c, [=] {
-        const T flag = param[0];
+        const T *param_ = now ? values.data() : param;
+        const T flag = param_[0];
         if (n <= 0 || flag == T(-2))
             return;
         if (auto f = cblas_function<void(int, T *, int, T *, int, const T *), T, "", "rotm">()) {
-            f(n, x, incx, y, incy, param);
+            f(n, x, incx, y, incy, param_);
             return;
         }
         T h11 = 1, h21 = -1, h12 = 1, h22 = 1;
         if (flag == T(-1)) {
-            h11 = param[1];
-            h21 = param[2];
-            h12 = param[3];
-            h22 = param[4];
+            h11 = param_[1];
+            h21 = param_[2];
+            h12 = param_[3];
+            h22 = param_[4];
         } else if (flag == T(0)) {
-            h21 = param[2];
-            h12 = param[3];
+            h21 = param_[2];
+            h12 = param_[3];
         } else {
-            h11 = param[1];
-            h22 = param[4];
+            h11 = param_[1];
+            h22 = param_[4];
         }
         const auto X = v(x, n, incx);
         const auto Y = v(y, n, incy);
@@ -870,11 +884,12 @@ status rotmg(const context &c, T *d1, T *d2, T *x1, const T *y1, T *param)
 {
     if (d1 == nullptr || d2 == nullptr || x1 == nullptr || y1 == nullptr || param == nullptr)
         return status::invalid_value;
+    const scalar<T> y = scalar_in(c, y1);
     return run(c, [=] {
         if (auto f = cblas_function<void(T *, T *, T *, T, T *), T, "", "rotmg">())
-            f(d1, d2, x1, *y1, param);
+            f(d1, d2, x1, y.get(), param);
         else
-            rotmg_builtin(d1, d2, x1, *y1, param);
+            rotmg_builtin(d1, d2, x1, y.get(), param);
     });
 }
 
@@ -1002,7 +1017,9 @@ status gemv(const context &c, op trans, int m, int n, scalar<T> alpha, const T *
         const T a = alpha.get();
         const T b = beta.get();
         using F = void(int, int, int, int, cb_value<T>, cb_in<T>, int, cb_in<T>, int, cb_value<T>, cb_out<T>, int);
-        if (auto f = cblas_function<F, T, "", "gemv">())
+        if (a == T(0))
+            scale_vector(v(y, trans == op::n ? m : n, incy), trans == op::n ? m : n, b);
+        else if (auto f = cblas_function<F, T, "", "gemv">())
             f(col_major, cb(trans), m, n, value_arg(a), A, lda, x, incx, value_arg(b), y, incy);
         else
             gbmv_builtin(trans, m, n, band_matrix<T>{A, lda, m - 1, n - 1, true}, a, x, incx, b, y, incy);
@@ -1073,9 +1090,9 @@ status ger_of(const context &c, int m, int n, scalar<T> alpha, const T *x, int i
     if (m < 0 || n < 0 || incx == 0 || incy == 0 || lda < max1(m))
         return status::invalid_size;
     return run(c, [=] {
-        if (m == 0 || n == 0)
-            return;
         const T a = alpha.get();
+        if (m == 0 || n == 0 || a == T(0))
+            return;
         using F = void(int, int, int, cb_value<T>, cb_in<T>, int, cb_in<T>, int, cb_out<T>, int);
         F *f = !is_complex<T> ? cblas_function<F, T, "", "ger">()
                : conjugate    ? cblas_function<F, T, "", "gerc">()
@@ -1209,7 +1226,7 @@ status symv_of(const context &c, fill uplo, int n, int k, layout lay, scalar<T> 
             return;
         const T a = alpha.get();
         const T b = beta.get();
-        if (lay == layout::dense) {
+        if (lay == layout::dense && a != T(0)) {
             using F = void(int, int, int, cb_value<T>, cb_in<T>, int, cb_in<T>, int, cb_value<T>, cb_out<T>, int);
             F *f = herm ? cblas_function<F, T, "", "hemv">() : !is_complex<T> ? cblas_function<F, T, "", "symv">()
                                                                              : nullptr;
@@ -1272,7 +1289,7 @@ void rank_update_builtin(triangle<T> A, bool herm, bool two, T alpha, const T *x
 {
     const int n = A.n;
     const auto X = v(x, n, incx);
-    const auto Y = v(y != nullptr ? y : x, n, y != nullptr ? incy : incx);
+    const auto Y = v(two ? y : x, n, two ? incy : incx);
     for (int j = 0; j < n; ++j) {
         const int i0 = A.uplo == fill::upper ? 0 : j;
         const int i1 = A.uplo == fill::upper ? j + 1 : n;
@@ -1290,18 +1307,18 @@ void rank_update_builtin(triangle<T> A, bool herm, bool two, T alpha, const T *x
 
 template <typename T, typename A>
 status syr_of(const context &c, fill uplo, int n, scalar<A> alpha, const T *x, int incx, const T *y, int incy,
-              T *a, int lda, layout lay, bool herm)
+              T *a, int lda, layout lay, bool herm, bool two)
 {
     if (!valid(uplo) || alpha.missing)
         return status::invalid_value;
-    if (n < 0 || incx == 0 || (y != nullptr && incy == 0) || (lay == layout::dense && lda < max1(n)))
+    if (n < 0 || incx == 0 || (two && incy == 0) || (lay == layout::dense && lda < max1(n)))
         return status::invalid_size;
     return run(c, [=] {
-        if (n == 0)
-            return;
         const A al = alpha.get();
+        if (n == 0 || al == A(0))
+            return;
         if (lay == layout::dense && (herm || !is_complex<T>)) {
-            if (y == nullptr) {
+            if (!two) {
                 using R = real_t<T>;
                 using F = void(int, int, int, std::conditional_t<is_complex<T>, R, T>, cb_in<T>, int, cb_out<T>, int);
                 F *f = herm ? cblas_function<F, T, "", "her">() : cblas_function<F, T, "", "syr">();
@@ -1318,66 +1335,58 @@ status syr_of(const context &c, fill uplo, int n, scalar<A> alpha, const T *x, i
                 }
             }
         }
-        rank_update_builtin(triangle<T>{a, lda, 0, n, uplo, lay}, herm, y != nullptr, T(al), x, incx, y, incy);
+        rank_update_builtin(triangle<T>{a, lda, 0, n, uplo, lay}, herm, two, T(al), x, incx, y, incy);
     });
 }
 
 template <typename T>
 status syr(const context &c, fill uplo, int n, scalar<T> alpha, const T *x, int incx, T *A, int lda)
 {
-    return syr_of<T, T>(c, uplo, n, alpha, x, incx, nullptr, 0, A, lda, layout::dense, false);
+    return syr_of<T, T>(c, uplo, n, alpha, x, incx, nullptr, 0, A, lda, layout::dense, false, false);
 }
 
 template <typename T>
 status her(const context &c, fill uplo, int n, scalar<real_t<T>> alpha, const T *x, int incx, T *A, int lda)
 {
-    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, A, lda, layout::dense, true);
+    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, A, lda, layout::dense, true, false);
 }
 
 template <typename T>
 status syr2(const context &c, fill uplo, int n, scalar<T> alpha, const T *x, int incx, const T *y, int incy, T *A,
             int lda)
 {
-    if (y == nullptr)
-        return status::invalid_value;
-    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, A, lda, layout::dense, false);
+    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, A, lda, layout::dense, false, true);
 }
 
 template <typename T>
 status her2(const context &c, fill uplo, int n, scalar<T> alpha, const T *x, int incx, const T *y, int incy, T *A,
             int lda)
 {
-    if (y == nullptr)
-        return status::invalid_value;
-    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, A, lda, layout::dense, true);
+    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, A, lda, layout::dense, true, true);
 }
 
 template <typename T>
 status spr(const context &c, fill uplo, int n, scalar<real_t<T>> alpha, const T *x, int incx, T *AP)
 {
-    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, AP, 1, layout::packed, false);
+    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, AP, 1, layout::packed, false, false);
 }
 
 template <typename T>
 status hpr(const context &c, fill uplo, int n, scalar<real_t<T>> alpha, const T *x, int incx, T *AP)
 {
-    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, AP, 1, layout::packed, true);
+    return syr_of<T, real_t<T>>(c, uplo, n, alpha, x, incx, nullptr, 0, AP, 1, layout::packed, true, false);
 }
 
 template <typename T>
 status spr2(const context &c, fill uplo, int n, scalar<T> alpha, const T *x, int incx, const T *y, int incy, T *AP)
 {
-    if (y == nullptr)
-        return status::invalid_value;
-    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, AP, 1, layout::packed, false);
+    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, AP, 1, layout::packed, false, true);
 }
 
 template <typename T>
 status hpr2(const context &c, fill uplo, int n, scalar<T> alpha, const T *x, int incx, const T *y, int incy, T *AP)
 {
-    if (y == nullptr)
-        return status::invalid_value;
-    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, AP, 1, layout::packed, true);
+    return syr_of<T, T>(c, uplo, n, alpha, x, incx, y, incy, AP, 1, layout::packed, true, true);
 }
 
 //! x = op(A) x
@@ -1495,6 +1504,19 @@ T op_at(const T *A, int lda, op o, int i, int j)
     return o == op::n ? A[i + std::ptrdiff_t(j) * lda] : conj_if(A[j + std::ptrdiff_t(i) * lda], o == op::c);
 }
 
+//! C = beta C, as the BLAS does it: with beta 0, C isn't read
+template <typename T>
+void scale_matrix(int m, int n, T beta, T *C, int ldc)
+{
+    if (beta == T(1))
+        return;
+    for (int j = 0; j < n; ++j) {
+        T *c = C + std::ptrdiff_t(j) * ldc;
+        for (int i = 0; i < m; ++i)
+            c[i] = beta == T(0) ? T(0) : beta * c[i];
+    }
+}
+
 //! C = alpha op(A) op(B) + beta C, a column per iteration: C's column takes
 //! A's columns times B's elements (op(A) = A), or A's columns' dot products
 //! with B's column (op(A) = A^T or A^H)
@@ -1538,6 +1560,10 @@ void gemm_one(op ta, op tb, int m, int n, int k, T alpha, const T *A, int lda, c
 {
     if (m == 0 || n == 0)
         return;
+    if (alpha == T(0)) {
+        scale_matrix(m, n, beta, C, ldc);
+        return;
+    }
     if constexpr (letter<T> != 0) {
         using F = void(int, int, int, int, int, int, cb_value<T>, cb_in<T>, int, cb_in<T>, int, cb_value<T>, cb_out<T>,
                        int);
@@ -1592,6 +1618,8 @@ status gemm_batched(const context &c, op ta, op tb, int m, int n, int k, scalar<
     if (batch < 0)
         return status::invalid_size;
     return run(c, [=] {
+        if (m == 0 || n == 0)
+            return;
         const T a = alpha.get();
         const T b = beta.get();
         each_product<T>(batch, m, n, k, [&](int i, bool parallel) {
@@ -1612,6 +1640,8 @@ status gemm_strided_batched(const context &c, op ta, op tb, int m, int n, int k,
     if (batch < 0)
         return status::invalid_size;
     return run(c, [=] {
+        if (m == 0 || n == 0)
+            return;
         const T a = alpha.get();
         const T b = beta.get();
         each_product<T>(batch, m, n, k, [&](int i, bool parallel) {
@@ -1636,6 +1666,10 @@ status symm_of(const context &c, side sd, fill uplo, int m, int n, scalar<T> alp
             return;
         const T a = alpha.get();
         const T b = beta.get();
+        if (a == T(0)) {
+            scale_matrix(m, n, b, C, ldc);
+            return;
+        }
         using F = void(int, int, int, int, int, cb_value<T>, cb_in<T>, int, cb_in<T>, int, cb_value<T>, cb_out<T>, int);
         if (auto f = herm ? cblas_function<F, T, "", "hemm">() : cblas_function<F, T, "", "symm">()) {
             f(col_major, cb(sd), cb(uplo), m, n, value_arg(a), A, lda, B, ldb, value_arg(b), C, ldc);
@@ -1646,14 +1680,16 @@ status symm_of(const context &c, side sd, fill uplo, int m, int n, scalar<T> alp
         for (int j = 0; j < n; ++j) {
             for (int i = 0; i < m; ++i) {
                 T s = 0;
-                if (sd == side::left)
+                if (a == T(0))
+                    ;
+                else if (sd == side::left)
                     for (int l = 0; l < m; ++l)
                         s += S.sym(i, l, herm) * B[l + std::ptrdiff_t(j) * ldb];
                 else
                     for (int l = 0; l < n; ++l)
                         s += B[i + std::ptrdiff_t(l) * ldb] * S.sym(l, j, herm);
                 T &e = C[i + std::ptrdiff_t(j) * ldc];
-                e = a * s + (b == T(0) ? T(0) : b * e);
+                e = (a == T(0) ? T(0) : a * s) + (b == T(0) ? T(0) : b * e);
             }
         }
     });
@@ -1705,7 +1741,8 @@ void rank_k_builtin(fill uplo, op trans, int n, int k, T alpha, const T *A, int 
             if (kind == rank_kind::two_k)
                 value += conj_if(alpha, herm) * s2;
             T &e = C[i + std::ptrdiff_t(j) * ldc];
-            e = value + (beta == T(0) ? T(0) : beta * e);
+            const T old = herm && i == j ? real_part(e) : e;
+            e = value + (beta == T(0) ? T(0) : beta * old);
             if (herm && i == j)
                 e = real_part(e);
         }
@@ -1731,7 +1768,8 @@ status rank_k_of(const context &c, fill uplo, op trans, int n, int k, scalar<A> 
         const A al = alpha.get();
         const Bt be = beta.get();
         const op t = !is_complex<T> && trans == op::c ? op::t : trans;
-        if (kind == rank_kind::k) {
+        if (al == A(0)) {
+        } else if (kind == rank_kind::k) {
             using V = std::conditional_t<std::is_same_v<A, T>, cb_value<T>, A>;
             using F = void(int, int, int, int, int, V, cb_in<T>, int, std::conditional_t<std::is_same_v<Bt, T>, cb_value<T>, Bt>,
                            cb_out<T>, int);
@@ -1800,6 +1838,14 @@ status herkx(const context &c, fill uplo, op trans, int n, int k, scalar<T> alph
     return rank_k_of(c, uplo, trans, n, k, alpha, A, lda, B, ldb, beta, C, ldc, true, rank_kind::kx);
 }
 
+//! The BLAS's result of a triangular product or solve with alpha 0
+template <typename T>
+void zero_matrix(int m, int n, T *C, int ldc)
+{
+    for (int j = 0; j < n; ++j)
+        std::fill_n(C + std::ptrdiff_t(j) * ldc, m, T(0));
+}
+
 inline status check_triangular_matrix(side sd, fill uplo, op trans, diag d, int m, int n, int lda, int ldb)
 {
     if (!valid(sd) || !valid(uplo) || !valid(trans) || !valid(d))
@@ -1854,10 +1900,16 @@ status trmm(const context &c, side sd, fill uplo, op trans, diag d, int m, int n
         return s;
     if (ldc < max1(m))
         return status::invalid_size;
+    if (C == B && ldb != ldc)
+        return status::invalid_value;
     return run(c, [=] {
         if (m == 0 || n == 0)
             return;
         const T a = alpha.get();
+        if (a == T(0)) {
+            zero_matrix(m, n, C, ldc);
+            return;
+        }
         using F = void(int, int, int, int, int, int, int, cb_value<T>, cb_in<T>, int, cb_out<T>, int);
         if (auto f = cblas_function<F, T, "", "trmm">()) {
             // CBLAS's is in place: B's copy in C first
@@ -1877,6 +1929,10 @@ status trmm(const context &c, side sd, fill uplo, op trans, diag d, int m, int n
 template <typename T>
 void trsm_builtin(side sd, fill uplo, op trans, diag d, int m, int n, T alpha, const T *A, int lda, T *B, int ldb)
 {
+    if (alpha == T(0)) {
+        zero_matrix(m, n, B, ldb);
+        return;
+    }
     if (sd == side::left) {
         const triangle<const T> tri{A, lda, 0, m, uplo, layout::dense};
 #pragma omp parallel for schedule(static) if (parallel_for(double(m) * m * n / 2))
@@ -1914,6 +1970,10 @@ status trsm(const context &c, side sd, fill uplo, op trans, diag d, int m, int n
             return;
         const T a = alpha.get();
         using F = void(int, int, int, int, int, int, int, cb_value<T>, cb_in<T>, int, cb_out<T>, int);
+        if (a == T(0)) {
+            zero_matrix(m, n, B, ldb);
+            return;
+        }
         if (auto f = cblas_function<F, T, "", "trsm">()) {
             f(col_major, cb(sd), cb(uplo), cb(trans), cb(d), m, n, value_arg(a), A, lda, B, ldb);
             return;
@@ -2077,7 +2137,9 @@ T load(const void *p, cudaDataType t, std::ptrdiff_t i)
 template <typename T>
 void store(void *p, cudaDataType t, std::ptrdiff_t i, T value)
 {
-    auto saturate = [](double x, double lo, double hi) { return std::nearbyint(std::clamp(x, lo, hi)); };
+    auto saturate = [](double x, double lo, double hi) {
+        return std::isnan(x) ? 0.0 : std::nearbyint(std::clamp(x, lo, hi));
+    };
     double re;
     if constexpr (is_complex<T>)
         re = value.real();
@@ -2116,12 +2178,13 @@ void gemm_ex_one(op ta, op tb, int m, int n, int k, T alpha, const void *A, cuda
 {
     if (m == 0 || n == 0)
         return;
+    // int32 products are computed in 64 bits: none of the terms overflows
+    constexpr bool has_native = letter<T> != 0;
     constexpr cudaDataType native = std::is_same_v<T, float>    ? CUDA_R_32F
                                     : std::is_same_v<T, double> ? CUDA_R_64F
                                     : std::is_same_v<T, cf>     ? CUDA_C_32F
-                                    : std::is_same_v<T, cd>     ? CUDA_C_64F
-                                                                : CUDA_R_32I;
-    if (at == native && bt == native && ct == native) {
+                                                                : CUDA_C_64F;
+    if (has_native && at == native && bt == native && ct == native) {
         gemm_one(ta, tb, m, n, k, alpha, static_cast<const T *>(A), lda, static_cast<const T *>(B), ldb, beta,
                  static_cast<T *>(C), ldc, parallel);
         return;
@@ -2144,7 +2207,10 @@ T load_scalar(const void *p, int compute_type)
     if constexpr (std::is_same_v<T, float>)
         if (is_half_compute(compute_type))
             return __half2float(*static_cast<const half *>(p));
-    return *static_cast<const T *>(p);
+    if constexpr (std::is_same_v<T, int64_t>)
+        return *static_cast<const int32_t *>(p);
+    else
+        return *static_cast<const T *>(p);
 }
 
 //! The batch's products: A, B and C give each one's pointers
@@ -2158,6 +2224,8 @@ status gemm_ex_typed(const context &c, op ta, op tb, int m, int n, int k, const 
     const T a0 = now ? load_scalar<T>(alpha, compute_type) : T();
     const T b0 = now ? load_scalar<T>(beta, compute_type) : T();
     return run(c, [=] {
+        if (m == 0 || n == 0)
+            return;
         const T a = now ? a0 : load_scalar<T>(alpha, compute_type);
         const T b = now ? b0 : load_scalar<T>(beta, compute_type);
         each_product<T>(batch, m, n, k, [&](int i, bool parallel) {
@@ -2194,7 +2262,7 @@ status gemm_ex(const context &c, op ta, op tb, int m, int n, int k, const void *
                   : gemm_ex_typed<double>(c, ta, tb, m, n, k, alpha, at, lda, bt, ldb, beta, ct, ldc, batch,
                                           compute_type, ptrs);
     case compute::i32:
-        return gemm_ex_typed<int32_t>(c, ta, tb, m, n, k, alpha, at, lda, bt, ldb, beta, ct, ldc, batch, compute_type,
+        return gemm_ex_typed<int64_t>(c, ta, tb, m, n, k, alpha, at, lda, bt, ldb, beta, ct, ldc, batch, compute_type,
                                       ptrs);
     case compute::invalid: break;
     }
@@ -2210,12 +2278,28 @@ struct product_pointers {
 // ----------------------------------------------------------------------------
 // Copies between the host and the device
 
-inline status copy_strided(int n, int size, const void *x, int incx, void *y, int incy)
+inline status check_strided(int n, int size, const void *x, int incx, void *y, int incy)
 {
     if (n < 0 || size <= 0 || incx <= 0 || incy <= 0)
         return status::invalid_value;
-    if (x == nullptr || y == nullptr)
-        return n == 0 ? status::success : status::invalid_value;
+    if ((x == nullptr || y == nullptr) && n != 0)
+        return status::invalid_value;
+    return status::success;
+}
+
+inline status check_matrix(int rows, int cols, int size, const void *A, int lda, void *B, int ldb)
+{
+    if (rows < 0 || cols < 0 || size <= 0 || lda < max1(rows) || ldb < max1(rows))
+        return status::invalid_value;
+    if ((A == nullptr || B == nullptr) && rows != 0 && cols != 0)
+        return status::invalid_value;
+    return status::success;
+}
+
+inline status copy_strided(int n, int size, const void *x, int incx, void *y, int incy)
+{
+    if (status s = check_strided(n, size, x, incx, y, incy); s != status::success || n == 0)
+        return s;
     const auto *from = static_cast<const char *>(x);
     auto *to = static_cast<char *>(y);
     if (incx == 1 && incy == 1)
@@ -2228,10 +2312,8 @@ inline status copy_strided(int n, int size, const void *x, int incx, void *y, in
 
 inline status copy_matrix(int rows, int cols, int size, const void *A, int lda, void *B, int ldb)
 {
-    if (rows < 0 || cols < 0 || size <= 0 || lda < max1(rows) || ldb < max1(rows))
-        return status::invalid_value;
-    if (A == nullptr || B == nullptr)
-        return rows == 0 || cols == 0 ? status::success : status::invalid_value;
+    if (status s = check_matrix(rows, cols, size, A, lda, B, ldb); s != status::success || rows == 0 || cols == 0)
+        return s;
     const auto *from = static_cast<const char *>(A);
     auto *to = static_cast<char *>(B);
     for (int j = 0; j < cols; ++j)
@@ -2240,12 +2322,15 @@ inline status copy_matrix(int rows, int cols, int size, const void *A, int lda, 
     return status::success;
 }
 
-//! A copy in the stream's order: now, or as a node of the graph it captures
-template <typename F>
-status copy_on(cudaStream_t stream, F &&copy_now)
+//! A copy in the stream's order: now, or as a node of the graph it captures,
+//! once its arguments are checked (checked, a null pointer to copy from)
+template <typename F, typename Check>
+status copy_on(cudaStream_t stream, F &&copy_now, Check &&checked)
 {
     if (!capturing(stream))
         return copy_now();
+    if (status s = checked(); s != status::success)
+        return s;
     context c;
     c.stream = stream;
     return run(c, [copy_now] { copy_now(); });
@@ -2482,28 +2567,28 @@ cublasStatus_t cublasSetVectorAsync(int n, int elemSize, const void *hostPtr, in
                                     cudaStream_t stream)
 {
     return blas::api_status<cublasStatus_t>(blas::copy_on(
-        stream, [=] { return blas::copy_strided(n, elemSize, hostPtr, incx, devicePtr, incy); }));
+        stream, [=] { return blas::copy_strided(n, elemSize, hostPtr, incx, devicePtr, incy); }, [=] { return blas::check_strided(n, elemSize, hostPtr, incx, devicePtr, incy); }));
 }
 
 cublasStatus_t cublasGetVectorAsync(int n, int elemSize, const void *devicePtr, int incx, void *hostPtr, int incy,
                                     cudaStream_t stream)
 {
     return blas::api_status<cublasStatus_t>(blas::copy_on(
-        stream, [=] { return blas::copy_strided(n, elemSize, devicePtr, incx, hostPtr, incy); }));
+        stream, [=] { return blas::copy_strided(n, elemSize, devicePtr, incx, hostPtr, incy); }, [=] { return blas::check_strided(n, elemSize, devicePtr, incx, hostPtr, incy); }));
 }
 
 cublasStatus_t cublasSetMatrixAsync(int rows, int cols, int elemSize, const void *A, int lda, void *B, int ldb,
                                     cudaStream_t stream)
 {
     return blas::api_status<cublasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, A, lda, B, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, A, lda, B, ldb); }, [=] { return blas::check_matrix(rows, cols, elemSize, A, lda, B, ldb); }));
 }
 
 cublasStatus_t cublasGetMatrixAsync(int rows, int cols, int elemSize, const void *A, int lda, void *B, int ldb,
                                     cudaStream_t stream)
 {
     return blas::api_status<cublasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, A, lda, B, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, A, lda, B, ldb); }, [=] { return blas::check_matrix(rows, cols, elemSize, A, lda, B, ldb); }));
 }
 
 cublasStatus_t cublasHgemm(cublasHandle_t handle, cublasOperation_t transa, cublasOperation_t transb, int m, int n,
@@ -2733,28 +2818,28 @@ hipblasStatus_t hipblasSetVectorAsync(int n, int elemSize, const void *x, int in
                                       hipStream_t stream)
 {
     return blas::api_status<hipblasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_strided(n, elemSize, x, incx, y, incy); }));
+        blas::copy_on(stream, [=] { return blas::copy_strided(n, elemSize, x, incx, y, incy); }, [=] { return blas::check_strided(n, elemSize, x, incx, y, incy); }));
 }
 
 hipblasStatus_t hipblasGetVectorAsync(int n, int elemSize, const void *x, int incx, void *y, int incy,
                                       hipStream_t stream)
 {
     return blas::api_status<hipblasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_strided(n, elemSize, x, incx, y, incy); }));
+        blas::copy_on(stream, [=] { return blas::copy_strided(n, elemSize, x, incx, y, incy); }, [=] { return blas::check_strided(n, elemSize, x, incx, y, incy); }));
 }
 
 hipblasStatus_t hipblasSetMatrixAsync(int rows, int cols, int elemSize, const void *AP, int lda, void *BP, int ldb,
                                       hipStream_t stream)
 {
     return blas::api_status<hipblasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }, [=] { return blas::check_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }));
 }
 
 hipblasStatus_t hipblasGetMatrixAsync(int rows, int cols, int elemSize, const void *AP, int lda, void *BP, int ldb,
                                       hipStream_t stream)
 {
     return blas::api_status<hipblasStatus_t>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }, [=] { return blas::check_matrix(rows, cols, elemSize, AP, lda, BP, ldb); }));
 }
 
 // ----------------------------------------------------------------------------
@@ -2905,28 +2990,28 @@ rocblas_status rocblas_set_vector_async(rocblas_int n, rocblas_int elem_size, co
                                         void *y, rocblas_int incy, hipStream_t stream)
 {
     return blas::api_status<rocblas_status>(
-        blas::copy_on(stream, [=] { return blas::copy_strided(n, elem_size, x, incx, y, incy); }));
+        blas::copy_on(stream, [=] { return blas::copy_strided(n, elem_size, x, incx, y, incy); }, [=] { return blas::check_strided(n, elem_size, x, incx, y, incy); }));
 }
 
 rocblas_status rocblas_get_vector_async(rocblas_int n, rocblas_int elem_size, const void *x, rocblas_int incx,
                                         void *y, rocblas_int incy, hipStream_t stream)
 {
     return blas::api_status<rocblas_status>(
-        blas::copy_on(stream, [=] { return blas::copy_strided(n, elem_size, x, incx, y, incy); }));
+        blas::copy_on(stream, [=] { return blas::copy_strided(n, elem_size, x, incx, y, incy); }, [=] { return blas::check_strided(n, elem_size, x, incx, y, incy); }));
 }
 
 rocblas_status rocblas_set_matrix_async(rocblas_int rows, rocblas_int cols, rocblas_int elem_size, const void *a,
                                         rocblas_int lda, void *b, rocblas_int ldb, hipStream_t stream)
 {
     return blas::api_status<rocblas_status>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elem_size, a, lda, b, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elem_size, a, lda, b, ldb); }, [=] { return blas::check_matrix(rows, cols, elem_size, a, lda, b, ldb); }));
 }
 
 rocblas_status rocblas_get_matrix_async(rocblas_int rows, rocblas_int cols, rocblas_int elem_size, const void *a,
                                         rocblas_int lda, void *b, rocblas_int ldb, hipStream_t stream)
 {
     return blas::api_status<rocblas_status>(
-        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elem_size, a, lda, b, ldb); }));
+        blas::copy_on(stream, [=] { return blas::copy_matrix(rows, cols, elem_size, a, lda, b, ldb); }, [=] { return blas::check_matrix(rows, cols, elem_size, a, lda, b, ldb); }));
 }
 
 } // extern "C"
