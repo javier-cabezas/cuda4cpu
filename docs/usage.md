@@ -21,7 +21,8 @@ from source for Clang. The archive is built without libnuma, and assumes a
 single NUMA node.
 
 **Docker.** `ghcr.io/javier-cabezas/cuda4cpu` has cuda4cpu in `/usr/local`
-(with libnuma), GCC 14, CMake and make, and runs the MCP server by default
+(with libnuma), GCC 14, CMake, make and OpenBLAS (for cuBLAS, hipBLAS and
+rocBLAS), and runs the MCP server by default
 (`docker run -i --rm ghcr.io/javier-cabezas/cuda4cpu`). To compile and run
 programs in the current directory with it:
 
@@ -34,7 +35,7 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src ghcr.io/javier-cab
 installs a release on a Linux runner:
 
 ```yaml
-- uses: javier-cabezas/cuda4cpu@v0.6.1
+- uses: javier-cabezas/cuda4cpu@v0.7.0
   id: cuda4cpu
 - run: make CUDA_PATH=${{ steps.cuda4cpu.outputs.toolkit }}
 ```
@@ -111,7 +112,7 @@ Pass options at configure time, for example
 After installing cuda4cpu, add `.cu` files with `cuda4cpu_add_cuda_sources`:
 
 ```cmake
-find_package(cuda4cpu 0.1 REQUIRED)
+find_package(cuda4cpu REQUIRED)
 
 add_executable(my_app main.cpp)
 cuda4cpu_add_cuda_sources(my_app kernels.cu solver.cu)

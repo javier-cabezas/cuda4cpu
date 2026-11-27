@@ -239,7 +239,7 @@ GitHub Action runs it with its `check` input, which annotates the findings
 at their lines:
 
 ```yaml
-      - uses: javier-cabezas/cuda4cpu@v0.6.1
+      - uses: javier-cabezas/cuda4cpu@v0.7.0
         with:
           check: src/scan.cu src/main.cpp -- --size 4096
 ```
