@@ -256,6 +256,11 @@ if(CUDA4CPU_TEST_CBLAS)
     set_tests_properties(cublas_cblas PROPERTIES ENVIRONMENT "CUDA4CPU_BLAS=${CUDA4CPU_TEST_CBLAS}"
                          FAIL_REGULAR_EXPRESSION "CUDA4CPU_BLAS=")
 endif()
+# cuFFT against a direct DFT
+add_executable(cufft_test)
+set_target_properties(cufft_test PROPERTIES CXX_EXTENSIONS OFF)
+cuda4cpu_add_cuda_sources(cufft_test cufft.cu)
+add_test(NAME cufft COMMAND cufft_test)
 # Shared pipelines wait for other threads: in other orders too
 add_test(NAME async_copy_random COMMAND async_copy)
 set_tests_properties(async_copy_random PROPERTIES ENVIRONMENT "CUDA4CPU_SCHEDULE=random:3")
@@ -298,8 +303,8 @@ add_test(NAME rewrite_features COMMAND rewrite_features)
 # host APIs for memory and contexts, the kernel language, and
 # hipLaunchKernelGGL as a function template in a .cpp file, which
 # cuda4cpu_add_hip_sources compiles as HIP whatever its extension, and
-# hipBLAS and rocBLAS
-foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/template_launch.cpp hip/blas.hip)
+# hipBLAS and rocBLAS, and hipFFT and rocFFT
+foreach(source IN ITEMS hip/runtime.hip hip/memory.hip hip/kernels.hip hip/template_launch.cpp hip/blas.hip hip/fft.hip)
     cmake_path(GET source STEM stem)
     add_executable(hip_${stem})
     set_target_properties(hip_${stem} PROPERTIES CXX_EXTENSIONS OFF)
@@ -398,7 +403,7 @@ if(CMAKE_VERSION VERSION_LESS 4.1)
                    "(4.1 or later can), so the cmake_language tests are left out")
 else()
 foreach(language IN ITEMS cuda hip)
-    set(programs host|single|random)
+    set(programs host|single|random|libraries)
     set(touch -DTOUCH=saxpy.cuh -DREBUILDS=kernels.cu.o)
     if(language STREQUAL "hip")
         set(programs vector)

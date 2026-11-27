@@ -177,7 +177,8 @@ NVCC_PROVIDED_LIBRARIES = {'cudart', 'cudart_static', 'cuda', 'cudadevrt', 'nvTo
 # What libcuda4cpu is, for every driver: -l of one is dropped, so that a real
 # CUDA or ROCm library that a -L finds isn't linked instead
 PROVIDED_LIBRARIES = NVCC_PROVIDED_LIBRARIES | {'curand', 'curand_static', 'cublas', 'cublas_static', 'cublasLt',
-                                                'cublasLt_static', 'amdhip64', 'hiprand', 'hipblas', 'rocblas'}
+                                                'cublasLt_static', 'cufft', 'cufft_static', 'amdhip64', 'hiprand',
+                                                'hipblas', 'rocblas', 'hipfft', 'rocfft'}
 
 # nvcc's warning kinds, the value of its -Werror
 NVCC_WARNING_KINDS = {'cross-execution-space-call', 'reorder', 'default-stream-launch', 'missing-launch-bounds',

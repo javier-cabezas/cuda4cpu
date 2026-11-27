@@ -6,7 +6,7 @@ welcome: open an issue to discuss an item before starting on a large one.
 ## Features
 
 The compatibility suite (see [docs/compatibility.md](docs/compatibility.md))
-shows what blocks real programs. 173 of 198 pass today; most of the rest need
+shows what blocks real programs. 184 of 209 pass today; most of the rest need
 one of these:
 
 - **Textures and surfaces** (texture objects, `tex1D`/`tex2D`/`tex3D`,
@@ -40,6 +40,9 @@ with cuBLAS, and rocm-examples has more for their ROCm counterparts.
    and `UnifiedMemoryStreams` pass. Left: cuBLASLt, and cuSPARSE, which
    `conjugateGradientCudaGraphs` needs too.
 4. **cuFFT, hipFFT and rocFFT** on pocketfft (BSD), not FFTW, which is GPL.
+   Done: every transform type in one to three dimensions, batches,
+   advanced layouts and callbacks; `convolutionFFT2D` and the hipFFT and
+   rocFFT examples on one GPU pass. Left: multi-GPU transforms.
 
 ## AMD GPU builtins
 

@@ -64,7 +64,11 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   Most functions are header-only. Device properties and aligned allocation
   are in the library.
   The vector types (`float4`, ... in `types.hpp`, `VECTOR_TYPE`) are
-  CUDA's structs, except on HIP's AMD platform (`__HIP_PLATFORM_AMD__`
+  CUDA's structs, at global scope as CUDA's (`CUDA4CPU_VECTOR_STRUCTS`, with
+  using-declarations in `cuda_api`), so that argument-dependent lookup
+  finds a program's global operators on them from templates in other
+  namespaces (`helper_math.h`'s, rocm-examples' `operator<<`; `runtime`
+  tests it), except on HIP's AMD platform (`__HIP_PLATFORM_AMD__`
   without `__HIP_PLATFORM_NVIDIA__`, known when `cuda_runtime.h` is
   included, from the drivers' `-D`), where they are aliases of AMD's
   `HIP_vector_type<T, N>` (`hip/amd_vector_types.h`, global scope, HIP 7's
@@ -170,6 +174,22 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   per API (`api_status`). Management, copies and the mixed-precision
   products (`cublasGemmEx`, `Hgemm`: operands converted to the computation's
   type, `gemm_ex`) are written by hand.
+- `include/cufft.h`, `cufftXt.h`, `hipfft/hipfft.h`, `hipfft/hipfftXt.h`,
+  `rocfft/rocfft.h` and `lib/fft.cpp`: cuFFT, hipFFT and rocFFT, with C
+  linkage, on pocketfft (`lib/third_party/pocketfft`, BSD-3-Clause, pinned
+  by commit in its README and `THIRD_PARTY_NOTICES.md`). Every API's plan is
+  an `fft::plan`: kind, precision, lengths (slowest first; rocFFT's are
+  fastest first and reversed), batch, and the input's and output's layouts
+  (strides per dimension, distance, offset, in elements of each array).
+  cuFFT's basic layout is decided when the transform runs
+  (`basic_layouts`), since a real array is padded in place. `execute_typed`
+  runs a batch through pocketfft with byte strides and the batch as an
+  extra dimension that isn't transformed; callbacks load the input into a
+  copy, or store the output from one, element by element with the
+  program's offsets. cuFFT's handles are ints (an index into `handles`),
+  hipFFT's and rocFFT's pointers. `lib/stream_tasks.hpp` (`run_on_stream`)
+  is the BLAS's and FFT's way of running work in a stream's order: now, or
+  as a host node that the graph owns (`capture_host_owned`).
 - `include/mma.h`: CUDA's warp matrix functions (`nvcuda::wmma`), for half,
   bfloat16, tf32, double and 8-bit integers. Lane l holds elements
   `l * num_elements ...` of the tile, modulo its size, in the order of the
@@ -454,12 +474,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   build systems written for nvcc: `bin/nvcc` links to `cuda4cpu-nvcc`,
   `include` to the headers, and `lib64` has `libcudart.so`,
   `libcudart_static.a`, `libcuda.so`, `libcurand.so`,
-  `libcurand_static.a`, `libcublas.so`, `libcublasLt.so` and their static
-  archives as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
+  `libcurand_static.a`, `libcublas.so`, `libcublasLt.so`, `libcufft.so`
+  and their static archives as linker scripts (`INPUT(-lcuda4cpu <OpenMP>)`, so
   they resolve through `-L` wherever it's installed, for libraries named
   by path, as CMake's `CUDA::curand`; every driver drops `-l` of the
   libraries libcuda4cpu provides, `PROVIDED_LIBRARIES` (`cudart`, `curand`,
-  `cublas`, `amdhip64`, `hiprand`, `hipblas`, `rocblas`, ...), so that a real one a `-L` finds isn't linked,
+  `cublas`, `cufft`, `amdhip64`, `hiprand`, `hipblas`, `rocblas`, `hipfft`,
+  `rocfft`, ...), so that a real one a `-L` finds isn't linked,
   and links with `-L` the toolkit's `lib64` and `lib` before libcuda4cpu's
   directory), next to links to libcuda4cpu and its soname, and an empty
   `libcudadevrt.a`. `nvvm/libdevice` is empty: CMake checks it exists.
@@ -705,6 +726,16 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     pointers, calls captured in a graph (scalars read when it runs, or when
     captured), copies, management and errors. `hip_blas` (`hip/blas.hip`):
     hipBLAS's and rocBLAS's names, enumerations, complex types and statuses.
+  - `cufft` (`cufft.cu`): every transform type in both precisions, in one
+    to three dimensions of odd and even lengths, forward and inverse, in
+    place (padded) and out of place, in batches, through every way of
+    making a plan, against a direct DFT in long double; the advanced layout
+    (interleaved batches, a larger embedding, the 64-bit API), callbacks
+    (from a `__device__` variable, with offsets and shared memory), a
+    transform captured in a graph, and the errors. `hip_fft`
+    (`hip/fft.hip`): hipFFT's names and callbacks, and rocFFT's
+    descriptions (strides fastest first, offsets, scale factors),
+    placements, execution infos and errors.
   - `curand` (`curand.cu`): XORWOW against reference streams (values 0, 1,
     2 and 1023 of six seeds and subsequences, and offsets), Philox's rounds
     against Random123's known answers, Sobol' points against Joe and Kuo's
@@ -808,7 +839,7 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   - `cmake_language_{cuda,hip}` (`cmake-language/`): projects written for
     CMake's CUDA language (`find_package(CUDAToolkit)`, a static library
     with separable compilation, a C++17 `.cpp` file that includes
-    `cuda_runtime.h`, a program linked with `CUDA::curand`) and HIP language, configured with the toolkit's
+    `cuda_runtime.h`, programs linked with `CUDA::curand`, `CUDA::cublas` and `CUDA::cufft`) and HIP language, configured with the toolkit's
     toolchain file, built and run. A second build must do nothing, and
     touching a local header (`saxpy.cuh`) must recompile its source.
   - `hip/` (through `cuda4cpu_add_hip_sources`, HIP names only):

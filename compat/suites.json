@@ -3,7 +3,7 @@
     "cuda-samples": {
       "url": "https://github.com/NVIDIA/cuda-samples.git",
       "revision": "v13.4",
-      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND, cuBLAS and Thrust (from NVIDIA's CCCL, on its OpenMP backend), CUB, MPI or multiple GPUs). They check their own results.",
+      "description": "NVIDIA's CUDA samples that use only the runtime API and the kernel language (no graphics interop, driver API, NVRTC, CUDA libraries other than cuRAND, cuBLAS, cuFFT and Thrust (from NVIDIA's CCCL, on its OpenMP backend), CUB, MPI or multiple GPUs). They check their own results.",
       "defaults": {
         "sources": [
           "*.cu",
@@ -316,6 +316,9 @@
           "dir": "cpp/5_Domain_Specific/binomialOptions"
         },
         {
+          "dir": "cpp/5_Domain_Specific/convolutionFFT2D"
+        },
+        {
           "dir": "cpp/5_Domain_Specific/dwtHaar1D"
         },
         {
@@ -522,7 +525,7 @@
     "rocm-examples": {
       "url": "https://github.com/ROCm/rocm-examples.git",
       "revision": "rocm-7.2.4",
-      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocThrust, hipCUB, rocWMMA, hipRAND, rocBLAS and hipBLAS or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
+      "description": "AMD's HIP examples (HIP-Basic, the HIP documentation's examples, and the reduction tutorial) that use only the HIP runtime API and the kernel language (no graphics interop, module API, HIPRTC, ROCm libraries other than rocPRIM, rocThrust, hipCUB, rocWMMA, hipRAND, rocBLAS, hipBLAS, rocFFT and hipFFT or multiple GPUs), built with cuda4cpu-hipcc. Those marked verified: false only check for API errors.",
       "defaults": {
         "driver": "hipcc",
         "sources": [
@@ -1333,6 +1336,56 @@
         {
           "dir": "Libraries/hipBLAS/scal",
           "name": "hipblas_scal"
+        },
+        {
+          "dir": "Libraries/hipFFT/callback",
+          "name": "hipfft_callback",
+          "verified": false
+        },
+        {
+          "dir": "Libraries/hipFFT/plan_d2z",
+          "name": "hipfft_plan_d2z",
+          "expect": "\\(2\\.16,0\\)\\s+\\(-0\\.833,-0\\.614\\)\\s+\\(0\\.0483,0\\)[\\s\\S]*\\(9\\.08,0\\)[\\s\\S]*\\(34\\.6,0\\)"
+        },
+        {
+          "dir": "Libraries/hipFFT/plan_many_2d_r2c",
+          "name": "hipfft_plan_many_2d_r2c",
+          "expect": "\\(11\\.7,0\\)\\s+\\(-0\\.0256,0\\.973\\)\\s+\\(1\\.58,-0\\.213\\)[\\s\\S]*\\(10\\.9,0\\)"
+        },
+        {
+          "dir": "Libraries/hipFFT/plan_many_2d_z2z",
+          "name": "hipfft_plan_many_2d_z2z",
+          "expect": "\\(10\\.1,11\\.7\\)\\s+\\(0\\.592,-0\\.459\\)[\\s\\S]*\\(11,11\\.2\\)"
+        },
+        {
+          "dir": "Libraries/hipFFT/plan_z2z",
+          "name": "hipfft_plan_z2z",
+          "expect": "\\(1\\.6,2\\.6\\)\\s+\\(-0\\.945,-0\\.493\\)\\s+\\(-0\\.714,0\\.168\\)\\s+\\(0\\.599,1\\.07\\)[\\s\\S]*\\(7\\.58,9\\.32\\)[\\s\\S]*\\(33\\.4,37\\.4\\)"
+        },
+        {
+          "dir": "Libraries/hipFFT/setworkarea",
+          "name": "hipfft_setworkarea",
+          "expect": "\\(45,0\\)\\s+\\(-4\\.5,12\\.3636\\)\\s+\\(-4\\.5,5\\.36289\\)"
+        },
+        {
+          "dir": "Libraries/rocFFT/callback",
+          "name": "rocfft_callback",
+          "verified": false
+        },
+        {
+          "dir": "Libraries/rocFFT/complex_complex",
+          "name": "rocfft_complex_complex",
+          "expect": "\\(136,120\\)\\s+\\(0,-16\\)\\s+\\(8,-8\\)\\s+\\(16,0\\)\\s+\\(0,-64\\)"
+        },
+        {
+          "dir": "Libraries/rocFFT/complex_real",
+          "name": "rocfft_complex_real",
+          "expect": "78\\s+-54\\s+-10\\s+34\\s+1\\s+-1\\s+-12\\s+12"
+        },
+        {
+          "dir": "Libraries/rocFFT/real_complex",
+          "name": "rocfft_real_complex",
+          "expect": "\\(176,0\\)\\s+\\(-8,8\\)\\s+\\(-8,0\\)\\s+\\(-48,48\\)"
         }
       ]
     }
