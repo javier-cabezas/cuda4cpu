@@ -33,9 +33,10 @@ RUN cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMP
     && cmake --install /build --prefix /opt/cuda4cpu
 
 FROM ubuntu:24.04
-# g++-14 brings the sanitizers' runtimes, which the MCP server's check uses
+# g++-14 brings the sanitizers' runtimes, which the MCP server's check uses;
+# OpenBLAS is the CBLAS library that cuBLAS, hipBLAS and rocBLAS run on
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends g++-14 cmake make python3 libnuma1 \
+    && apt-get install -y --no-install-recommends g++-14 cmake make python3 libnuma1 libopenblas0-pthread \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/cuda4cpu /usr/local
 RUN ldconfig
