@@ -598,8 +598,9 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   The project and the README's `FetchContent` snippet pin the latest release
   (`GIT_TAG v0.7.0`): update both, the `VERSION` in the top-level
   `CMakeLists.txt`, `server.json`'s `version` and image tag, the image tag
-  in `glama/Dockerfile`, and the action's `@v0.7.0` in the README,
-  `docs/usage.md` and `docs/debugging.md`, when tagging a new one. The `Packages` workflow fails a release whose tag doesn't match.
+  in `glama/Dockerfile`, the action's `@v0.7.0` in the README,
+  `docs/usage.md` and `docs/debugging.md`, and `action.yml`'s examples, when
+  tagging a new one. The `Packages` workflow fails a release whose tag doesn't match.
 - Packages (`.github/workflows/release.yml`, the `Packages` workflow): the
   release archive (`cuda4cpu-linux-x86_64.tar.gz`, with a versioned top
   directory, so that `releases/latest/download/` finds it; built with GCC 14
