@@ -463,6 +463,74 @@ __global__ void pi(curandState *states, int samples, unsigned *inside)
     atomicAdd(inside, count);
 }
 
+//! The host API's large requests, which threads make round by round, and
+//! convert in place: every value against the lanes stepped one by one
+static void host_in_parallel()
+{
+    using cuda4cpu::detail::rand::box_muller;
+    using cuda4cpu::detail::rand::uniform_double;
+    const unsigned long long seed = 99, offset = 4100;   // a round of 4096 and 4 more
+    const size_t n = 300001;                             // ends in the middle of a round
+    curandGenerator_t g;
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_PSEUDO_XORWOW) == CURAND_STATUS_SUCCESS);
+    curandSetPseudoRandomGeneratorSeed(g, seed);
+    curandSetGeneratorOffset(g, offset);
+    std::vector<unsigned> raw(2 * n + 2);
+    EXPECT(curandGenerate(g, raw.data(), n) == CURAND_STATUS_SUCCESS);
+    EXPECT(curandGenerate(g, raw.data() + n, n + 2) == CURAND_STATUS_SUCCESS);   // continues
+    // Lane k has made offset / 4096 values, and one more if k < offset % 4096
+    std::vector<curandState> lanes(4096);
+    for (unsigned k = 0; k < 4096; ++k)
+        curand_init(seed, k, offset / 4096 + (k < offset % 4096), &lanes[k]);
+    size_t wrong = 0;
+    for (size_t m = 0; m < raw.size(); ++m)
+        wrong += raw[m] != curand(&lanes[(offset + m) % 4096]);
+    EXPECT(wrong == 0);
+
+    // Doubles from results 2i and 2i + 1, normals from pairs, uniforms
+    curandSetGeneratorOffset(g, offset);
+    std::vector<double> d(n + 1);
+    EXPECT(curandGenerateUniformDouble(g, d.data(), d.size()) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < d.size(); ++i)
+        wrong += d[i] != uniform_double(raw[2 * i], raw[2 * i + 1]);
+    EXPECT(wrong == 0);
+    curandSetGeneratorOffset(g, offset);
+    std::vector<float> f(2 * n + 2);
+    EXPECT(curandGenerateNormal(g, f.data(), f.size(), 1.0f, 2.0f) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < f.size(); i += 2) {
+        const float2 z = box_muller(raw[i], raw[i + 1]);
+        wrong += f[i] != 1.0f + 2.0f * z.x || f[i + 1] != 1.0f + 2.0f * z.y;
+    }
+    EXPECT(wrong == 0);
+    curandSetGeneratorOffset(g, offset);
+    EXPECT(curandGenerateUniform(g, f.data(), f.size()) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < f.size(); ++i)
+        wrong += bits_of(f[i]) != bits_of(cuda4cpu::detail::rand::uniform(raw[i]));
+    EXPECT(wrong == 0);
+    curandDestroyGenerator(g);
+
+    // Sobol': two dimensions in chunks, against one state per dimension
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_QUASI_SOBOL32) == CURAND_STATUS_SUCCESS);
+    curandSetQuasiRandomGeneratorDimensions(g, 2);
+    curandSetGeneratorOffset(g, 12345);
+    std::vector<unsigned> q(2 * 200003);
+    EXPECT(curandGenerate(g, q.data(), q.size()) == CURAND_STATUS_SUCCESS);
+    curandDirectionVectors32_t *vectors;
+    curandGetDirectionVectors32(&vectors, CURAND_DIRECTION_VECTORS_32_JOEKUO6);
+    wrong = 0;
+    for (unsigned dim = 0; dim < 2; ++dim) {
+        curandStateSobol32_t s;
+        curand_init(vectors[dim], 12345, &s);
+        for (size_t i = 0; i < q.size() / 2; ++i)
+            wrong += q[dim * (q.size() / 2) + i] != curand(&s);
+    }
+    EXPECT(wrong == 0);
+    curandDestroyGenerator(g);
+}
+
 static void kernels()
 {
     const int blocks = 64, threads = 128, samples = 500;
@@ -496,6 +564,7 @@ int main()
     distributions<curandStatePhilox4_32_10_t>("Philox4_32_10");
     distributions<curandStateMRG32k3a_t>("MRG32k3a");
     host_orderings();
+    host_in_parallel();
     edges();
     kernels();
     if (failures == 0)
