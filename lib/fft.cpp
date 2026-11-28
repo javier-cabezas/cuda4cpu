@@ -56,9 +56,11 @@
 #pragma GCC diagnostic ignored "-Wall"
 #pragma GCC diagnostic ignored "-Wextra"
 #endif
-// Its thread pool restarts in a child of fork(); its buffers come from
-// posix_memalign
-#define POCKETFFT_PTHREADS
+// It runs on the OpenMP threads (POCKETFFT_OPENMP, cuda4cpu's change to
+// it): with a pool of its own, a transform right after a kernel took 3 to 7
+// times as long, while the OpenMP threads still spun. Its buffers come from
+// posix_memalign.
+#define POCKETFFT_OPENMP
 #define POCKETFFT_USE_POSIX_MEMALIGN
 #include "third_party/pocketfft/pocketfft_hdronly.h"
 #if defined(__GNUC__) && !defined(__clang__)

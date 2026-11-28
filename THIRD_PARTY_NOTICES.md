@@ -45,7 +45,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 `lib/third_party/pocketfft/pocketfft_hdronly.h`, Martin Reinecke's pocketfft
 (https://github.com/mreineck/pocketfft, the C++ header-only version, commit
-4d865cba24359b05b37da4e75aee24498c3b78e7), unchanged, computes cuFFT's,
+4d865cba24359b05b37da4e75aee24498c3b78e7), with one change (its threads
+are OpenMP's, `lib/third_party/pocketfft/README.md`), computes cuFFT's,
 hipFFT's and rocFFT's transforms. libcuda4cpu contains it. Its notice, as
 the header gives it:
 

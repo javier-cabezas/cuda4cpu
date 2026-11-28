@@ -178,7 +178,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
 - `include/cufft.h`, `cufftXt.h`, `hipfft/hipfft.h`, `hipfft/hipfftXt.h`,
   `rocfft/rocfft.h` and `lib/fft.cpp`: cuFFT, hipFFT and rocFFT, with C
   linkage, on pocketfft (`lib/third_party/pocketfft`, BSD-3-Clause, pinned
-  by commit in its README and `THIRD_PARTY_NOTICES.md`). Every API's plan is
+  by commit in its README and `THIRD_PARTY_NOTICES.md`, with one change:
+  `POCKETFFT_OPENMP` runs `thread_map`'s shares on the OpenMP threads; its
+  own pool competed with OpenMP's spinning threads, and a transform right
+  after a kernel took 3 to 7 times as long). Every API's plan is
   an `fft::plan`: kind, precision, lengths (slowest first; rocFFT's are
   fastest first and reversed), batch, and the input's and output's layouts
   (strides per dimension, distance, offset, in elements of each array).
