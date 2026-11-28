@@ -28,6 +28,7 @@ Usage: packaging/set-version.py X.Y.Z   writes X.Y.Z in every place
                                         CMake's version (CI runs it)
 """
 
+import json
 import os
 import re
 import sys
@@ -59,29 +60,41 @@ def occurrences():
             yield path, pattern, found
 
 
-def main():
-    args = sys.argv[1:]
-    if args == ['--check']:
-        cmake = next(found for path, _, found in occurrences() if path == 'CMakeLists.txt')
-        expected = cmake[0] if len(cmake) == 1 else None
-        wrong = []
-        for path, pattern, found in occurrences():
-            if not found:
-                wrong.append(f'{path}: no version where expected ({pattern % "X.Y.Z"})')
-            wrong += [f'{path}: {v}, not CMake\'s {expected}' for v in found if v != expected]
-        if expected is None:
-            wrong.insert(0, 'CMakeLists.txt: no project VERSION')
-        for line in wrong:
-            print(f'set-version.py: {line}', file=sys.stderr)
-        if wrong:
-            print('set-version.py: run packaging/set-version.py X.Y.Z', file=sys.stderr)
-        return 1 if wrong else 0
-    if len(args) != 1 or not re.fullmatch(VERSION, args[0]):
-        sys.exit(__doc__.strip().split('\n\n')[-1])
-    version = args[0]
+def check():
+    cmake = next(found for path, _, found in occurrences() if path == 'CMakeLists.txt')
+    if len(cmake) != 1:
+        print('set-version.py: CMakeLists.txt: no single project VERSION', file=sys.stderr)
+        return 1
+    expected = cmake[0]
+    wrong = []
+    for path, pattern, found in occurrences():
+        if not found:
+            wrong.append(f'{path}: no version where expected ({pattern % "X.Y.Z"})')
+        wrong += [f"{path}: {v}, not CMake's {expected}" for v in found if v != expected]
+    # The MCP Registry reads server.json's fields, not its text
+    try:
+        with open(os.path.join(ROOT, 'server.json')) as f:
+            server = json.load(f)
+        if server['version'] != expected:
+            wrong.append(f"server.json: version {server['version']}, not CMake's {expected}")
+        image = f'ghcr.io/javier-cabezas/cuda4cpu:{expected}'
+        if server['packages'][0]['identifier'] != image:
+            wrong.append(f"server.json: the first package is {server['packages'][0]['identifier']}, not {image}")
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        wrong.append(f'server.json: not an MCP server entry ({e!r})')
+    for line in wrong:
+        print(f'set-version.py: {line}', file=sys.stderr)
+    if wrong:
+        print('set-version.py: run packaging/set-version.py X.Y.Z', file=sys.stderr)
+    return 1 if wrong else 0
+
+
+def set_version(version):
+    # Every file's new contents first, so that a place not found leaves them
+    # all as they were
+    files = {}
     for path, patterns in PLACES.items():
-        full = os.path.join(ROOT, path)
-        with open(full) as f:
+        with open(os.path.join(ROOT, path)) as f:
             content = f.read()
         for pattern in patterns:
             content, count = re.subn(pattern % VERSION,
@@ -89,10 +102,22 @@ def main():
                                      m.group(0)[m.end(1) - m.start(0):],
                                      content, flags=re.MULTILINE)
             if not count:
-                sys.exit(f'set-version.py: {path}: no version where expected ({pattern % "X.Y.Z"})')
-        with open(full, 'w') as f:
+                sys.exit(f'set-version.py: {path}: no version where expected ({pattern % "X.Y.Z"}); '
+                         'nothing was changed')
+        files[path] = content
+    for path, content in files.items():
+        with open(os.path.join(ROOT, path), 'w') as f:
             f.write(content)
     return 0
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ['--check']:
+        return check()
+    if len(args) != 1 or not re.fullmatch(VERSION, args[0]):
+        sys.exit(__doc__.strip().split('\n\n')[-1])
+    return set_version(args[0])
 
 
 if __name__ == '__main__':
