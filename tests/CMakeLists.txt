@@ -211,10 +211,17 @@ if(CUDA4CPU_CCCL_DIR)
     else()
         set(cccl_flags "-I${CUDA4CPU_CCCL_DIR}")
     endif()
+    # In a build with sanitizers, the programs are compiled and linked with
+    # them too: an instrumented library needs its runtime to come first
+    string(REGEX MATCHALL "-f(no-)?sanitize[^ ]*" sanitizer_flags "${CMAKE_CXX_FLAGS}")
+    list(JOIN sanitizer_flags "|" sanitizer_flags)
+    if(sanitizer_flags)
+        string(APPEND cccl_flags "|${sanitizer_flags}")
+    endif()
     foreach(driver IN ITEMS c++ nvcc)
         add_test(NAME thrust_${driver}
                  COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-${driver}
-                         -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/thrust.cu "-DFLAGS=${cccl_flags}"
+                         -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/thrust.cu "-DFLAGS=${cccl_flags}" "-DLINK_FLAGS=${sanitizer_flags}"
                          -DWORK=${CMAKE_CURRENT_BINARY_DIR}/thrust_${driver}
                          -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
         set_tests_properties(thrust_${driver} PROPERTIES
@@ -222,7 +229,7 @@ if(CUDA4CPU_CCCL_DIR)
     endforeach()
     add_test(NAME thrust_host
              COMMAND ${CMAKE_COMMAND} -DDRIVER=${PROJECT_BINARY_DIR}/tools/cuda4cpu-c++
-                     -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/thrust_host.cpp "-DFLAGS=${cccl_flags}"
+                     -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/thrust_host.cpp "-DFLAGS=${cccl_flags}" "-DLINK_FLAGS=${sanitizer_flags}"
                      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/thrust_host
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/rewrite/driver_test.cmake)
     set_tests_properties(thrust_host PROPERTIES

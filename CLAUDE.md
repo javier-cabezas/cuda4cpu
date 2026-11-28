@@ -716,7 +716,10 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
     system's other names, `device_vector` and `device_malloc` memory as
     device memory (and `universal_vector`'s as managed), host-to-device
     copies into it under `CUDA4CPU_MEMCPY_DIRECTION=error`, a kernel on it,
-    and `thrust::system_error`.
+    and `thrust::system_error`. In a build with sanitizers, they and
+    `thrust_host` pass its `-fsanitize` options to the driver
+    (`driver_test.cmake`'s `LINK_FLAGS` for the link step), so that the
+    sanitizers' job runs them.
   - `cublas` (`cublas.cu`, with `CUDA4CPU_BLAS=builtin`) and `cublas_cblas`
     (with the CBLAS library `CUDA4CPU_TEST_CBLAS` names, by default the
     OpenBLAS CMake finds, which CI installs; failing if it isn't loaded):
