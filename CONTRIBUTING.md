@@ -66,6 +66,8 @@ run-to-run noise is large.
   CUDA's names exactly as in the CUDA Runtime API.
 - Every source file starts with the Apache-2.0 header and
   `SPDX-License-Identifier: Apache-2.0`.
+- `lib/blas_api.inc` and the BLAS headers' generated blocks come from
+  `lib/make-blas-api.py`: edit its table and run it, not the output.
 - [CLAUDE.md](CLAUDE.md) describes the code's layout and how execution works
   in detail, with the pitfalls we've hit. It's written for AI assistants, and
   it's the best map of the code for people too.

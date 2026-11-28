@@ -32,16 +32,15 @@ jobs:
           packages: ninja-build g++-14
           ccache-key: archive
 
-      # A release must be tagged with the version that CMake, server.json and
-      # Glama's Dockerfile declare
+      # Every place that names the release (server.json, Glama's Dockerfile,
+      # the pins in the README, the docs, the action and the example project)
+      # must have CMake's version, and a release must be tagged with it
       - name: Read the version
         id: version
         run: |
+          packaging/set-version.py --check
           version=$(sed -n 's/^ *VERSION \([0-9][0-9.]*\)$/\1/p' CMakeLists.txt | head -n 1)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          test "$(jq -r .version server.json)" = "$version"
-          test "$(jq -r '.packages[0].identifier' server.json)" = "ghcr.io/javier-cabezas/cuda4cpu:$version"
-          grep -Fqx "FROM ghcr.io/javier-cabezas/cuda4cpu:$version" glama/Dockerfile
           if [ "${{ github.event_name }}" = release ]; then
             test "${{ github.event.release.tag_name }}" = "v$version"
           fi

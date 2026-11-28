@@ -65,6 +65,17 @@ jobs:
         with:
           key: ${{ steps.setup.outputs.ccache-key }}
 
+  # Files generated from a table that is edited by hand: the BLAS APIs'
+  # declarations and functions
+  generated:
+    name: generated files
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that they're up to date
+        run: lib/make-blas-api.py --check
+
   # The _setjmp/_longjmp fallback used on architectures without the assembly
   # context switch
   portable-context:
