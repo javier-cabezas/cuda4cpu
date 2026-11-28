@@ -156,7 +156,8 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   and rocBLAS, with C linkage. Their routines take the same arguments in the
   same order, so `lib/make-blas-api.py` generates every API's declarations
   (into the headers' `cuda4cpu-blas: begin ...` blocks) and their functions
-  (`lib/blas_api.inc`) from one table: each converts its arguments
+  (`lib/blas_api.inc`) from one table (rerun it after editing the table; CI's
+  `generated files` job runs `--check`): each converts its arguments
   (`blas::arg` for enumerations, AMD's having the reference CBLAS's values,
   `blas::ptr` to `std::complex`, `blas::scalar_in`) and calls the routine,
   `blas::<core>`, a template on the type, which checks the arguments as the
@@ -596,11 +597,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   (`FETCHCONTENT_SOURCE_DIR_CUDA4CPU`) and checks that the bugs are exposed,
   including the line AddressSanitizer reports in `out_of_bounds.cu`.
   The project and the README's `FetchContent` snippet pin the latest release
-  (`GIT_TAG v0.7.0`): update both, the `VERSION` in the top-level
-  `CMakeLists.txt`, `server.json`'s `version` and image tag, the image tag
-  in `glama/Dockerfile`, the action's `@v0.7.0` in the README,
-  `docs/usage.md` and `docs/debugging.md`, and `action.yml`'s examples, when
-  tagging a new one. The `Packages` workflow fails a release whose tag doesn't match.
+  (`GIT_TAG`), and so do the action's `@v...` in the README, `docs/usage.md`
+  and `docs/debugging.md`, and `action.yml`'s examples. Before tagging a new
+  one, `packaging/set-version.py X.Y.Z` writes it there, in the top-level
+  `CMakeLists.txt`'s `VERSION`, `server.json`'s `version` and image tag, and
+  `glama/Dockerfile`'s image tag (its `PLACES`: add a place there when a file
+  starts naming the release). The `Packages` workflow runs `--check` on every
+  pull request, and fails a release whose tag doesn't match.
 - Packages (`.github/workflows/release.yml`, the `Packages` workflow): the
   release archive (`cuda4cpu-linux-x86_64.tar.gz`, with a versioned top
   directory, so that `releases/latest/download/` finds it; built with GCC 14
