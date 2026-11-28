@@ -139,8 +139,13 @@ Build trees live in `build/<preset>/` (git-ignored). The presets export
   their results from lanes of device-API states, as cuRAND documents its
   orderings: result m from lane `(m / group) % lanes` (XORWOW 4096 lanes of
   1, Philox 65536 of 4, MRG32k3a 81920), each lane a subsequence, so XORWOW's
-  and Philox's host results are CUDA's too; lanes run in parallel and keep
-  their states between calls. Sobol' direction vectors come from Joe and
+  and Philox's host results are CUDA's too; lanes keep their states between
+  calls, and run in parallel round by round (`in_rounds`: each thread a
+  range of lanes, so that a round's results are written together; lane by
+  lane, XORWOW took as long on 16 threads as on one), converted as they're
+  made (`each_raw`), or, for a pair per result, in place in the output
+  (`raw_bytes`). Sobol' points run in chunks per dimension. Sobol'
+  direction vectors come from Joe and
   Kuo's direction numbers, packed into `lib/sobol_directions.inc` by
   `lib/make-sobol-directions.py` (BSD: `THIRD_PARTY_NOTICES.md`, installed
   with `LICENSE`); the scrambled sets and constants are cuda4cpu's (a random

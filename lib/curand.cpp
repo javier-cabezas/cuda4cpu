@@ -24,6 +24,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -417,39 +418,89 @@ struct curandGenerator_st {
         }
     }
 
-    //! The next n raw values in the generator's order: 32 bits each, MRG32k3a's
-    //! in [1, m1]
-    void raw(unsigned int *out, size_t n)
+    //! The next n raw values in the generator's order (32 bits each,
+    //! MRG32k3a's in [1, m1]): store(i, value) for each, in parallel. The
+    //! lanes run round by round, each thread a contiguous range of them, so
+    //! that a round's values are written next to each other: lane by lane,
+    //! each value went to a cache line written a whole pass before, and
+    //! XORWOW's took about as long on 16 threads as on one.
+    template <typename Store>
+    void each_raw(size_t n, Store store)
     {
         if (xorwow.empty() && philox.empty() && mrg.empty() && !mt)
             start();
-        // Results past 2^64 don't wrap around the index
-        using index = unsigned __int128;
-        const index first = index(offset) + position, g = group(), l = lanes();
         if (mt) {
             for (size_t i = 0; i < n; ++i)
-                out[i] = unsigned((*mt)());
+                store(i, unsigned((*mt)()));
+        } else if (!xorwow.empty()) {
+            in_rounds(n, xorwow, [](curandStateXORWOW *s) { return curand(s); }, store);
+        } else if (!philox.empty()) {
+            in_rounds(n, philox, [](curandStatePhilox4_32_10 *s) { return curand(s); }, store);
         } else {
-            // Each lane makes its results in order: lanes run in parallel
-            #pragma omp parallel for schedule(static)
-            for (size_t k = 0; k < l; ++k) {
-                const index round = g * l;
-                // The first block of lane k at or after the first result
-                index base = first / round * round + k * g;
-                for (; base < first + n; base += round) {
-                    for (index m = std::max(base, first); m < base + g && m < first + n; ++m) {
-                        unsigned int &value = out[size_t(m - first)];
-                        if (!xorwow.empty())
-                            value = curand(&xorwow[k]);
-                        else if (!philox.empty())
-                            value = curand(&philox[k]);
-                        else
-                            value = mrg32k3a_next(&mrg[k]);
-                    }
+            in_rounds(n, mrg, [](curandStateMRG32k3a *s) { return mrg32k3a_next(s); }, store);
+        }
+        position += n;
+    }
+
+    template <typename State, typename Next, typename Store>
+    void in_rounds(size_t n, std::vector<State> &states, Next next, Store store)
+    {
+        // Results past 2^64 don't wrap around the index
+        using index = unsigned __int128;
+        const size_t g = group(), l = lanes();
+        const index first = index(offset) + position, last = first + n, round = index(g) * l;
+        if (n == 0)
+            return;
+        const index begin = first / round, end = (last + round - 1) / round;
+        #pragma omp parallel if (n >= 32768 && !omp_in_parallel())
+        {
+            const size_t t = size_t(omp_get_thread_num()), threads = size_t(omp_get_num_threads());
+            const size_t k0 = l * t / threads, k1 = l * (t + 1) / threads;
+            for (index r = begin; r < end; ++r) {
+                const index base = r * round;
+                if (base >= first && base + round <= last) {
+                    const size_t at = size_t(base - first);
+                    for (size_t k = k0; k < k1; ++k)
+                        for (size_t j = 0; j < g; ++j)
+                            store(at + k * g + j, next(&states[k]));
+                } else {
+                    // The first and last rounds: a lane skips the results
+                    // made before, and stops at the last
+                    for (size_t k = k0; k < k1; ++k)
+                        for (size_t j = 0; j < g; ++j) {
+                            const index m = base + k * g + j;
+                            if (m >= first && m < last)
+                                store(size_t(m - first), next(&states[k]));
+                        }
                 }
             }
         }
-        position += n;
+    }
+
+    //! The next n raw values, into the bytes of an output of another type,
+    //! which conversions in place then read with raw_at: a pair of them
+    //! takes the bytes of the double or of the two floats made from it.
+    //! Two threads may write the two halves of one double: disjoint 4-byte
+    //! stores, which every CPU it runs on keeps apart.
+    void raw_bytes(void *out, size_t n)
+    {
+        each_raw(n, [out](size_t i, unsigned int r) { std::memcpy(static_cast<char *>(out) + 4 * i, &r, 4); });
+    }
+
+    static unsigned int raw_at(const void *out, size_t i)
+    {
+        unsigned int r;
+        std::memcpy(&r, static_cast<const char *>(out) + 4 * i, 4);
+        return r;
+    }
+
+    //! f(i) for every i below n, in parallel
+    template <typename F>
+    static void each(size_t n, F f)
+    {
+        #pragma omp parallel for schedule(static) if (n >= 32768 && !omp_in_parallel())
+        for (size_t i = 0; i < n; ++i)
+            f(i);
     }
 
     unsigned int to_uint(unsigned int r) const
@@ -478,6 +529,12 @@ struct curandGenerator_st {
             return CURAND_STATUS_LENGTH_NOT_MULTIPLE;
         const size_t count = n / dimensions;
         const unsigned long long first = offset + position;
+        // Each dimension in chunks, each from its own point (curand_init
+        // skips ahead), so that a few dimensions run in parallel too
+        const size_t chunks = count >= 65536 && !omp_in_parallel()
+                                  ? std::max<size_t>(1, (size_t(omp_get_max_threads()) * 4 + dimensions - 1) / dimensions)
+                                  : 1;
+        const size_t per_chunk = (count + chunks - 1) / chunks;
         if (sobol64()) {
             unsigned long long *constants = nullptr;
             curandDirectionVectors64_t *vectors = nullptr;
@@ -485,12 +542,17 @@ struct curandGenerator_st {
                                                               : CURAND_DIRECTION_VECTORS_64_JOEKUO6);
             if (scrambled())
                 curandGetScrambleConstants64(&constants);
-            #pragma omp parallel for
+            #pragma omp parallel for collapse(2) if (!omp_in_parallel())
             for (unsigned d = 0; d < dimensions; ++d) {
-                curandStateScrambledSobol64 state;
-                curand_init(vectors[d], constants ? constants[d] : 0, first, &state);
-                for (size_t i = 0; i < count; ++i)
-                    store(d * count + i, curand(&state));
+                for (size_t c = 0; c < chunks; ++c) {
+                    const size_t lo = c * per_chunk, hi = std::min(count, lo + per_chunk);
+                    if (lo >= hi)
+                        continue;
+                    curandStateScrambledSobol64 state;
+                    curand_init(vectors[d], constants ? constants[d] : 0, first + lo, &state);
+                    for (size_t i = lo; i < hi; ++i)
+                        store(d * count + i, curand(&state));
+                }
             }
         } else {
             unsigned int *constants = nullptr;
@@ -499,12 +561,17 @@ struct curandGenerator_st {
                                                               : CURAND_DIRECTION_VECTORS_32_JOEKUO6);
             if (scrambled())
                 curandGetScrambleConstants32(&constants);
-            #pragma omp parallel for
+            #pragma omp parallel for collapse(2) if (!omp_in_parallel())
             for (unsigned d = 0; d < dimensions; ++d) {
-                curandStateScrambledSobol32 state;
-                curand_init(vectors[d], constants ? constants[d] : 0, unsigned(first), &state);
-                for (size_t i = 0; i < count; ++i)
-                    store(d * count + i, (unsigned long long)curand(&state));
+                for (size_t c = 0; c < chunks; ++c) {
+                    const size_t lo = c * per_chunk, hi = std::min(count, lo + per_chunk);
+                    if (lo >= hi)
+                        continue;
+                    curandStateScrambledSobol32 state;
+                    curand_init(vectors[d], constants ? constants[d] : 0, unsigned(first + lo), &state);
+                    for (size_t i = lo; i < hi; ++i)
+                        store(d * count + i, (unsigned long long)curand(&state));
+                }
             }
         }
         position += count;
@@ -688,9 +755,7 @@ curandStatus_t curandGenerate(curandGenerator_t generator, unsigned int *output_
         return CURAND_STATUS_TYPE_ERROR;
     if (generator->quasi())
         return generator->points(num, [&](size_t i, unsigned long long x) { output_ptr[i] = unsigned(x); });
-    generator->raw(output_ptr, num);
-    for (size_t i = 0; i < num; ++i)
-        output_ptr[i] = generator->to_uint(output_ptr[i]);
+    generator->each_raw(num, [&](size_t i, unsigned int r) { output_ptr[i] = generator->to_uint(r); });
     return CURAND_STATUS_SUCCESS;
 }
 
@@ -713,10 +778,7 @@ curandStatus_t curandGenerateUniform(curandGenerator_t generator, float *output_
             output_ptr[i] = uniform(wide ? unsigned(x >> 32) : unsigned(x));
         });
     }
-    std::vector<unsigned int> raw(num);
-    generator->raw(raw.data(), num);
-    for (size_t i = 0; i < num; ++i)
-        output_ptr[i] = generator->to_float(raw[i]);
+    generator->each_raw(num, [&](size_t i, unsigned int r) { output_ptr[i] = generator->to_float(r); });
     return CURAND_STATUS_SUCCESS;
 }
 
@@ -724,11 +786,16 @@ curandStatus_t curandGenerateUniform(curandGenerator_t generator, float *output_
 //! MRG32k3a uses one
 static curandStatus_t uniform_doubles(curandGenerator_t generator, size_t num, double *out)
 {
-    const bool mrg = generator->type == CURAND_RNG_PSEUDO_MRG32K3A;
-    std::vector<unsigned int> raw(mrg ? num : 2 * num);
-    generator->raw(raw.data(), raw.size());
-    for (size_t i = 0; i < num; ++i)
-        out[i] = mrg ? generator->to_double(raw[i], 0) : generator->to_double(raw[2 * i], raw[2 * i + 1]);
+    if (generator->type == CURAND_RNG_PSEUDO_MRG32K3A) {
+        generator->each_raw(num, [&](size_t i, unsigned int r) { out[i] = generator->to_double(r, 0); });
+    } else {
+        // Raw value 2i and 2i + 1 take the bytes of double i
+        generator->raw_bytes(out, 2 * num);
+        curandGenerator_st::each(num, [&](size_t i) {
+            const unsigned int x = curandGenerator_st::raw_at(out, 2 * i), y = curandGenerator_st::raw_at(out, 2 * i + 1);
+            out[i] = generator->to_double(x, y);
+        });
+    }
     return CURAND_STATUS_SUCCESS;
 }
 
@@ -766,24 +833,30 @@ static curandStatus_t normals(curandGenerator_t generator, T *out, size_t n, T m
     }
     if (n % 2 != 0)
         return CURAND_STATUS_LENGTH_NOT_MULTIPLE;
+    auto pair = [&](double u1, double u2, T *to) {
+        const double s = std::sqrt(-2.0 * std::log(u1)), v = 2 * std::numbers::pi * u2;
+        to[0] = finish(std::sin(v) * s);
+        to[1] = finish(std::cos(v) * s);
+    };
     if constexpr (std::is_same_v<T, float>) {
-        if (generator->type != CURAND_RNG_PSEUDO_MRG32K3A) {
-            std::vector<unsigned int> raw(n);
-            generator->raw(raw.data(), n);
-            for (size_t i = 0; i < n; i += 2) {
-                const float2 z = box_muller(raw[i], raw[i + 1]);
+        // In place: raw values i and i + 1 become normals i and i + 1, by
+        // float's Box-Muller transform, or MRG32k3a's from its doubles
+        generator->raw_bytes(out, n);
+        const bool mrg = generator->type == CURAND_RNG_PSEUDO_MRG32K3A;
+        curandGenerator_st::each(n / 2, [&](size_t p) {
+            const size_t i = 2 * p;
+            const unsigned int x = curandGenerator_st::raw_at(out, i), y = curandGenerator_st::raw_at(out, i + 1);
+            if (mrg) {
+                pair(generator->to_double(x, 0), generator->to_double(y, 0), out + i);
+            } else {
+                const float2 z = box_muller(x, y);
                 out[i] = finish(z.x);
                 out[i + 1] = finish(z.y);
             }
-            return CURAND_STATUS_SUCCESS;
-        }
-    }
-    std::vector<double> u(n);
-    uniform_doubles(generator, n, u.data());
-    for (size_t i = 0; i < n; i += 2) {
-        const double s = std::sqrt(-2.0 * std::log(u[i])), v = 2 * std::numbers::pi * u[i + 1];
-        out[i] = finish(std::sin(v) * s);
-        out[i + 1] = finish(std::cos(v) * s);
+        });
+    } else {
+        uniform_doubles(generator, n, out);
+        curandGenerator_st::each(n / 2, [&](size_t p) { pair(out[2 * p], out[2 * p + 1], out + 2 * p); });
     }
     return CURAND_STATUS_SUCCESS;
 }
@@ -835,8 +908,7 @@ curandStatus_t curandGeneratePoisson(curandGenerator_t generator, unsigned int *
     }
     std::vector<double> u(n);
     uniform_doubles(generator, n, u.data());
-    for (size_t i = 0; i < n; ++i)
-        output_ptr[i] = value(u[i]);
+    curandGenerator_st::each(n, [&](size_t i) { output_ptr[i] = value(u[i]); });
     return CURAND_STATUS_SUCCESS;
 }
 

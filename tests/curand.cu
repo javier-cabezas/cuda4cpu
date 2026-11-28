@@ -34,9 +34,11 @@
 #include <curand_kernel.h>
 #include <hiprand/hiprand.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <numbers>
 #include <vector>
 
 static int failures = 0;
@@ -463,6 +465,180 @@ __global__ void pi(curandState *states, int samples, unsigned *inside)
     atomicAdd(inside, count);
 }
 
+//! The host API's large requests, which threads make round by round, and
+//! convert in place: every value against the lanes stepped one by one
+static void host_in_parallel()
+{
+    using cuda4cpu::detail::rand::box_muller;
+    using cuda4cpu::detail::rand::uniform_double;
+    const unsigned long long seed = 99, offset = 4100;   // a round of 4096 and 4 more
+    const size_t n = 300001;                             // ends in the middle of a round
+    curandGenerator_t g;
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_PSEUDO_XORWOW) == CURAND_STATUS_SUCCESS);
+    curandSetPseudoRandomGeneratorSeed(g, seed);
+    curandSetGeneratorOffset(g, offset);
+    std::vector<unsigned> raw(2 * n + 2);
+    EXPECT(curandGenerate(g, raw.data(), n) == CURAND_STATUS_SUCCESS);
+    EXPECT(curandGenerate(g, raw.data() + n, n + 2) == CURAND_STATUS_SUCCESS);   // continues
+    // Lane k has made offset / 4096 values, and one more if k < offset % 4096
+    std::vector<curandState> lanes(4096);
+    for (unsigned k = 0; k < 4096; ++k)
+        curand_init(seed, k, offset / 4096 + (k < offset % 4096), &lanes[k]);
+    size_t wrong = 0;
+    for (size_t m = 0; m < raw.size(); ++m)
+        wrong += raw[m] != curand(&lanes[(offset + m) % 4096]);
+    EXPECT(wrong == 0);
+
+    // Doubles from results 2i and 2i + 1, normals from pairs, uniforms
+    curandSetGeneratorOffset(g, offset);
+    std::vector<double> d(n + 1);
+    EXPECT(curandGenerateUniformDouble(g, d.data(), d.size()) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < d.size(); ++i)
+        wrong += d[i] != uniform_double(raw[2 * i], raw[2 * i + 1]);
+    EXPECT(wrong == 0);
+    curandSetGeneratorOffset(g, offset);
+    std::vector<float> f(2 * n + 2);
+    EXPECT(curandGenerateNormal(g, f.data(), f.size(), 1.0f, 2.0f) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < f.size(); i += 2) {
+        const float2 z = box_muller(raw[i], raw[i + 1]);
+        wrong += f[i] != 1.0f + 2.0f * z.x || f[i + 1] != 1.0f + 2.0f * z.y;
+    }
+    EXPECT(wrong == 0);
+    curandSetGeneratorOffset(g, offset);
+    EXPECT(curandGenerateUniform(g, f.data(), f.size()) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < f.size(); ++i)
+        wrong += bits_of(f[i]) != bits_of(cuda4cpu::detail::rand::uniform(raw[i]));
+    EXPECT(wrong == 0);
+    curandDestroyGenerator(g);
+
+    // Sobol': two dimensions in chunks, against one state per dimension
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_QUASI_SOBOL32) == CURAND_STATUS_SUCCESS);
+    curandSetQuasiRandomGeneratorDimensions(g, 2);
+    curandSetGeneratorOffset(g, 12345);
+    std::vector<unsigned> q(2 * 200003);
+    EXPECT(curandGenerate(g, q.data(), q.size()) == CURAND_STATUS_SUCCESS);
+    curandDirectionVectors32_t *vectors;
+    curandGetDirectionVectors32(&vectors, CURAND_DIRECTION_VECTORS_32_JOEKUO6);
+    wrong = 0;
+    for (unsigned dim = 0; dim < 2; ++dim) {
+        curandStateSobol32_t s;
+        curand_init(vectors[dim], 12345, &s);
+        for (size_t i = 0; i < q.size() / 2; ++i)
+            wrong += q[dim * (q.size() / 2) + i] != curand(&s);
+    }
+    EXPECT(wrong == 0);
+    curandDestroyGenerator(g);
+
+    // Philox: groups of 4, from an offset inside a group, in two calls
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_PSEUDO_PHILOX4_32_10) == CURAND_STATUS_SUCCESS);
+    curandSetPseudoRandomGeneratorSeed(g, seed);
+    const unsigned long long philox_offset = 3 * 262144 + 4 * 1000 + 3;
+    curandSetGeneratorOffset(g, philox_offset);
+    std::vector<unsigned> p(700001);
+    EXPECT(curandGenerate(g, p.data(), 400001) == CURAND_STATUS_SUCCESS);
+    EXPECT(curandGenerate(g, p.data() + 400001, p.size() - 400001) == CURAND_STATUS_SUCCESS);
+    {
+        std::vector<curandStatePhilox4_32_10_t> groups(65536);
+        const unsigned long long rounds = philox_offset / 262144, rest = philox_offset % 262144;
+        for (unsigned k = 0; k < 65536; ++k)
+            curand_init(seed, k, rounds * 4 + std::min<unsigned long long>(4, rest > 4ull * k ? rest - 4ull * k : 0),
+                        &groups[k]);
+        wrong = 0;
+        for (size_t m = 0; m < p.size(); ++m)
+            wrong += p[m] != curand(&groups[(philox_offset + m) / 4 % 65536]);
+        EXPECT(wrong == 0);
+    }
+    curandDestroyGenerator(g);
+
+    // MRG32k3a's doubles (one result each) and float normals (from pairs of
+    // them), in 81920 lanes
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_PSEUDO_MRG32K3A) == CURAND_STATUS_SUCCESS);
+    curandSetPseudoRandomGeneratorSeed(g, seed);
+    curandSetGeneratorOffset(g, 81920 + 17);
+    std::vector<double> md(200000);
+    EXPECT(curandGenerateUniformDouble(g, md.data(), md.size()) == CURAND_STATUS_SUCCESS);
+    {
+        std::vector<curandStateMRG32k3a_t> lanes3(81920);
+        for (unsigned k = 0; k < 81920; ++k)
+            curand_init(seed, k, 1 + (k < 17), &lanes3[k]);
+        wrong = 0;
+        for (size_t m = 0; m < md.size(); ++m)
+            wrong += md[m] != curand_uniform_double(&lanes3[(81920 + 17 + m) % 81920]);
+        EXPECT(wrong == 0);
+    }
+    curandSetGeneratorOffset(g, 81920 + 17);
+    std::vector<float> mf(md.size());
+    EXPECT(curandGenerateNormal(g, mf.data(), mf.size(), 0.0f, 1.0f) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < mf.size(); i += 2) {
+        const double r = std::sqrt(-2.0 * std::log(md[i])), v = 2 * std::numbers::pi * md[i + 1];
+        wrong += std::fabs(mf[i] - float(std::sin(v) * r)) > 1e-6f * (1 + std::fabs(mf[i])) ||
+                 std::fabs(mf[i + 1] - float(std::cos(v) * r)) > 1e-6f * (1 + std::fabs(mf[i + 1]));
+    }
+    EXPECT(wrong == 0);
+    curandDestroyGenerator(g);
+
+    // Double normals, in place over the uniform doubles they come from
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_PSEUDO_XORWOW) == CURAND_STATUS_SUCCESS);
+    curandSetPseudoRandomGeneratorSeed(g, seed);
+    curandSetGeneratorOffset(g, offset);
+    std::vector<double> nd(d.size());
+    EXPECT(curandGenerateNormalDouble(g, nd.data(), nd.size(), -1.0, 3.0) == CURAND_STATUS_SUCCESS);
+    wrong = 0;
+    for (size_t i = 0; i < nd.size(); i += 2) {
+        const double r = std::sqrt(-2.0 * std::log(d[i])), v = 2 * std::numbers::pi * d[i + 1];
+        wrong += std::fabs(nd[i] - (-1.0 + 3.0 * (std::sin(v) * r))) > 1e-13 ||
+                 std::fabs(nd[i + 1] - (-1.0 + 3.0 * (std::cos(v) * r))) > 1e-13;
+    }
+    EXPECT(wrong == 0);
+
+    // Results whose index passes 2^64
+    const unsigned long long late = ~0ull - 5000;
+    curandSetGeneratorOffset(g, late);
+    std::vector<unsigned> w(100000);
+    EXPECT(curandGenerate(g, w.data(), w.size()) == CURAND_STATUS_SUCCESS);
+    for (unsigned k = 0; k < 4096; ++k)
+        curand_init(seed, k, late / 4096 + (k < late % 4096), &lanes[k]);
+    wrong = 0;
+    for (size_t m = 0; m < w.size(); ++m)
+        wrong += w[m] != curand(&lanes[(late % 4096 + m) % 4096]);
+    EXPECT(wrong == 0);
+
+    // Called from a parallel region: the same results, on one thread
+    curandSetGeneratorOffset(g, offset);
+    std::vector<unsigned> inner(n);
+    #pragma omp parallel
+    {
+        #pragma omp single
+        EXPECT(curandGenerate(g, inner.data(), inner.size()) == CURAND_STATUS_SUCCESS);
+    }
+    EXPECT(std::equal(inner.begin(), inner.end(), raw.begin()));
+    curandDestroyGenerator(g);
+
+    // Scrambled 64-bit Sobol': one dimension in chunks, over two calls
+    EXPECT(curandCreateGenerator(&g, CURAND_RNG_QUASI_SCRAMBLED_SOBOL64) == CURAND_STATUS_SUCCESS);
+    curandSetGeneratorOffset(g, 7);
+    std::vector<unsigned long long> s64(170004);
+    EXPECT(curandGenerateLongLong(g, s64.data(), 100003) == CURAND_STATUS_SUCCESS);
+    EXPECT(curandGenerateLongLong(g, s64.data() + 100003, s64.size() - 100003) == CURAND_STATUS_SUCCESS);
+    {
+        curandDirectionVectors64_t *wide;
+        unsigned long long *constants;
+        curandGetDirectionVectors64(&wide, CURAND_SCRAMBLED_DIRECTION_VECTORS_64_JOEKUO6);
+        curandGetScrambleConstants64(&constants);
+        curandStateScrambledSobol64_t state;
+        curand_init(wide[0], constants[0], 7, &state);
+        wrong = 0;
+        for (size_t i = 0; i < s64.size(); ++i)
+            wrong += s64[i] != curand(&state);
+        EXPECT(wrong == 0);
+    }
+    curandDestroyGenerator(g);
+}
+
 static void kernels()
 {
     const int blocks = 64, threads = 128, samples = 500;
@@ -496,6 +672,7 @@ int main()
     distributions<curandStatePhilox4_32_10_t>("Philox4_32_10");
     distributions<curandStateMRG32k3a_t>("MRG32k3a");
     host_orderings();
+    host_in_parallel();
     edges();
     kernels();
     if (failures == 0)
