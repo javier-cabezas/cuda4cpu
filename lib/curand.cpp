@@ -449,6 +449,8 @@ struct curandGenerator_st {
         using index = unsigned __int128;
         const size_t g = group(), l = lanes();
         const index first = index(offset) + position, last = first + n, round = index(g) * l;
+        if (n == 0)
+            return;
         const index begin = first / round, end = (last + round - 1) / round;
         #pragma omp parallel if (n >= 32768 && !omp_in_parallel())
         {
@@ -475,15 +477,11 @@ struct curandGenerator_st {
         }
     }
 
-    //! The next n raw values, into out
-    void raw(unsigned int *out, size_t n)
-    {
-        each_raw(n, [out](size_t i, unsigned int r) { out[i] = r; });
-    }
-
     //! The next n raw values, into the bytes of an output of another type,
     //! which conversions in place then read with raw_at: a pair of them
-    //! takes the bytes of the double or of the two floats made from it
+    //! takes the bytes of the double or of the two floats made from it.
+    //! Two threads may write the two halves of one double: disjoint 4-byte
+    //! stores, which every CPU it runs on keeps apart.
     void raw_bytes(void *out, size_t n)
     {
         each_raw(n, [out](size_t i, unsigned int r) { std::memcpy(static_cast<char *>(out) + 4 * i, &r, 4); });
