@@ -96,7 +96,8 @@ jobs:
 
   # cuda4cpu tells AddressSanitizer about its fiber stack switches; the whole
   # test suite must run clean. (The driver, CMake language, MCP and check tests build
-  # programs without the sanitizer flags against the instrumented library.)
+  # programs without the sanitizer flags against the instrumented library; the
+  # Thrust tests pass them to the driver.)
   sanitizers:
     name: gcc-14 / AddressSanitizer and UBSan
     runs-on: ubuntu-24.04
@@ -111,10 +112,24 @@ jobs:
         id: setup
         uses: ./.github/actions/setup
         with:
-          packages: ninja-build libnuma-dev g++-14 gdb
+          packages: ninja-build libnuma-dev libopenblas0-pthread g++-14 gdb
           ccache-key: sanitizers
 
+      # The Thrust tests, built with the sanitizers too, and cuBLAS on OpenBLAS
+      - name: Cache CCCL
+        id: cccl
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cccl
+          key: cccl-v3.5.0
+
+      - name: Fetch CCCL
+        if: steps.cccl.outputs.cache-hit != 'true'
+        run: git clone --quiet --depth 1 --branch v3.5.0 https://github.com/NVIDIA/cccl.git "$RUNNER_TEMP/cccl"
+
       - name: Configure, build and test
+        env:
+          CUDA4CPU_CCCL_DIR: ${{ runner.temp }}/cccl
         run: |
           cmake --preset debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           cmake --build --preset debug
@@ -151,11 +166,13 @@ jobs:
       - name: Test under Valgrind
         working-directory: build/debug/tests
         # As ctest runs them: runtime and hip_memory check the errors of
-        # copies in the wrong direction
+        # copies in the wrong direction, and cuBLAS runs on cuda4cpu's own BLAS
         env:
           CUDA4CPU_MEMCPY_DIRECTION: error
+          CUDA4CPU_BLAS: builtin
         run: |
-          for test in barriers warp atomics launch runtime cooperative_groups graphs rewrite_features sample_vector_add sample_softmax hip_kernels hip_memory; do
+          for test in barriers warp atomics launch runtime cooperative_groups graphs rewrite_features sample_vector_add sample_softmax hip_kernels hip_memory \
+                      async_copy device_assert curand_test cublas_test cufft_test hip_blas hip_fft; do
             echo "::group::$test"
             OMP_NUM_THREADS=2 valgrind -q --error-exitcode=1 ./$test
             echo "::endgroup::"

@@ -82,9 +82,10 @@ int main()
     cudaStreamCreate(&stream);
     thrust::sort(thrust::cuda::par.on(stream), v.begin(), v.end());
     EXPECT(v[0] == 0 && v[n - 1] == n - 1);
-    thrust::device_vector<int> scanned(n);
-    thrust::inclusive_scan(thrust::cuda::par_nosync, v.begin(), v.end(), scanned.begin());
-    EXPECT(scanned[3] == 0 + 1 + 2 + 3);
+    // The first 1000, whose sums fit in an int
+    thrust::device_vector<int> scanned(1000);
+    thrust::inclusive_scan(thrust::cuda::par_nosync, v.begin(), v.begin() + 1000, scanned.begin());
+    EXPECT(scanned[3] == 0 + 1 + 2 + 3 && scanned[999] == 999 * 1000 / 2);
     thrust::cuda::vector<float> f(4, 1.5f);
     thrust::transform(thrust::cuda::par, f.begin(), f.end(), f.begin(), thrust::negate<float>());
     EXPECT(f[2] == -1.5f);

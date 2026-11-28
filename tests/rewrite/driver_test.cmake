@@ -20,8 +20,9 @@
 # Builds a .cu file with the cuda4cpu-c++ driver (or a HIP file with
 # cuda4cpu-hipcc), in one step and with separate compilation and linking, and
 # runs the results. FLAGS, if given, are options for the steps that compile,
-# separated by |.
-# Usage: cmake -DDRIVER=... -DSOURCE=... -DWORK=... [-DFLAGS=...] -P driver_test.cmake
+# and LINK_FLAGS for every step that links, each separated by |.
+# Usage: cmake -DDRIVER=... -DSOURCE=... -DWORK=... [-DFLAGS=...] [-DLINK_FLAGS=...]
+#        -P driver_test.cmake
 
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
@@ -34,13 +35,14 @@ function(run)
 endfunction()
 
 string(REPLACE "|" ";" flags "${FLAGS}")
+string(REPLACE "|" ";" link_flags "${LINK_FLAGS}")
 
-run("${DRIVER}" ${flags} -O2 -o "${WORK}/one_step" "${SOURCE}")
+run("${DRIVER}" ${flags} ${link_flags} -O2 -o "${WORK}/one_step" "${SOURCE}")
 run("${WORK}/one_step")
 
 run("${DRIVER}" ${flags} -O2 -c "${SOURCE}")
 cmake_path(GET SOURCE STEM stem)
-run("${DRIVER}" -o "${WORK}/two_steps" "${WORK}/${stem}.o")
+run("${DRIVER}" ${link_flags} -o "${WORK}/two_steps" "${WORK}/${stem}.o")
 run("${WORK}/two_steps")
 
 # An output that isn't a file, as in checks that only compile: the rewritten
