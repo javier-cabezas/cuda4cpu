@@ -304,7 +304,8 @@ Debian and Ubuntu, or `openblas` on Fedora.
 The library must have the 32-bit integer interface, as distributions'
 packages do; OpenBLAS's 64-bit one is `libopenblas64`.
 
-The library runs on threads of its own (OpenBLAS starts as many as
+A library may run on threads of its own, as OpenBLAS's pthreads build
+does (`libopenblas0-pthread`, Debian's and Ubuntu's default: as many as
 `OPENBLAS_NUM_THREADS` says, or else `OMP_NUM_THREADS`), and right after a
 kernel, the OpenMP threads that ran it keep spinning for a while, waiting
 for the next one: the two compete for the cores. On a 16-thread laptop, a

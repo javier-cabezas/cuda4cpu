@@ -105,7 +105,13 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifdef POCKETFFT_PTHREADS
 #  include <pthread.h>
 #endif
+// cuda4cpu: thread_map on the OpenMP threads (POCKETFFT_OPENMP), which
+// needs OpenMP: without it, the shares would run on one thread, each
+// thinking it was another's
 #ifdef POCKETFFT_OPENMP
+#  ifndef _OPENMP
+#    error "POCKETFFT_OPENMP needs OpenMP (-fopenmp)"
+#  endif
 #  include <omp.h>
 #endif
 #endif
@@ -1009,6 +1015,7 @@ void thread_map(size_t nthreads, Func f)
 #endif
 #pragma omp parallel num_threads(int(nthreads))
   {
+  const size_t outer_id = thread_id(), outer_count = num_threads();
   thread_id() = size_t(omp_get_thread_num());
   num_threads() = size_t(omp_get_num_threads());
 #ifndef POCKETFFT_NO_EXCEPTIONS
@@ -1024,8 +1031,8 @@ void thread_map(size_t nthreads, Func f)
     ex = std::current_exception();
     }
 #endif
-  thread_id() = 0;
-  num_threads() = 1;
+  thread_id() = outer_id;
+  num_threads() = outer_count;
   }
 #ifndef POCKETFFT_NO_EXCEPTIONS
   if (ex)

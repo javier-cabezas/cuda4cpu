@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 #include "cuda4cpu.hpp"
@@ -343,16 +344,24 @@ int main()
         const int n = 1 << 16;
         float *scratch = nullptr;
         cudaMalloc(&scratch, n * sizeof(float));
+        auto kernels = [&] {
+            for (int r = 0; r < 20; ++r)
+                launch(bounds_check, n / 256, 256).call(scratch, size_t(n));
+        };
+        const double kernels_ms = median_ms(kernels);
         auto after_kernel = [&](auto &&op) {
-            return median_ms([&] {
+            return (median_ms([&] {
                 for (int r = 0; r < 20; ++r) {
                     launch(bounds_check, n / 256, 256).call(scratch, size_t(n));
                     op();
                 }
-            }) / 20 - median_ms([&] {
-                for (int r = 0; r < 20; ++r)
-                    launch(bounds_check, n / 256, 256).call(scratch, size_t(n));
-            }) / 20;
+            }) - kernels_ms) / 20;
+        };
+        // Alone: after the threads of the previous calls have gone to sleep
+        // (libomp's spin for 200 ms)
+        auto alone = [&](auto &&op) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            return median_ms(op);
         };
 
         cufftComplex *data = nullptr;
@@ -362,12 +371,12 @@ int main()
         cufftPlan2d(&plan, 1024, 1024, CUFFT_C2C);
         auto fft = [&] { cufftExecC2C(plan, data, data, CUFFT_FORWARD); };
         fft();
-        row("cuFFT C2C 1024 x 1024", median_ms(fft), "ms");
+        row("cuFFT C2C 1024 x 1024", alone(fft), "ms");
         row("  alternating with kernels", after_kernel(fft), "ms");
         cufftDestroy(plan);
         cufftPlan1d(&plan, 256, CUFFT_C2C, 256);
         fft();
-        row("cuFFT C2C 256, batch 256", median_ms(fft) * 1e3, "us");
+        row("cuFFT C2C 256, batch 256", alone(fft) * 1e3, "us");
         cufftDestroy(plan);
         cudaFree(data);
 
@@ -385,7 +394,7 @@ int main()
         const float one = 1.f, zero = 0.f;
         auto gemm = [&] { cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &one, a, m, b, m, &zero, c, m); };
         gemm();
-        row("cublasSgemm 512 x 512 x 512", median_ms(gemm), "ms");
+        row("cublasSgemm 512 x 512 x 512", alone(gemm), "ms");
         row("  alternating with kernels", after_kernel(gemm), "ms");
         cublasDestroy(handle);
         cudaFree(a);
@@ -400,7 +409,7 @@ int main()
         curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_XORWOW);
         auto generate = [&] { curandGenerateUniform(generator, out, count); };
         generate();
-        row("curandGenerateUniform, XORWOW, 16 M floats", median_ms(generate), "ms");
+        row("curandGenerateUniform, XORWOW, 16 M floats", alone(generate), "ms");
         curandDestroyGenerator(generator);
         cudaFree(out);
         cudaFree(scratch);
