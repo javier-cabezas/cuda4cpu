@@ -105,6 +105,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifdef POCKETFFT_PTHREADS
 #  include <pthread.h>
 #endif
+#ifdef POCKETFFT_OPENMP
+#  include <omp.h>
+#endif
 #endif
 
 #if defined(__GNUC__)
@@ -995,6 +998,40 @@ void thread_map(size_t nthreads, Func f)
   if (nthreads == 1)
     { f(); return; }
 
+#ifdef POCKETFFT_OPENMP
+  // cuda4cpu: the shares run on the OpenMP threads, which kernels use and
+  // which spin for a while after each one, instead of a pool of its own,
+  // whose threads would compete with them. The team may be smaller than
+  // nthreads: its size is the number of shares.
+#ifndef POCKETFFT_NO_EXCEPTIONS
+  std::exception_ptr ex;
+  std::mutex ex_mut;
+#endif
+#pragma omp parallel num_threads(int(nthreads))
+  {
+  thread_id() = size_t(omp_get_thread_num());
+  num_threads() = size_t(omp_get_num_threads());
+#ifndef POCKETFFT_NO_EXCEPTIONS
+  try
+    {
+#endif
+    f();
+#ifndef POCKETFFT_NO_EXCEPTIONS
+    }
+  catch (...)
+    {
+    std::lock_guard<std::mutex> lock(ex_mut);
+    ex = std::current_exception();
+    }
+#endif
+  thread_id() = 0;
+  num_threads() = 1;
+  }
+#ifndef POCKETFFT_NO_EXCEPTIONS
+  if (ex)
+    std::rethrow_exception(ex);
+#endif
+#else
   auto & pool = get_pool();
   latch counter(nthreads);
 #ifndef POCKETFFT_NO_EXCEPTIONS
@@ -1032,6 +1069,7 @@ void thread_map(size_t nthreads, Func f)
   if (ex)
     std::rethrow_exception(ex);
 #endif
+#endif  // POCKETFFT_OPENMP
   }
 
 #endif

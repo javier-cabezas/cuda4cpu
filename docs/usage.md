@@ -295,12 +295,24 @@ Debian and Ubuntu, or `openblas` on Fedora.
   dynamic loader finds. `CUDA4CPU_BLAS=builtin` uses cuda4cpu's own
   implementation instead.
 - **Without a library:** the routines run on cuda4cpu's own implementation,
-  which is correct but much slower for large products.
+  which is correct but slower for large products: about 4 times as slow as
+  OpenBLAS for a single-precision 512 x 512 or 1024 x 1024 product
+  (`cublasSgemm` in `microbench`).
 - **A library that can't be loaded:** if `CUDA4CPU_BLAS` names a file that
   isn't a CBLAS library, cuda4cpu warns and uses its own implementation.
 
 The library must have the 32-bit integer interface, as distributions'
 packages do; OpenBLAS's 64-bit one is `libopenblas64`.
+
+The library runs on threads of its own (OpenBLAS starts as many as
+`OPENBLAS_NUM_THREADS` says, or else `OMP_NUM_THREADS`), and right after a
+kernel, the OpenMP threads that ran it keep spinning for a while, waiting
+for the next one: the two compete for the cores. On a 16-thread laptop, a
+512 x 512 x 512 `cublasSgemm` between kernels took 27 ms instead of 3.
+Programs that alternate kernels with BLAS calls can run with
+`OMP_WAIT_POLICY=passive`, which makes the OpenMP threads sleep at once
+(3 ms there), at some cost to each launch. cuFFT's transforms run on the
+OpenMP threads, so they don't compete.
 
 ### Thrust
 

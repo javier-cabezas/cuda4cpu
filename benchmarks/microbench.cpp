@@ -30,6 +30,9 @@
 #include <vector>
 
 #include "cuda4cpu.hpp"
+#include "cublas_v2.h"
+#include "cufft.h"
+#include "curand.h"
 
 using namespace cuda4cpu;
 
@@ -332,5 +335,74 @@ int main()
         row("triangular, 512 blocks of increasing cost", ms, "ms");
         row("  same loop with OpenMP schedule(dynamic)", omp, "ms");
         row("triangular, 512 blocks of decreasing cost", down, "ms");
+    }
+
+    // The libraries' host calls, alone and right after a kernel, while the
+    // OpenMP threads that ran it may still be spinning
+    {
+        const int n = 1 << 16;
+        float *scratch = nullptr;
+        cudaMalloc(&scratch, n * sizeof(float));
+        auto after_kernel = [&](auto &&op) {
+            return median_ms([&] {
+                for (int r = 0; r < 20; ++r) {
+                    launch(bounds_check, n / 256, 256).call(scratch, size_t(n));
+                    op();
+                }
+            }) / 20 - median_ms([&] {
+                for (int r = 0; r < 20; ++r)
+                    launch(bounds_check, n / 256, 256).call(scratch, size_t(n));
+            }) / 20;
+        };
+
+        cufftComplex *data = nullptr;
+        cudaMalloc(&data, sizeof(cufftComplex) * 1024 * 1024);
+        cudaMemset(data, 0, sizeof(cufftComplex) * 1024 * 1024);
+        cufftHandle plan;
+        cufftPlan2d(&plan, 1024, 1024, CUFFT_C2C);
+        auto fft = [&] { cufftExecC2C(plan, data, data, CUFFT_FORWARD); };
+        fft();
+        row("cuFFT C2C 1024 x 1024", median_ms(fft), "ms");
+        row("  alternating with kernels", after_kernel(fft), "ms");
+        cufftDestroy(plan);
+        cufftPlan1d(&plan, 256, CUFFT_C2C, 256);
+        fft();
+        row("cuFFT C2C 256, batch 256", median_ms(fft) * 1e3, "us");
+        cufftDestroy(plan);
+        cudaFree(data);
+
+        // On the CBLAS library that CUDA4CPU_BLAS names or cuda4cpu finds,
+        // or its own (CUDA4CPU_BLAS=builtin)
+        const int m = 512;
+        float *a = nullptr, *b = nullptr, *c = nullptr;
+        cudaMalloc(&a, sizeof(float) * m * m);
+        cudaMalloc(&b, sizeof(float) * m * m);
+        cudaMalloc(&c, sizeof(float) * m * m);
+        cudaMemset(a, 0, sizeof(float) * m * m);
+        cudaMemset(b, 0, sizeof(float) * m * m);
+        cublasHandle_t handle;
+        cublasCreate(&handle);
+        const float one = 1.f, zero = 0.f;
+        auto gemm = [&] { cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &one, a, m, b, m, &zero, c, m); };
+        gemm();
+        row("cublasSgemm 512 x 512 x 512", median_ms(gemm), "ms");
+        row("  alternating with kernels", after_kernel(gemm), "ms");
+        cublasDestroy(handle);
+        cudaFree(a);
+        cudaFree(b);
+        cudaFree(c);
+
+        // The host API: 4096 lanes of XORWOW states
+        const size_t count = size_t(1) << 24;
+        float *out = nullptr;
+        cudaMalloc(&out, count * sizeof(float));
+        curandGenerator_t generator;
+        curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_XORWOW);
+        auto generate = [&] { curandGenerateUniform(generator, out, count); };
+        generate();
+        row("curandGenerateUniform, XORWOW, 16 M floats", median_ms(generate), "ms");
+        curandDestroyGenerator(generator);
+        cudaFree(out);
+        cudaFree(scratch);
     }
 }
